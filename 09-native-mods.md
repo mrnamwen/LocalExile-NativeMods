@@ -6,11 +6,10 @@ first-pass positions — "no mod ships native code" and "client scripts, deliber
 mechanism in the second static pass, [08-deep-analysis.md](08-deep-analysis.md). The 02/03 documents remain the
 phase-1 record; where they disagree with this file, this file wins for phase 2.
 
-> **Superseded in part.** [10-verification.md](10-verification.md) refuted two things this design leans on: that
-> a .NET runtime is available to the client process (§2), and that GEAL offers 1,221 built-ins and a run-text
-> entry (§1, §3). [11-bridge.md](11-bridge.md) is the current plan: mod code stays in the Gateway and is
-> translated for the client; code inside the client becomes an optional last tier. The tier model, the service
-> list and the trust rules below carry over; the runtime in §2 does not.
+> **Carried forward by [11-client-sdk.md](11-client-sdk.md),** which is the current plan. This design's direction
+> stands: C# mod code inside the client. [10-verification.md](10-verification.md) refuted two things it leans
+> on — that a .NET runtime is already available to the client process (§2: the extender must ship its own), and
+> that GEAL offers 1,221 built-ins and a run-text entry (§1, §3). Where this file and 11 disagree, 11 wins.
 
 The honest ceiling in [06](06-roadmap.md) also moves. "The removed C++ does not come back" is still true of the
 game's own code — but a mod can now bring its own: behaviour GEAL cannot express becomes a native client mod, and

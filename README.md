@@ -40,14 +40,18 @@ host** that gives server mods three things they lack: their own files in the cli
 messages on the game connection, and control of the client's own UI system. On top of that sits a Forge-style API:
 registries for content, events on both sides, and typed access to the systems GGG built.
 
-Phase 1 keeps mods server-side C# with data-only client payloads. After discussing it, the maintainers want the
-full thing: wider mods, up to new league mechanics. Two static passes over the client
-([08](08-deep-analysis.md), checked and corrected in [10](10-verification.md)) found what there is to build on:
-the client ships a script VM (GEAL) with 724 client-side built-ins, accepts appended table rows, and has
-extension points a host can use without patching code. [11-bridge.md](11-bridge.md) is the plan: a mod stays one
-C# project in the Gateway, and a translation layer turns its client half into layouts, scripts, table rows and
-bundles the client already understands, plus a closed set of operations run by a small native shim.
-[12-ceiling.md](12-ceiling.md) says how far that goes.
+The goal has since grown, with the maintainers and the community behind it: **make the 3.29 client completely
+moddable**, custom content included, so that a frozen copy of the game works as an ARPG engine for mods. Two
+static passes over the client ([08](08-deep-analysis.md), checked and corrected in [10](10-verification.md))
+found what there is to build on: a script VM (GEAL) with 724 client-side built-ins, tables that accept appended
+rows, registries a host can add to, and no integrity checks in the way. [11-client-sdk.md](11-client-sdk.md) is
+the plan: a script extender in the client that hosts C# client mods, an SDK they compile against, a typed
+channel to each mod's server half, and a build step that turns declarations into the client's own formats.
+[12-ceiling.md](12-ceiling.md) says how far each stage reaches and what must be reverse-engineered next.
+
+LocalExile targets 3.29 only, which is what makes this reasonable: the client never changes again, so the
+reverse engineering is done once, and a build that can no longer be played officially is no part of the live
+game.
 
 **Target clients: 3.29.3c and 3.29.3d only**, the builds LocalExile supports.
 
@@ -63,10 +67,10 @@ bundles the client already understands, plus a closed set of operations run by a
 | [06-roadmap.md](06-roadmap.md) | Phases, the Harvest 3.11 garden as a showcase, risks, open decisions |
 | [07-spike-results.md](07-spike-results.md) | What was run, with screenshots, failures and what they taught |
 | [08-deep-analysis.md](08-deep-analysis.md) | The second static pass: file overlay routes, the reserved-id channel, rulesets, the GEAL VM, dat rows, frame/ABI, integrity, the loader |
-| [09-native-mods.md](09-native-mods.md) | The first phase-2 design: a .NET runtime in the client. Superseded in part by 11 |
+| [09-native-mods.md](09-native-mods.md) | The first phase-2 design: a .NET runtime in the client. Carried forward and corrected by 11 |
 | [10-verification.md](10-verification.md) | The third pass: every load-bearing claim of 08 and 09 re-derived, with what was confirmed and what was refuted |
-| [11-bridge.md](11-bridge.md) | **The current plan.** The translation layer: C# to client formats, the shim, the operation set, packed and loose assets |
-| [12-ceiling.md](12-ceiling.md) | How complex a mod can be, and what a new league mechanic would take |
+| [11-client-sdk.md](11-client-sdk.md) | **The current plan.** The script extender, the client SDK mods compile against, client and server halves, C# to GEAL, packed and loose assets |
+| [12-ceiling.md](12-ceiling.md) | From mods to an engine: what each stage reaches, a league mechanic in detail, the reverse-engineering and asset work ahead |
 | [spikes/](spikes/) | The test code |
 | [samples/](samples/) | Evidence lists and a small PE helper |
 
@@ -74,8 +78,8 @@ bundles the client already understands, plus a closed set of operations run by a
 
 1. **Is a client component acceptable at all?** LocalExile has kept the client untouched apart from the login keys.
    This would add code inside it, opt-in.
-2. **Server-driven or client code?** The plan keeps mod logic in the Gateway and translates the client half
-   ([11](11-bridge.md)); code inside the client is a last tier. Is that enough for the mods you want to write?
+2. **What should the client SDK expose first?** [12](12-ceiling.md) §4 orders the reverse engineering by what it
+   unlocks. What would your mod need?
 3. **How should it load?** An entry in the patched executable's import table, a proxy DLL, or something else
    ([architecture](02-architecture.md) §1).
 4. **What would you build first?** The list in [the roadmap](06-roadmap.md) is a guess.

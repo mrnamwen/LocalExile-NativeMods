@@ -1,108 +1,129 @@
-# How complex can a mod be?
+# How far it goes: from mods to an engine
 
-The short answer: **a new league mechanic is buildable**, with full control of the server, the tooling in
-[11](11-bridge.md) and a shim in the client — provided its rules live on the server and it is assembled from
-verbs the client already has. What stays out of reach without writing code *into* the client is anything that
-needs a new verb: a new kind of item, a new kind of skill, or a screen the stock controls cannot compose. With
-tier 4 those fall too, one reverse-engineered feature at a time.
+The aim is a 3.29 client that custom content can treat as an ARPG engine. This file says what is reachable at
+each stage, what a new league mechanic takes, and what must be dug out of the game code to get the rest.
 
-Evidence: [10](10-verification.md). Nothing in the "buildable" column is live-proven beyond the UI and file
-spikes; each row names what it rests on.
+The short answer: **a new league mechanic is buildable** with the server, the tooling in
+[11](11-client-sdk.md) and data alone, if it is assembled from things the client already does. Everything past
+that — new kinds of item, skill, screen and object — is behind compiled registries, and the script extender is
+how they open: one registry at a time, each a bounded piece of reverse engineering on a client that will never
+change. Nothing found so far is a wall; original art is the one part that needs tooling rather than hooks.
+
+Evidence: [10](10-verification.md). Nothing in a "buildable" column is live-proven beyond the UI and file
+spikes.
 
 ## 1. Where the limits come from
 
-The client is a renderer with prediction. Three things in it are compiled and closed, and every limit below is
-one of them:
+The client is a renderer with prediction. Three things in it are closed today:
 
-1. **Behaviour classes.** Item classes (an enum of 103), skill action classes (2,155, one per ActionType), the
-   213 components, 68 rulesets, about 35 league windows. Data selects among them; data cannot add one.
-2. **The script VM's reach.** 724 built-ins, all presentation and local state. No authority, no panels, no
-   network.
-3. **Asset formats nobody can write yet.** Meshes, animation, terrain tiles, FMOD banks.
+1. **Behaviour classes.** Item classes (an enum of 103), skill action classes (2,155), 213 components, 68
+   rulesets, 47 UI controls, about 35 league windows. Data selects among them; data cannot add one. **Client
+   code can** — these are the `Extend` entries of [11](11-client-sdk.md) §3.
+2. **The script VM's reach.** 724 built-ins, all presentation and local state. **Client code can add
+   built-ins.**
+3. **Asset formats nobody can write yet.** Meshes, animation, terrain tiles, FMOD banks. Tooling, not hooks.
 
-Everything else — which objects exist, where, in what state; what drops; what a window shows; what a table row
-says — is data or server traffic, and the server is ours.
+Everything else — which objects exist, where, in what state; what drops; what a window shows; what a row says
+— is data or server traffic, and the server is ours.
 
 ## 2. The ladder
 
-| Level | Example | Needs | Status |
+| Level | Example | Needs | Standing |
 |---|---|---|---|
-| 1. Native windows | settings panel, GM tools, build import dialog | shim + `.ui` | live-proven (07) |
-| 2. Reskins and text | UI art, item art, strings, sounds by `.ogg` | overlay + importer | text live-proven; binary owes F1 |
-| 3. New items | currency, fragments, map-like items, uniques on existing bases | appended rows in **existing item classes**, `.it` chains, server logic | static; owes D1 |
-| 4. New world objects | altars, chests, devices, NPCs with dialogue windows | MiscObjects/NPCs/Chests rows, `.ot` with GEAL, shipped art | static; owes D1, G1 |
-| 5. New monsters | new varieties from shipped models, skills and effects, recombined and rescaled | MonsterVarieties rows, server AI | static; owes D1 |
-| 6. Scripted encounters | bosses with phases, arenas, camera work, telegraphs | server state machine + client GEAL on replicated state + `ExecuteGEAL` skill rows | static; owes G1 |
-| 7. **A league mechanic** | §3 | all of the above + the channel | owes every spike in 10 §7 |
-| 8. New verbs | a new item class, a new skill behaviour, a custom-drawn screen, stock-window changes | tier 4 code, per feature | reverse engineering not started |
-| 9. New art | original models, animation, tilesets | format writers | no tooling exists |
+| 1. Native windows | settings panel, GM tools, build import dialog | extender + `.ui` | live-proven (07) |
+| 2. Reskins and text | UI art, item art, strings, sounds | overlay + importer | text live-proven; binary owes F1 |
+| 3. New items | currency, fragments, uniques on existing bases | appended rows in existing item classes, server logic | static; owes D1 |
+| 4. New world objects | altars, devices, chests, NPCs with dialogue windows | carrier rows, `.ot` with GEAL, shipped art | static; owes D1, G1 |
+| 5. New monsters | new varieties from shipped models, skills and effects | MonsterVarieties rows, server AI | static; owes D1 |
+| 6. Scripted encounters | bosses with phases, arenas, camera work | server state machine, client GEAL, `ExecuteGEAL` skill rows | static; owes G1 |
+| 7. **A league mechanic** | §3 | levels 1–6 and the channel | owes the spikes in 10 §7 |
+| 8. Client systems | custom HUD logic, new input, mod-defined built-ins, a mod's own ruleset | client code on the SDK's `Engine` and first `Extend` entries | owes R1, then per-service digs |
+| 9. New verbs | new item classes, skill behaviours, components, control types; changed stock windows | the rest of `Extend` | reverse engineering not started (§4) |
+| 10. New art | original models, animation, tilesets, sound banks | format writers (§5) | no tooling exists |
 
-Levels 1–7 need no mod code in the client. Level 8 is possible and bounded by effort, not by a wall: the image
-has no integrity checks, and it is frozen, so a hook written once stays written. Level 9 is a tooling project
-independent of everything else here.
+Levels 1–7 need no mod code in the client. Level 8 is the extender doing what it is for. Level 9 is where the
+client becomes an engine. Level 10 is independent of all of them and can run in parallel.
 
-## 3. The moonshot, concretely
+## 3. A league mechanic, concretely
 
-What a league mechanic is made of, and where each part would come from:
-
-| Part | GGG builds it as | A mod builds it as | Gap |
+| Part | GGG builds it as | A mod builds it as | With client code |
 |---|---|---|---|
-| Rules, rewards, scaling, persistence | server code | a module in `Modules/Custom/`, listed by a league | none |
-| Encounter placement in areas | server level generation | the module's `AreaGenerated` hook and LocalExile's level generation | none |
-| Encounter objects | object types + components | MiscObjects/Chests/NPC rows + `.ot`, existing components | components are a fixed set of 213 |
-| How they look and react | GEAL on replicated state | the same — this is exactly what GEAL is for | none |
-| Monsters | varieties + skills | new varieties over shipped art and existing skills | no new skill behaviours |
-| Reward and crafting windows | a C++ window per league | `.ui` windows driven by the server | stock controls only; no item-socket or tree widgets unless a stock control fits |
-| HUD tracker | C++ HUD element | a `.ui` panel with bindings | none expected |
-| League items | item bases + components | new bases in existing classes | no new item class; behaviour on use is the server's |
-| Client-side ruleset | a compiled class | the host ruleset: a channel and a per-area lifetime | stock UI does not know the new id |
-| Atlas/passive integration | compiled screens | not offered | tier 4 |
+| Rules, rewards, scaling, persistence | server code | a module in `Modules/Custom/`, listed by a league | — |
+| Encounter placement | server level generation | the module's hooks and LocalExile's level generation | — |
+| Encounter objects | object types + components | carrier rows + `.ot`, existing components | new components |
+| How they look and react | GEAL on replicated state | the same; this is what GEAL is for | mod-defined built-ins |
+| Monsters | varieties + skills | new varieties over shipped art and skills | new skill behaviours |
+| Reward and crafting windows | a C++ window per league | `.ui` windows from stock controls | custom controls: sockets, trees, charts |
+| HUD tracker | a C++ HUD element | a `.ui` panel with bindings | anything drawn per frame |
+| League items | item bases + components | new bases in existing classes | new item classes |
+| Client-side ruleset | a compiled class | the host ruleset as channel and lifetime | the mod's own ruleset class |
+| Atlas and passive integration | compiled screens | not offered | hooks into those screens |
 
-So the mechanics that fit are the ones whose *client* half was always mostly presentation: Breach, Ritual,
-Harvest, Ultimatum, Expedition-style encounters, Blight-style defence, Essence, Metamorph-style assembly,
-Bestiary-style capture — and new designs of that family. A complete loop is realistic: an object in the world,
-a fight around it, a currency that drops, a window to spend it in, a tracker on the HUD, saved progress.
+With data alone, the mechanics that fit are those whose client half was always mostly presentation: Breach,
+Ritual, Harvest, Ultimatum, Expedition-style encounters, Blight-style defence, Essence, Bestiary-style capture,
+and new designs of that family. A complete loop is realistic: an object in the world, a fight around it, a
+currency that drops, a window to spend it in, a tracker on the HUD, saved progress.
 
-The Harvest 3.11 garden from [06](06-roadmap.md) fits and becomes better than first scored: the grove terrain,
-plot objects and their GEAL still ship; seeds are new currency bases; planting is clicks on world objects; the
-Seed Stockpile and crafting are `.ui` windows. It stays the right showcase.
+The Harvest 3.11 garden from [06](06-roadmap.md) fits: the grove terrain, plot objects and their scripts still
+ship; seeds are new currency bases; planting is clicks on world objects; the Seed Stockpile and crafting are
+`.ui` windows. It stays the right first showcase, and each thing it has to fake is a named `Extend` entry.
 
-What a mod-built mechanic will not have at level 7:
+What a data-only mechanic lacks, and so what the right-hand column is for:
 
-- **Items that behave in new ways on the client.** A seed is a stackable currency with a custom tooltip; it is
-  not a socketable, a flask-like or a map-like thing unless it *is* one of those classes.
-- **New skill mechanics.** A new skill is an existing action class with new numbers, effects and scripts.
-  Prediction and animation follow the borrowed class.
-- **Bespoke screens.** A Delve chart or Sanctum floor map is custom-drawn C++. A mod's equivalent is buttons
-  and pictures in frames: functional, native-looking, less fluid.
-- **New stats with client meaning.** New stats display and gate UI. Anything the client computes from stats
-  (movement speed, cast time in prediction) only honours the stats it was compiled with — the server sends the
-  results instead.
-- **New geometry.** Arenas are built from shipped tiles.
+- items that behave in new ways on the client (a seed is a stackable currency with a tooltip, not a new kind of
+  thing);
+- skills with new mechanics (a new skill borrows an existing action class's prediction and animation);
+- bespoke screens (a Delve chart is custom-drawn; the stand-in is buttons and pictures in frames);
+- stats the client computes with (new stats display and gate UI; the server sends results for the rest);
+- new geometry (arenas are built from shipped tiles — level 10).
 
-Each of those is a level 8 item, and each has a known shape: a new action class is one registration in a
-2,155-entry registry and a class with a vtable; a ruleset is a 9-slot object; a control type is one of 47
-registered by name. None has been attempted.
+## 4. The dig: what to reverse next
 
-## 4. What tooling the moonshot needs
+Ordered by what each unlocks per unit of effort. "Known" is what the three passes already have.
 
-| Tool | For | Size |
-|---|---|---|
-| Shim + Bridge runtime | everything | the core of 11 |
-| Bundle and table writers | packed assets, appended rows | small; formats are fully read today |
-| `.ui` linter and live preview | windows that cannot crash the client | medium |
-| `[ClientScript]` → GEAL compiler | scripts without learning GEAL | medium; hand-written GEAL works first |
-| Catalog overlays in the Gateway | the server knowing mod content | medium, a LocalExile change |
-| Object-type browser | finding shipped art, effects, skills and scripts to build from | small; the decoders exist |
-| Mesh/animation/tile writers | level 9 | large, separate |
+| # | Target | Known | To find | Unlocks |
+|---|---|---|---|---|
+| 1 | **Entity and component access** | 213 components with registrars and deserializers [D]; object creation paths; the world's object map at `world+0x8d8` | component lookup on an object, field layouts for Positioned, Life, Render, Animated, StateMachine, Stats, Targetable | `World`: reading and driving anything in an area. Most of level 8 |
+| 2 | **GEAL built-in registration** | the `{name, factory}` table at `0x1445c50f8`, filled by `0x141de9780`; factory returns a functor whose slot 2 runs | the functor and argument-range layouts; inserting after startup | scripts calling mod code. Cheap, and makes every `.ot` extensible |
+| 3 | **UI control internals** | `Register<T>` for 47 types; control layout offsets from 07 | the control vtable (draw, layout, input), the registration call, removal and destruction | custom controls; U1's open questions |
+| 4 | **Rendering hooks** | three renderers ship; the UI draws through one path | the UI draw-list interface, so a control can draw primitives and textures | custom-drawn HUD and screens without touching the 3D pipeline |
+| 5 | **Input** | nothing | key and mouse dispatch, the keybinding table | new hotkeys and input modes |
+| 6 | **Rulesets in full** | creator array, 9 slots, routing | which slots are frame/area callbacks and who calls them; the area message's id list field | proper mod rulesets |
+| 7 | **Skill actions** | the registry (`0x141947300`, FNV-16 of the name), a factory per class, `Data/ExecuteGEAL.dat` | the action base class and its virtuals; how prediction and animation events drive it | new skill behaviours |
+| 8 | **Component registration** | registrar `0x140e35f40`, deserializer in slot 17 | a full component vtable; how `.ot` sections bind to it | new replicated object state |
+| 9 | **Item classes and item UI** | the enum table at `0x142fe0b80`, item component readers in slot 5 | every site that switches on the class; tooltip construction | new item kinds, custom tooltips |
+| 10 | **Stock windows** | class names, about 35 | per window, on demand | changing inventory, league and atlas UI |
+| 11 | **Stats with client meaning** | code reads stats by compiled row number | the consumers worth redirecting | stats that change prediction |
 
-## 5. Unknowns that could lower the ceiling
+Items 1–3 turn the extender from a UI tool into a general one and should come first. LocalExile's own
+reverse-engineering docs cover the server-facing side of several of these (components, object types, items),
+which is where each dig starts.
 
-- Appended rows are accepted by the loader but no table has been tried live. A table that misbehaves is dropped
-  from the offer, not worked around.
+Also still open from 10: the handler-group calling convention and socket write path (unverified), the catch for
+an unknown object type, the `0x2c9` reader's wire layout, Mods/BuffDefinitions/WorldAreas bindings, the
+DeadlockDetector timeout.
+
+## 5. The asset track
+
+| Asset | Formats | Read today | To write |
+|---|---|---|---|
+| Textures | `.dds` + `.dds.header` | yes | mechanical |
+| UI, objects, effects text | `.ui`, `.ot`, `.ao`, `.act`, `.epk`, `.mat`, `.sm` | yes | an encoder |
+| Particles, trails | `.pet`, `.trl` | partly | medium |
+| Static and skinned meshes | `.fmt`, `.smd`, `.tgm` | yes (layouts measured) | a writer and a glTF importer |
+| Animation | `.ast`, `.amd` | mostly (three key tracks unnamed) | a writer; skeleton retargeting |
+| Terrain | `.tgm`, `.tdt`, `.tst`, `.gt`, `.arm` | partly | the largest piece; needs the level-generation knowledge LocalExile already has |
+| Sound | `.ogg` by path; FMOD `.bank` | `.ogg` yes | banks need a matching FMOD Studio version |
+| Tables | `.datc64` | yes | small |
+
+The readers in `scripts/re/formats` are the specification for each writer. New models on existing skeletons
+come first: they need a mesh writer and nothing else.
+
+## 6. What could lower the ceiling
+
+- **R1.** A .NET runtime inside the client under Proton is untested. The fallback (NativeAOT, restart to
+  reload) keeps the SDK and loses hot reload.
+- Appended rows are accepted by the loader, but no table has been tried live.
 - Blob-less client objects and new object types rely on components initialising from text alone.
-- Whether a client script can signal the server is open (`DispatchRulesetEvent`). If not, every interaction is a
-  click the server already sees or a UI event through the shim, which is enough.
-- WorldAreas, Mods and BuffDefinitions were not checked. A mechanic that needs its own areas or its own buffs
-  with icons waits on that.
-- Long-session stability with the shim loaded has never been measured.
+- Each `Extend` entry is unproven until someone registers one. The shapes are known; the details are not.
+- Long-session stability with the extender loaded has never been measured.

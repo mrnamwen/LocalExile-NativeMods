@@ -159,7 +159,7 @@ Hosting CoreCLR in the client therefore means shipping a private win-x64 runtime
 what comes with it: a GC and a vectored exception handler inside a process that throws MSVC C++ exceptions as
 control flow, under Wine, next to a **DeadlockDetector** (`0x140e3ed10`) that throws when the game thread stalls
 past a timeout nobody has recovered. Other tools do host CoreCLR in games under Wine; none of it is tested here.
-[11](11-bridge.md) removes the dependency instead of carrying it.
+[11](11-client-sdk.md) §2 ships a private runtime with the extender and makes proving it the first spike (R1).
 
 Also for the shim: the image has `DYNAMIC_BASE`, so addresses are RVAs plus the loaded base; the import
 descriptor array must move to the new section; the Authenticode blob sits at the end of the file; the frame
@@ -171,6 +171,7 @@ Nothing in this pass ran. In order of how much design rests on each:
 
 | Spike | Proves | If it fails |
 |---|---|---|
+| R1 a private .NET runtime started inside the client, on Windows and under Proton, through a play session | client mods in C# with hot reload | NativeAOT client mods, restart to reload |
 | H1 host ruleset: creator in a free slot, id listed by the server, `0x2c9` in, `0x2ca` out | the mod channel and its graceful failure | reserved-id group; chat transport (already [L]) |
 | F1 stored-block bundle + in-memory index entries, for `.ui`, `.ot`, `.dds`, `.datc64` | packed assets, every format | read-result swap (text is [L]) |
 | F2 variant tag with a loose file | hook-free loose overrides | read-result swap |
