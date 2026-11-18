@@ -1,0 +1,123 @@
+// NativeMods spike: a window the game never shipped. Written by hand, served from disk.
+
+<DEFINITIONS>
+
+const $w = 1100;
+const $pad = 30;
+
+begin Frame
+	id = garden_window;
+	aspect_mode = scaley;
+	size = $w, 420;
+	float = centre;
+	y = 330;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	border = normal,
+		"Art/2DArt/UIImages/Common/OrnateTopLeft", "Art/2DArt/UIImages/Common/OrnateTop", "Art/2DArt/UIImages/Common/OrnateTopRight",
+		"Art/2DArt/UIImages/Common/OrnateLeft", "Art/2DArt/UIImages/Common/OrnateRight",
+		"Art/2DArt/UIImages/Common/OrnateBottomLeft", "Art/2DArt/UIImages/Common/OrnateBottom", "Art/2DArt/UIImages/Common/OrnateBottomRight";
+	border_position = outside;
+	background = "Art/2DArt/UIImages/Common/Background1", tile;
+
+	begin StackLayout
+		id = body;
+		auto_size = true, true;
+		margin = $pad, 20, $pad, 20;
+		float = centre;
+
+		begin Label
+			id = title;
+			font = Fonts.NormalSC;
+			foreground_colour = rgb( 164, 221, 124 );
+			float = centre;
+			text = "Sacred Grove";
+			margin = 0, 0, 0, 6;
+		end
+
+		begin Picture
+			float = centre;
+			source = "Art/2DArt/UIImages/InGame/Divider";
+			size = $w - 200, 8;
+		end
+
+		// A Picture with a margin made the layout spin forever in the spike, so spacing is a Frame, as the stock
+		// ConfirmationWindow.ui does it.
+		begin Frame
+			size = 10, 14;
+		end
+
+		begin Label
+			id = status;
+			width = $w - 2 * $pad;
+			auto_size = true;
+			foreground_colour = Colours.White;
+			font = Fonts.Normal;
+			text = "This layout is not in the game files. It is a text file in a mod folder.";
+			margin = 0, 0, 0, 16;
+		end
+
+		begin Frame
+			id = name_row;
+			size = $w - 2 * $pad, 62;
+			margin = 0, 0, 0, 16;
+			pixel_border_colour = Colours.BorderColour;
+
+			begin Label
+				location = 16, 0;
+				size = 260, 62;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.NormalSC;
+				foreground_colour = Colours.LabelTextColour;
+				text = "Seed name";
+			end
+
+			begin TextBox
+				id = seed_name;
+				location = 290, 0;
+				size = $w - 2 * $pad - 310, 62;
+				font = Fonts[ "TextBox" ].Normal;
+				caret_colour = Colours.White;
+				pixel_border_colour = argb( 0, 0, 0, 0 );
+			end
+		end
+
+		begin CheckBox
+			id = auto_collect;
+			font = Fonts.NormalSC;
+			foreground_colour = Colours.LabelTextColour;
+			size = 520, 42;
+			text_side = right;
+			text = "Collect lifeforce automatically";
+			margin = 0, 0, 0, 20;
+		end
+
+		begin Frame
+			id = buttons;
+			size = $w - 2 * $pad, Sizes[ "Button" ].Size.Height;
+			propagate_properties = false;
+
+			begin Button
+				id = plant;
+				size = Sizes[ "Button" ].Size.Width, Sizes[ "Button" ].Size.Height;
+				float = inside left, 0;
+				text = "Plant";
+			end
+
+			begin Button based on plant
+				id = harvest;
+				float = centre;
+				text = "Harvest";
+			end
+
+			begin Button based on plant
+				id = close;
+				float = inside right, 0;
+				text = "Close";
+			end
+		end
+	end
+end
