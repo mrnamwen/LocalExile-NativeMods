@@ -6,6 +6,8 @@ Evidence behind [01-findings.md](../01-findings.md), produced read-only on 2026-
 |---|---|
 | `ui-paths.txt` | every `.ui` and `metadata/ui/` path in the bundle index (124 `.ui`, 16 `.xml`) |
 | `registered-controls.txt` | control types with a `UI::Controls::Detail::Register<T>` instantiation in the executable's RTTI |
+| `geal-builtins.txt` | every GEAL built-in name the client registers (1,221) |
+| `geal-builtins-classified.tsv` | the same names with which the client can run (724), implementation addresses and shipped call counts |
 | `client-rulesets.txt` | `Game::Rulesets::Client*` classes in the RTTI |
 | `pex.py` | stdlib-only PE helper: `xref <string>…`, `callers <va>`, `fn <va>` (the path to `Client/Game.exe` is at the top) |
 

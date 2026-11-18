@@ -40,7 +40,14 @@ host** that gives server mods three things they lack: their own files in the cli
 messages on the game connection, and control of the client's own UI system. On top of that sits a Forge-style API:
 registries for content, events on both sides, and typed access to the systems GGG built.
 
-Mods stay server-side C#. A mod author writes C# and ships data; no mod ships native code.
+Phase 1 keeps mods server-side C# with data-only client payloads. After discussing it, the maintainers want the
+full thing: wider mods, up to new league mechanics. Two static passes over the client
+([08](08-deep-analysis.md), checked and corrected in [10](10-verification.md)) found what there is to build on:
+the client ships a script VM (GEAL) with 724 client-side built-ins, accepts appended table rows, and has
+extension points a host can use without patching code. [11-bridge.md](11-bridge.md) is the plan: a mod stays one
+C# project in the Gateway, and a translation layer turns its client half into layouts, scripts, table rows and
+bundles the client already understands, plus a closed set of operations run by a small native shim.
+[12-ceiling.md](12-ceiling.md) says how far that goes.
 
 **Target clients: 3.29.3c and 3.29.3d only**, the builds LocalExile supports.
 
@@ -55,6 +62,11 @@ Mods stay server-side C#. A mod author writes C# and ships data; no mod ships na
 | [05-tooling-and-assets.md](05-tooling-and-assets.md) | A `.ui` designer, asset import, packaging |
 | [06-roadmap.md](06-roadmap.md) | Phases, the Harvest 3.11 garden as a showcase, risks, open decisions |
 | [07-spike-results.md](07-spike-results.md) | What was run, with screenshots, failures and what they taught |
+| [08-deep-analysis.md](08-deep-analysis.md) | The second static pass: file overlay routes, the reserved-id channel, rulesets, the GEAL VM, dat rows, frame/ABI, integrity, the loader |
+| [09-native-mods.md](09-native-mods.md) | The first phase-2 design: a .NET runtime in the client. Superseded in part by 11 |
+| [10-verification.md](10-verification.md) | The third pass: every load-bearing claim of 08 and 09 re-derived, with what was confirmed and what was refuted |
+| [11-bridge.md](11-bridge.md) | **The current plan.** The translation layer: C# to client formats, the shim, the operation set, packed and loose assets |
+| [12-ceiling.md](12-ceiling.md) | How complex a mod can be, and what a new league mechanic would take |
 | [spikes/](spikes/) | The test code |
 | [samples/](samples/) | Evidence lists and a small PE helper |
 
@@ -62,8 +74,8 @@ Mods stay server-side C#. A mod author writes C# and ships data; no mod ships na
 
 1. **Is a client component acceptable at all?** LocalExile has kept the client untouched apart from the login keys.
    This would add code inside it, opt-in.
-2. **Server-driven or client scripts?** The proposal keeps all mod logic on the server and makes the client a
-   remote. Is that enough for the mods you want to write?
+2. **Server-driven or client code?** The plan keeps mod logic in the Gateway and translates the client half
+   ([11](11-bridge.md)); code inside the client is a last tier. Is that enough for the mods you want to write?
 3. **How should it load?** An entry in the patched executable's import table, a proxy DLL, or something else
    ([architecture](02-architecture.md) §1).
 4. **What would you build first?** The list in [the roadmap](06-roadmap.md) is a guess.
