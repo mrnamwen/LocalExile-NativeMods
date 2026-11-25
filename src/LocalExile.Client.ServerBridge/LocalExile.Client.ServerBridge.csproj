@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LocalExile.Client.ServerBridge</RootNamespace>
+    <AssemblyName>LocalExile.Client.ServerBridge</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>LocalExile Gateway server-side bridge for communicating with NativeMods client hosts and mods.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+  </ItemGroup>
+</Project>
