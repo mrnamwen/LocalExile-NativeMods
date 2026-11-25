@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Reflection;
 using DualMod.MaxwellPet.Shared;
 using LocalExile.Client.Sdk;
 using LocalExile.Client.Sdk.Engine;
@@ -45,6 +44,7 @@ public sealed class MaxwellClientMod : IClientMod
     private const float FloatStep = 5f;
     private const float VolumeStep = 0.1f;
 
+    private readonly Lock _audioGate = new();
     private IClientContext? _context;
     private IUiWindow? _window;
     private MaxwellStateSync? _lastState;
@@ -167,8 +167,9 @@ public sealed class MaxwellClientMod : IClientMod
             ApplyState(state, forceShowWindow: false);
         }));
 
-        // 6. Per-frame spinning & floating tick on the game thread
+        // 6. Per-frame spinning & floating tick and disconnect cleanup on the game thread
         game.Frame += OnFrame;
+        game.Lifecycle.Disconnected += OnDisconnected;
     }
 
     public void Unload()
@@ -176,6 +177,7 @@ public sealed class MaxwellClientMod : IClientMod
         if (_context is not null)
         {
             _context.Game.Frame -= OnFrame;
+            _context.Game.Lifecycle.Disconnected -= OnDisconnected;
         }
 
         StopMusicIfPlaying();
@@ -183,6 +185,16 @@ public sealed class MaxwellClientMod : IClientMod
         _window = null;
         _lastState = null;
         _context = null;
+    }
+
+    private void OnDisconnected(string? reason)
+    {
+        StopMusicIfPlaying();
+        if (_lastState is { } prev)
+        {
+            _lastState = prev with { IsSummoned = false, PetEntityId = 0, MusicPlaying = false };
+            RefreshTelemetryLabel();
+        }
     }
 
     private void OnFrame(float deltaSeconds)
@@ -369,7 +381,8 @@ public sealed class MaxwellClientMod : IClientMod
 
     private void SyncLoopingAudio(MaxwellStateSync state)
     {
-        if (_context is null)
+        var context = _context;
+        if (context is null)
             return;
 
         bool shouldPlay = state.IsSummoned && state.MusicPlaying && !state.MusicMuted && state.MusicVolume > 0.001f;
@@ -379,73 +392,54 @@ public sealed class MaxwellClientMod : IClientMod
             return;
         }
 
-        var audio = _context.Game.Audio;
-        if (_activeAudioHandle is int existingHandle)
+        lock (_audioGate)
         {
-            if (MathF.Abs(_activeAudioVolume - state.MusicVolume) > 0.005f)
+            var audio = context.Game.Audio;
+            if (_activeAudioHandle is int existingHandle && existingHandle > 0)
             {
-                if (!TrySetChannelVolume(audio, existingHandle, state.MusicVolume))
+                if (MathF.Abs(_activeAudioVolume - state.MusicVolume) > 0.005f)
                 {
-                    audio.StopChannel(existingHandle);
-                    _activeAudioHandle = PlayLoopingSoundFile(audio, MaxwellProtocol.MusicOggPath, state.MusicVolume);
+                    audio.SetChannelVolume(existingHandle, state.MusicVolume);
+                    _activeAudioVolume = state.MusicVolume;
                 }
 
-                _activeAudioVolume = state.MusicVolume;
+                return;
             }
 
-            return;
+            int handle = audio.PlaySoundFile(MaxwellProtocol.MusicOggPath, state.MusicVolume, loop: true);
+            if (handle > 0)
+            {
+                _activeAudioHandle = handle;
+                _activeAudioVolume = state.MusicVolume;
+                _window?.SetProperty("maxwell_audio_path", MaxwellProtocol.MusicOggPath);
+                context.Logger.Info($"Started looping Maxwell audio '{MaxwellProtocol.MusicOggPath}' (handle={handle}, volume={state.MusicVolume:0.00}).");
+            }
         }
-
-        _activeAudioHandle = PlayLoopingSoundFile(audio, MaxwellProtocol.MusicOggPath, state.MusicVolume);
-        _activeAudioVolume = state.MusicVolume;
-        _window?.SetProperty("maxwell_audio_path", MaxwellProtocol.MusicOggPath);
-        _context.Logger.Info($"Started looping Maxwell audio '{MaxwellProtocol.MusicOggPath}' (handle={_activeAudioHandle}, volume={state.MusicVolume:0.00}).");
     }
 
     private void StopMusicIfPlaying()
     {
-        if (_activeAudioHandle is int handle && _context is not null)
+        int? handleToStop;
+        var context = _context;
+        lock (_audioGate)
         {
-            _context.Game.Audio.StopChannel(handle);
-            _context.Logger.Info($"Stopped Maxwell audio channel {handle}.");
+            handleToStop = _activeAudioHandle;
+            _activeAudioHandle = null;
+            _activeAudioVolume = -1f;
         }
 
-        _activeAudioHandle = null;
-        _activeAudioVolume = -1f;
-        _window?.SetProperty("maxwell_audio_path", string.Empty);
-    }
-
-    /// <summary>
-    /// Invokes <c>IAudioService.PlaySoundFile(string, float, bool)</c> with <c>loop: true</c> when provided
-    /// by the live 3.29.3d FMOD host, falling back cleanly to 2-arg <c>PlaySoundFile(string, float)</c>.
-    /// </summary>
-    private static int PlayLoopingSoundFile(IAudioService audio, string virtualOggPath, float volume)
-    {
-        MethodInfo? loopOverload = typeof(IAudioService).GetMethod(
-            nameof(IAudioService.PlaySoundFile),
-            [typeof(string), typeof(float), typeof(bool)]);
-
-        if (loopOverload is not null)
+        try
         {
-            object? result = loopOverload.Invoke(audio, [virtualOggPath, volume, true]);
-            if (result is int handle)
-                return handle;
+            if (handleToStop is int handle && handle > 0 && context is not null)
+            {
+                context.Game.Audio.StopChannel(handle);
+                context.Logger.Info($"Stopped Maxwell audio channel {handle}.");
+            }
         }
-
-        return audio.PlaySoundFile(virtualOggPath, volume);
-    }
-
-    private static bool TrySetChannelVolume(IAudioService audio, int channelHandle, float volume)
-    {
-        MethodInfo? setVolume = typeof(IAudioService).GetMethod(
-            "SetChannelVolume",
-            [typeof(int), typeof(float)]);
-
-        if (setVolume is null)
-            return false;
-
-        setVolume.Invoke(audio, [channelHandle, volume]);
-        return true;
+        finally
+        {
+            _window?.SetProperty("maxwell_audio_path", string.Empty);
+        }
     }
 
     private static string BuildFallbackPetOt() =>

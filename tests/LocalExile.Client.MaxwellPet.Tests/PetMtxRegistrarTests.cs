@@ -205,6 +205,340 @@ public sealed class PetMtxRegistrarTests
         }
     }
 
+    [Fact]
+    public async Task CosmeticsEquip_ZoneChangeReHandshake_AndCosmeticsUnequip_StaysNativeNoDuplicateAudioAndStopsCleanly()
+    {
+        using var simBridge = new SimulatedNativeBridge(ClientBuildId.Build3293d);
+        using var clientHost = new ClientHostRuntime(simBridge, new ClientHostOptions
+        {
+            TransportKind = NetTransportKind.HostRuleset,
+            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+        });
+        clientHost.Start();
+
+        string tempModDir = StageClientModForTest(clientHost);
+        try
+        {
+            clientHost.Loader.LoadModFromDirectory(tempModDir);
+
+            const string lioneyeConn = "127.0.0.1:41001#1";
+            const string coastConn = "127.0.0.1:41002#1";
+            const string character = "ZoneTraveler";
+            string activeConnId = lioneyeConn;
+
+            var serverBridge = new ClientBridgeHost(new LoopbackSink(simBridge), new ClientBridgeOptions
+            {
+                DefaultTransport = NetTransportKind.HostRuleset,
+                HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+            });
+            var worldBackend = new SimulatedMaxwellWorldBackend();
+            using var registrar = new LocalExilePetMtxRegistrar();
+            using var serverMod = new MaxwellServerMod(serverBridge, worldBackend, registrar);
+            serverMod.Attach();
+
+            simBridge.OnOutgoingRulesetPacket = (rulesetId, inner) =>
+            {
+                serverMod.BindConnection(activeConnId, character);
+                byte[] body = MessageCodec.EncodeRulesetBody(rulesetId, inner.Span);
+                serverBridge.HandleIncomingPacketAsync(activeConnId, IOpcodeRegistry.ClientRulesetOpcode, body).GetAwaiter().GetResult();
+            };
+
+            // 1. Lioneye's Watch: enter area + handshake + equip Maxwell in Cosmetics (K) Pet Slot 2
+            await serverMod.OnPlayerEnteredAsync(lioneyeConn, character);
+            clientHost.SendHandshake();
+            Assert.True(serverBridge.For(lioneyeConn).HasNativeHost);
+
+            var wornSlot2 = new List<FakeEquipped>
+            {
+                new(CustomPetMtxDefinition.PetSlot2, MaxwellProtocol.MtxRecordId, MaxwellProtocol.MtxTypeHash)
+            };
+            var petsLioneye = new Dictionary<uint, FakeSpawnedPet>
+            {
+                [0x4000031u] = new(Side: -1)
+            };
+
+            registrar.ObserveLiveGatewayPlayer(lioneyeConn, character, wornSlot2, petsLioneye);
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+            Assert.True(simBridge.TryGetSimulatedAudioChannel(1, out string path, out bool isFmod, out float vol, out bool loop, out bool active));
+            Assert.Equal(MaxwellProtocol.MusicOggPath, path);
+            Assert.False(isFmod);
+            Assert.True(loop);
+            Assert.True(active);
+            Assert.Equal(MaxwellProtocol.DefaultMusicVolume, vol, precision: 2);
+
+            // Repeat sync / entity respawn in same area must NOT spawn a duplicate overlapping audio handle
+            var petsLioneyeRespawn = new Dictionary<uint, FakeSpawnedPet>
+            {
+                [0x4000032u] = new(Side: -1)
+            };
+            registrar.ObserveLiveGatewayPlayer(lioneyeConn, character, wornSlot2, petsLioneyeRespawn);
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+            Assert.False(simBridge.TryGetSimulatedAudioChannel(2, out _, out _, out _, out _, out _));
+
+            // 2. Zone change: Lioneye's Watch -> The Coast (new TCP connection coastConn)
+            registrar.ClearConnection(lioneyeConn);
+            serverMod.OnPlayerLeft(lioneyeConn);
+            serverBridge.RemoveSession(lioneyeConn);
+            activeConnId = coastConn;
+
+            // PlayerEntered runs on coastConn BEFORE client re-handshake arrives
+            var petsCoast = new Dictionary<uint, FakeSpawnedPet>
+            {
+                [0x4000099u] = new(Side: -1)
+            };
+            await serverMod.OnPlayerEnteredAsync(coastConn, character);
+            registrar.ObserveLiveGatewayPlayer(coastConn, character, wornSlot2, petsCoast);
+            Assert.False(serverBridge.For(coastConn).HasNativeHost);
+
+            // Client detects new instance connection and re-sends ClientHandshake -> ClientReady pushes sync
+            clientHost.SendHandshake();
+            Assert.True(serverBridge.For(coastConn).HasNativeHost);
+            Assert.True(serverBridge.For(coastConn).HasClientMod(MaxwellProtocol.ModId));
+
+            // /maxwell in The Coast MUST use native panel (NO Chat Fallback!)
+            string coastPanelReply = await serverMod.HandleMaxwellCommandAsync(coastConn, character, []);
+            Assert.Contains("Opened Maxwell control panel", coastPanelReply);
+            Assert.DoesNotContain("Chat Fallback", coastPanelReply);
+
+            // Still strictly ONE active audio handle across the zone change (zero overlapping channels!)
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+            Assert.True(simBridge.IsAudioPlaying(1));
+            Assert.False(simBridge.TryGetSimulatedAudioChannel(2, out _, out _, out _, out _, out _));
+
+            // 3. Unequip Maxwell in Cosmetics (K) in The Coast -> MUST clean up Maxwell AND stop Stock Market audio!
+            var emptyWorn = new List<FakeEquipped>();
+            var emptyPets = new Dictionary<uint, FakeSpawnedPet>();
+            var unequipEvents = registrar.ObserveLiveGatewayPlayer(coastConn, character, emptyWorn, emptyPets);
+
+            var unequipEvt = Assert.Single(unequipEvents);
+            Assert.False(unequipEvt.IsEquipped);
+            Assert.Equal(0u, unequipEvt.PetEntityId);
+
+            var finalSync = serverMod.BuildSync(character, "verify");
+            Assert.False(finalSync.IsSummoned);
+            Assert.False(finalSync.MusicPlaying);
+            Assert.Equal(0u, finalSync.PetEntityId);
+            Assert.Empty(worldBackend.SpawnedPets);
+            Assert.Equal(0, clientHost.Audio.ActiveChannelCount);
+            Assert.False(simBridge.IsAudioPlaying(1));
+
+            IUiWindow? panel = clientHost.Ui.GetWindow(MaxwellProtocol.PanelWindowId);
+            Assert.NotNull(panel);
+            Assert.Equal("Summon Maxwell", panel!.Require<IButton>("summon_button").Text);
+            Assert.Equal("Play Music", panel.Require<IButton>("music_play_button").Text);
+        }
+        finally
+        {
+            await clientHost.Loader.UnloadModAsync(MaxwellProtocol.ModId);
+            if (Directory.Exists(tempModDir))
+                Directory.Delete(tempModDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ZoneChangeUnequipBeforeHandshake_AndDisconnectCleanup_AlwaysStopsStockMarketAudio()
+    {
+        using var simBridge = new SimulatedNativeBridge(ClientBuildId.Build3293d);
+        using var clientHost = new ClientHostRuntime(simBridge, new ClientHostOptions
+        {
+            TransportKind = NetTransportKind.HostRuleset,
+            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+        });
+        clientHost.Start();
+
+        string tempModDir = StageClientModForTest(clientHost);
+        try
+        {
+            clientHost.Loader.LoadModFromDirectory(tempModDir);
+
+            const string connA = "127.0.0.1:42001#1";
+            const string connB = "127.0.0.1:42002#1";
+            const string connC = "127.0.0.1:42003#1";
+            const string character = "AudioCleanupExile";
+            string activeConnId = connA;
+
+            var serverBridge = new ClientBridgeHost(new LoopbackSink(simBridge), new ClientBridgeOptions
+            {
+                DefaultTransport = NetTransportKind.HostRuleset,
+                HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+            });
+            var worldBackend = new SimulatedMaxwellWorldBackend();
+            using var registrar = new LocalExilePetMtxRegistrar();
+            using var serverMod = new MaxwellServerMod(serverBridge, worldBackend, registrar);
+            serverMod.Attach();
+
+            simBridge.OnOutgoingRulesetPacket = (rulesetId, inner) =>
+            {
+                serverMod.BindConnection(activeConnId, character);
+                byte[] body = MessageCodec.EncodeRulesetBody(rulesetId, inner.Span);
+                serverBridge.HandleIncomingPacketAsync(activeConnId, IOpcodeRegistry.ClientRulesetOpcode, body).GetAwaiter().GetResult();
+            };
+
+            // Equip Maxwell on connA -> music playing on handle 1
+            await serverMod.OnPlayerEnteredAsync(connA, character);
+            clientHost.SendHandshake();
+            var wornSlot1 = new List<FakeEquipped>
+            {
+                new(CustomPetMtxDefinition.PetSlot1, MaxwellProtocol.MtxRecordId, MaxwellProtocol.MtxTypeHash)
+            };
+            var petsA = new Dictionary<uint, FakeSpawnedPet> { [0x6001u] = new(Side: 1) };
+            registrar.ObserveLiveGatewayPlayer(connA, character, wornSlot1, petsA);
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+            Assert.True(simBridge.IsAudioPlaying(1));
+
+            // Zone to connB where Maxwell is NO LONGER worn (reconciled BEFORE client re-handshake arrives!)
+            registrar.ClearConnection(connA);
+            serverMod.OnPlayerLeft(connA);
+            serverBridge.RemoveSession(connA);
+            activeConnId = connB;
+
+            await serverMod.OnPlayerEnteredAsync(connB, character);
+            registrar.ObserveLiveGatewayPlayer(connB, character, new List<FakeEquipped>(), new Dictionary<uint, FakeSpawnedPet>());
+            await serverMod.ReconcileCosmeticAndPetStateAsync(
+                connB,
+                character,
+                registrar.IsEquipped(connB, MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash),
+                []);
+
+            // Re-handshake arrives on connB -> ClientReady pushes dismissed state -> stops handle 1 immediately!
+            clientHost.SendHandshake();
+            Assert.Equal(0, clientHost.Audio.ActiveChannelCount);
+            Assert.False(simBridge.IsAudioPlaying(1));
+
+            // Re-equip Maxwell on connB -> starts handle 2; then full client disconnect stops handle 2 immediately!
+            var petsB = new Dictionary<uint, FakeSpawnedPet> { [0x6002u] = new(Side: 1) };
+            registrar.ObserveLiveGatewayPlayer(connB, character, wornSlot1, petsB);
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+            Assert.True(simBridge.IsAudioPlaying(2));
+
+            clientHost.NotifyDisconnected("returned to character select");
+            Assert.Equal(0, clientHost.Audio.ActiveChannelCount);
+            Assert.False(simBridge.IsAudioPlaying(2));
+
+            // Reconnect on connC while Maxwell is still equipped -> handshake arrives BEFORE PlayerEntered -> resumes cleanly!
+            registrar.ClearConnection(connB);
+            serverMod.OnPlayerLeft(connB);
+            serverBridge.RemoveSession(connB);
+            activeConnId = connC;
+
+            clientHost.SendHandshake();
+            await serverMod.OnPlayerEnteredAsync(connC, character);
+            registrar.ObserveLiveGatewayPlayer(connC, character, wornSlot1, new Dictionary<uint, FakeSpawnedPet> { [0x6003u] = new(Side: 1) });
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+            Assert.True(simBridge.IsAudioPlaying(3));
+        }
+        finally
+        {
+            await clientHost.Loader.UnloadModAsync(MaxwellProtocol.ModId);
+            if (Directory.Exists(tempModDir))
+                Directory.Delete(tempModDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CommandDismissAndCosmeticsSlotClear_NeverResurrectMaxwellOrLeakAudio()
+    {
+        using var simBridge = new SimulatedNativeBridge(ClientBuildId.Build3293d);
+        using var clientHost = new ClientHostRuntime(simBridge, new ClientHostOptions
+        {
+            TransportKind = NetTransportKind.HostRuleset,
+            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+        });
+        clientHost.Start();
+
+        string tempModDir = StageClientModForTest(clientHost);
+        try
+        {
+            clientHost.Loader.LoadModFromDirectory(tempModDir);
+
+            const string connId = "mixed-mode-conn";
+            const string character = "MixedModeExile";
+
+            var serverBridge = new ClientBridgeHost(new LoopbackSink(simBridge), new ClientBridgeOptions
+            {
+                DefaultTransport = NetTransportKind.HostRuleset,
+                HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+            });
+            var worldBackend = new SimulatedMaxwellWorldBackend();
+            using var registrar = new LocalExilePetMtxRegistrar();
+            using var serverMod = new MaxwellServerMod(serverBridge, worldBackend, registrar);
+            serverMod.Attach();
+
+            simBridge.OnOutgoingRulesetPacket = (rulesetId, inner) =>
+            {
+                serverMod.BindConnection(connId, character);
+                byte[] body = MessageCodec.EncodeRulesetBody(rulesetId, inner.Span);
+                serverBridge.HandleIncomingPacketAsync(connId, IOpcodeRegistry.ClientRulesetOpcode, body).GetAwaiter().GetResult();
+            };
+
+            await serverMod.OnPlayerEnteredAsync(connId, character);
+            clientHost.SendHandshake();
+
+            // 1. Equip Maxwell in Cosmetics (K), then run /maxwell dismiss while Cosmetics slot is still worn.
+            //    Subsequent AreaTick observations must NOT falsely re-equip Maxwell or restart audio!
+            var wornSlot1 = new List<FakeEquipped>
+            {
+                new(CustomPetMtxDefinition.PetSlot1, MaxwellProtocol.MtxRecordId, MaxwellProtocol.MtxTypeHash)
+            };
+            registrar.ObserveLiveGatewayPlayer(connId, character, wornSlot1, new Dictionary<uint, FakeSpawnedPet> { [0x7001u] = new(Side: 1) });
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+
+            await serverMod.HandleMaxwellCommandAsync(connId, character, ["dismiss"]);
+            Assert.Equal(0, clientHost.Audio.ActiveChannelCount);
+
+            // AreaTick sees wornSlot1 still set, but player.Pets no longer has 0x7001 -> must NOT re-trigger equip!
+            var tickEvents = registrar.ObserveLiveGatewayPlayer(connId, character, wornSlot1, new Dictionary<uint, FakeSpawnedPet>());
+            Assert.Empty(tickEvents);
+            Assert.Equal(0, clientHost.Audio.ActiveChannelCount);
+
+            // Unequipping in Cosmetics (K) afterwards still transitions cleanly to unequipped
+            var afterUnequip = registrar.ObserveLiveGatewayPlayer(connId, character, new List<FakeEquipped>(), new Dictionary<uint, FakeSpawnedPet>());
+            Assert.False(Assert.Single(afterUnequip).IsEquipped);
+            Assert.Equal(0, clientHost.Audio.ActiveChannelCount);
+
+            // 2. Summon via /maxwell summon, then user clears Pet Slot in Cosmetics (K) (which removes all player.Pets).
+            //    ReconcileCosmeticAndPetStateAsync must detect the removed entity and stop Stock Market audio!
+            await serverMod.HandleMaxwellCommandAsync(connId, character, ["summon"]);
+            Assert.Single(worldBackend.SpawnedPets);
+            Assert.Equal(1, clientHost.Audio.ActiveChannelCount);
+
+            var reconciled = await serverMod.ReconcileCosmeticAndPetStateAsync(
+                connId,
+                character,
+                isCosmeticEquipped: false,
+                livePetEntityIds: []);
+            Assert.NotNull(reconciled);
+            Assert.False(reconciled!.IsSummoned);
+            Assert.False(reconciled.MusicPlaying);
+            Assert.Empty(worldBackend.SpawnedPets);
+            Assert.Equal(0, clientHost.Audio.ActiveChannelCount);
+        }
+        finally
+        {
+            await clientHost.Loader.UnloadModAsync(MaxwellProtocol.ModId);
+            if (Directory.Exists(tempModDir))
+                Directory.Delete(tempModDir, recursive: true);
+        }
+    }
+
+    private static string StageClientModForTest(ClientHostRuntime clientHost)
+    {
+        string repoRoot = FindRepoRoot();
+        string uiPath = Path.Combine(repoRoot, "examples", "DualMod.MaxwellPet", "client", "Metadata", "UI", "Mods", "Maxwell", "MaxwellPanel.ui");
+        clientHost.FileOverlayService.RegisterVirtualTextFile(MaxwellProtocol.PanelUiPath, File.ReadAllText(uiPath));
+
+        string clientDir = Path.Combine(repoRoot, "examples", "DualMod.MaxwellPet", "Client", "bin", "Release", "net10.0");
+        string clientDll = Path.Combine(clientDir, "maxwell.Client.dll");
+        if (!File.Exists(clientDll))
+            clientDll = Path.Combine(repoRoot, "examples", "DualMod.MaxwellPet", "Client", "bin", "Debug", "net10.0", "maxwell.Client.dll");
+
+        string tempModDir = Path.Combine(Path.GetTempPath(), "nm-maxwell-reg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempModDir);
+        File.Copy(Path.Combine(repoRoot, "examples", "DualMod.MaxwellPet", "mod.json"), Path.Combine(tempModDir, "mod.json"));
+        File.Copy(clientDll, Path.Combine(tempModDir, "maxwell.Client.dll"));
+        return tempModDir;
+    }
+
     private sealed class LoopbackSink(SimulatedNativeBridge simBridge) : IGatewayPacketSink
     {
         public Task SendPacketAsync(string connectionId, ushort opcode, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)

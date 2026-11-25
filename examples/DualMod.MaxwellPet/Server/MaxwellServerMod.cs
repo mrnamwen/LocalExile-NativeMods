@@ -149,6 +149,7 @@ public sealed class MaxwellServerMod : IDisposable
         _registrarDefHandle = _registrar.Register(MaxwellPetDefinition);
         _mtxRegistrationHandle = _backend.RegisterPetMtx(MaxwellPetDefinition);
         _registrar.PetEquipChanged += OnCosmeticEquipObserved;
+        _bridge.ClientReady += OnClientReady;
 
         _subscriptions.Add(_bridge.On<ToggleMaxwellRequest>(MaxwellProtocol.ChannelName, (session, req) =>
         {
@@ -171,6 +172,7 @@ public sealed class MaxwellServerMod : IDisposable
 
     public void Detach()
     {
+        _bridge.ClientReady -= OnClientReady;
         _registrar.PetEquipChanged -= OnCosmeticEquipObserved;
 
         foreach (var sub in _subscriptions)
@@ -190,6 +192,28 @@ public sealed class MaxwellServerMod : IDisposable
     public void Dispose() => Detach();
 
     /// <summary>
+    /// Associates a Gateway <paramref name="connectionId"/> with <paramref name="characterName"/> early
+    /// (for example on incoming <c>0x02CA</c> handshake packets before <c>PlayerEntered</c>) so
+    /// <see cref="ClientBridgeHost.ClientReady"/> can immediately push authoritative state.
+    /// </summary>
+    public void BindConnection(string connectionId, string characterName)
+    {
+        if (string.IsNullOrWhiteSpace(connectionId) || string.IsNullOrWhiteSpace(characterName))
+            return;
+
+        _connectionCharacters[connectionId] = characterName;
+    }
+
+    /// <summary>Releases per-connection tracking when a player connection closes.</summary>
+    public void OnPlayerLeft(string connectionId)
+    {
+        if (string.IsNullOrWhiteSpace(connectionId))
+            return;
+
+        _connectionCharacters.TryRemove(connectionId, out _);
+    }
+
+    /// <summary>
     /// Called when a player enters an area: grants Maxwell Pet MTX ownership (<c>0x0204</c>),
     /// respawns Maxwell if currently active via <c>/maxwell</c>, and syncs rich clients.
     /// </summary>
@@ -206,10 +230,15 @@ public sealed class MaxwellServerMod : IDisposable
         byte slot;
         lock (state)
         {
+            state.ActiveConnectionId = connectionId;
             // When summoned via native Cosmetics (K), LocalExile's CosmeticsModule already spawns the pet on PlayerEntered
             // and LocalExilePetMtxRegistrar.ObserveLiveGatewayPlayer notifies OnCosmeticEquipObservedAsync with its entity ID.
             shouldRespawn = state.IsSummoned && !state.EquippedViaCosmeticsMenu;
             slot = state.PetSlot;
+            if (shouldRespawn)
+            {
+                state.PetEntityId = 0;
+            }
         }
 
         if (shouldRespawn)
@@ -224,12 +253,83 @@ public sealed class MaxwellServerMod : IDisposable
             MaxwellStateSync sync;
             lock (state)
             {
+                state.ActiveConnectionId = connectionId;
                 state.PetEntityId = newEntityId;
                 sync = BuildSyncLocked(characterName, state, $"Maxwell followed {characterName} into the area (entity 0x{newEntityId:X}).");
             }
 
             await PushSyncIfRichClientAsync(connectionId, sync, cancellationToken).ConfigureAwait(false);
         }
+        else
+        {
+            MaxwellStateSync sync;
+            lock (state)
+            {
+                sync = BuildSyncLocked(characterName, state, state.LastStatusMessage);
+            }
+
+            await PushSyncIfRichClientAsync(connectionId, sync, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Reconciles authoritative Maxwell state against the live player's worn cosmetics and active pet entities.
+    /// Guarantees cleanup and music stop if Cosmetics (<c>K</c>) no longer wears Maxwell across a zone transition
+    /// or if a Cosmetics pet-slot change removed a <c>/maxwell</c>-summoned entity from <c>player.Pets</c>.
+    /// </summary>
+    public async Task<MaxwellStateSync?> ReconcileCosmeticAndPetStateAsync(
+        string connectionId,
+        string characterName,
+        bool isCosmeticEquipped,
+        IReadOnlyCollection<uint>? livePetEntityIds = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(characterName);
+
+        _connectionCharacters[connectionId] = characterName;
+        if (!_states.TryGetValue(characterName, out var state))
+            return null;
+
+        uint entityToRemove = 0;
+        string? dismissMessage = null;
+        lock (state)
+        {
+            bool staleCosmeticState = state.EquippedViaCosmeticsMenu && !isCosmeticEquipped;
+            bool commandPetRemovedByCosmetics =
+                state.IsSummoned &&
+                !state.EquippedViaCosmeticsMenu &&
+                state.PetEntityId != 0 &&
+                string.Equals(state.ActiveConnectionId, connectionId, StringComparison.Ordinal) &&
+                livePetEntityIds is not null &&
+                !livePetEntityIds.Contains(state.PetEntityId);
+
+            if (!staleCosmeticState && !commandPetRemovedByCosmetics)
+                return null;
+
+            entityToRemove = state.PetEntityId;
+            state.IsSummoned = false;
+            state.EquippedViaCosmeticsMenu = false;
+            state.PetEntityId = 0;
+            state.MusicPlaying = false;
+            dismissMessage = staleCosmeticState
+                ? "Unequipped Maxwell the Cat from Cosmetics. Stock Market music stopped."
+                : "Maxwell the Cat was dismissed after Cosmetics pet slots changed. Stock Market music stopped.";
+        }
+
+        if (entityToRemove != 0)
+        {
+            await _backend.DespawnPetEntityAsync(connectionId, entityToRemove, cancellationToken).ConfigureAwait(false);
+        }
+
+        MaxwellStateSync sync;
+        lock (state)
+        {
+            sync = BuildSyncLocked(characterName, state, dismissMessage);
+        }
+
+        await PushSyncIfRichClientAsync(connectionId, sync, cancellationToken).ConfigureAwait(false);
+        return sync;
     }
 
     /// <summary>
@@ -246,9 +346,11 @@ public sealed class MaxwellServerMod : IDisposable
         _connectionCharacters[evt.ConnectionId] = evt.CharacterName;
 
         var state = _states.GetOrAdd(evt.CharacterName, _ => new CharacterMaxwellState());
+        uint leftoverEntityToDespawn = 0;
         MaxwellStateSync sync;
         lock (state)
         {
+            state.ActiveConnectionId = evt.ConnectionId;
             if (evt.IsEquipped)
             {
                 state.IsSummoned = true;
@@ -261,6 +363,7 @@ public sealed class MaxwellServerMod : IDisposable
             }
             else
             {
+                leftoverEntityToDespawn = state.PetEntityId;
                 state.IsSummoned = false;
                 state.EquippedViaCosmeticsMenu = false;
                 state.PetEntityId = 0;
@@ -268,6 +371,11 @@ public sealed class MaxwellServerMod : IDisposable
                 sync = BuildSyncLocked(evt.CharacterName, state,
                     "Unequipped Maxwell the Cat from Cosmetics. Stock Market music stopped.");
             }
+        }
+
+        if (!evt.IsEquipped && leftoverEntityToDespawn != 0)
+        {
+            await _backend.DespawnPetEntityAsync(evt.ConnectionId, leftoverEntityToDespawn, cancellationToken).ConfigureAwait(false);
         }
 
         await PushSyncIfRichClientAsync(evt.ConnectionId, sync, cancellationToken).ConfigureAwait(false);
@@ -461,6 +569,7 @@ public sealed class MaxwellServerMod : IDisposable
         MaxwellStateSync sync;
         lock (state)
         {
+            state.ActiveConnectionId = connectionId;
             state.IsSummoned = true;
             state.EquippedViaCosmeticsMenu = false;
             state.PetEntityId = entityId;
@@ -586,6 +695,30 @@ public sealed class MaxwellServerMod : IDisposable
         }
     }
 
+    private void OnClientReady(IClientSession session)
+    {
+        if (!session.HasNativeHost || !session.HasClientMod(MaxwellProtocol.ModId))
+            return;
+
+        if (!_connectionCharacters.TryGetValue(session.ConnectionId, out string? characterName) ||
+            string.IsNullOrWhiteSpace(characterName))
+        {
+            return;
+        }
+
+        var state = _states.GetOrAdd(characterName, _ => new CharacterMaxwellState());
+        MaxwellStateSync sync;
+        lock (state)
+        {
+            string status = string.IsNullOrWhiteSpace(state.LastStatusMessage)
+                ? $"Maxwell the Cat Pet MTX ready for {characterName}."
+                : state.LastStatusMessage;
+            sync = BuildSyncLocked(characterName, state, status);
+        }
+
+        session.SendAsync(MaxwellProtocol.ChannelName, sync).GetAwaiter().GetResult();
+    }
+
     private void OnCosmeticEquipObserved(PetMtxEquipChangedEvent evt)
     {
         if (evt.Pet.MtxTypeHash != MaxwellPetDefinition.MtxTypeHash)
@@ -603,8 +736,10 @@ public sealed class MaxwellServerMod : IDisposable
         }
     }
 
-    private static MaxwellStateSync BuildSyncLocked(string characterName, CharacterMaxwellState state, string status) =>
-        new(
+    private static MaxwellStateSync BuildSyncLocked(string characterName, CharacterMaxwellState state, string status)
+    {
+        state.LastStatusMessage = status;
+        return new(
             CharacterName: characterName,
             IsSummoned: state.IsSummoned,
             PetEntityId: state.PetEntityId,
@@ -616,6 +751,7 @@ public sealed class MaxwellServerMod : IDisposable
             MusicVolume: state.MusicVolume,
             DanceCount: state.DanceCount,
             StatusMessage: status);
+    }
 
     private static string BuildChatFallbackSummary(MaxwellStateSync state) =>
         $"[Maxwell Pet — Chat Fallback] Summoned: {(state.IsSummoned ? $"Yes (0x{state.PetEntityId:X}, Slot {(state.PetSlot == CustomPetMtxDefinition.PetSlot1 ? 1 : 2)})" : "No")} | " +
@@ -625,6 +761,7 @@ public sealed class MaxwellServerMod : IDisposable
 
     private sealed class CharacterMaxwellState
     {
+        public string? ActiveConnectionId { get; set; }
         public bool IsSummoned { get; set; }
         public bool EquippedViaCosmeticsMenu { get; set; }
         public uint PetEntityId { get; set; }
@@ -635,5 +772,6 @@ public sealed class MaxwellServerMod : IDisposable
         public bool MusicMuted { get; set; }
         public float MusicVolume { get; set; } = MaxwellProtocol.DefaultMusicVolume;
         public int DanceCount { get; set; }
+        public string LastStatusMessage { get; set; } = "Maxwell the Cat Pet MTX ready.";
     }
 }
