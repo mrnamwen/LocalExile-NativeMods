@@ -549,10 +549,14 @@ public sealed class AudioService(INativeBridge bridge) : IAudioService
     }
 
     /// <inheritdoc/>
-    public int PlaySoundFile(string virtualOggPath, float volume = 1.0f)
+    public int PlaySoundFile(string virtualOggPath, float volume = 1.0f) =>
+        PlaySoundFile(virtualOggPath, volume, loop: false);
+
+    /// <inheritdoc/>
+    public int PlaySoundFile(string virtualOggPath, float volume, bool loop)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(virtualOggPath);
-        int handle = bridge.PlayAudio(virtualOggPath, isFmodEvent: false, Math.Clamp(volume, 0f, 1f));
+        int handle = bridge.PlayAudio(virtualOggPath, isFmodEvent: false, Math.Clamp(volume, 0f, 1f), loop);
         lock (_gate)
         {
             _activeChannels.Add(handle);
@@ -560,6 +564,14 @@ public sealed class AudioService(INativeBridge bridge) : IAudioService
 
         return handle;
     }
+
+    /// <inheritdoc/>
+    public void SetChannelVolume(int channelHandle, float volume) =>
+        bridge.SetAudioVolume(channelHandle, Math.Clamp(volume, 0f, 1f));
+
+    /// <inheritdoc/>
+    public bool IsChannelPlaying(int channelHandle) =>
+        bridge.IsAudioPlaying(channelHandle);
 
     /// <inheritdoc/>
     public void StopChannel(int channelHandle)

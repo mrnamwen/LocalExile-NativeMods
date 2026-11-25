@@ -20,6 +20,21 @@ public interface IAudioService
     /// <returns>An opaque channel handle.</returns>
     int PlaySoundFile(string virtualOggPath, float volume = 1.0f);
 
+    /// <summary>
+    /// Plays an <c>.ogg</c> audio file resolved through the client's file overlay or disk with optional infinite looping.
+    /// </summary>
+    /// <param name="virtualOggPath">Virtual path to the <c>.ogg</c> file (e.g. <c>Audio/Mods/Maxwell/stock_market.ogg</c>).</param>
+    /// <param name="volume">Linear volume multiplier (0.0 to 1.0).</param>
+    /// <param name="loop"><c>true</c> to loop continuously until stopped via <see cref="StopChannel"/>.</param>
+    /// <returns>An opaque channel handle.</returns>
+    int PlaySoundFile(string virtualOggPath, float volume, bool loop) => PlaySoundFile(virtualOggPath, volume);
+
+    /// <summary>Updates the linear volume (0.0 to 1.0) of an active audio channel.</summary>
+    void SetChannelVolume(int channelHandle, float volume) { }
+
+    /// <summary>Returns <c>true</c> while the specified audio channel is actively playing.</summary>
+    bool IsChannelPlaying(int channelHandle) => false;
+
     /// <summary>Stops an active audio channel by handle.</summary>
     void StopChannel(int channelHandle);
 }

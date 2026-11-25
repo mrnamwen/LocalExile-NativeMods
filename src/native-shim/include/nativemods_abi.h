@@ -202,6 +202,9 @@ typedef nm_status_t (NM_CALL *nm_packet_tx_override_t)(
     const uint8_t* payload,
     uint32_t       length,
     void*          user_data);
+typedef void        (NM_CALL *nm_ui_event_callback_t)(
+    void* control,
+    void* user_data);
 
 /*
  * Versioned function-pointer table passed to the managed host entry point:
@@ -211,13 +214,13 @@ typedef struct nm_abi_table_t {
     uint32_t struct_size;
     uint32_t abi_version;
 
-    /* Host info & address library */
+    /* Host info & address library (4) */
     nm_status_t (NM_CALL *get_host_info)(nm_host_info_t* out_info);
     nm_status_t (NM_CALL *lookup_symbol)(const char* name, nm_symbol_info_t* out_symbol);
     nm_status_t (NM_CALL *get_symbol_at)(uint32_t index, nm_symbol_info_t* out_symbol);
     nm_status_t (NM_CALL *verify_bytes)(uint64_t address, const char* expected_bytes_hex);
 
-    /* Hook engine (byte-verified inline detour & vtable swap) */
+    /* Hook engine (byte-verified inline detour & vtable swap) (4) */
     nm_status_t (NM_CALL *install_inline_hook)(
         const char*       symbol_name,
         void*             detour_fn,
@@ -237,7 +240,7 @@ typedef struct nm_abi_table_t {
         nm_hook_handle_t* out_handle);
     nm_status_t (NM_CALL *remove_hook)(nm_hook_handle_t handle);
 
-    /* Main-thread frame queue */
+    /* Main-thread frame queue (4) */
     nm_status_t (NM_CALL *register_frame_callback)(
         nm_frame_callback_t cb,
         void*               user_data,
@@ -246,14 +249,14 @@ typedef struct nm_abi_table_t {
     nm_status_t (NM_CALL *enqueue_main_thread)(nm_work_callback_t cb, void* user_data);
     nm_status_t (NM_CALL *drain_main_thread_queue)(float delta_seconds, uint32_t max_items);
 
-    /* SEH / C++ exception wall */
+    /* SEH / C++ exception wall (1) */
     nm_status_t (NM_CALL *call_guarded)(
         nm_guarded_fn_t      fn,
         void*                context,
         int64_t*             out_result,
         nm_exception_info_t* out_exception);
 
-    /* Win64 game allocator ABI wrapper */
+    /* Win64 game allocator ABI wrapper (2) */
     nm_status_t (NM_CALL *game_alloc)(
         size_t   size,
         size_t   alignment,
@@ -261,7 +264,7 @@ typedef struct nm_abi_table_t {
         void**   out_ptr);
     nm_status_t (NM_CALL *game_free)(void* ptr, size_t alignment);
 
-    /* File overlay hook registration */
+    /* File overlay hook registration (3) */
     nm_status_t (NM_CALL *register_file_overlay)(
         nm_file_overlay_callback_t cb,
         nm_file_overlay_free_t     free_cb,
@@ -273,7 +276,7 @@ typedef struct nm_abi_table_t {
         uint8_t**   out_data,
         size_t*     out_size);
 
-    /* Host-ruleset (0x2c9/0x2ca) & chat fallback (0x17/0x15) channels */
+    /* Host-ruleset (0x2c9/0x2ca) & chat fallback (0x17/0x15) channels (6) */
     nm_status_t (NM_CALL *register_ruleset_handler)(
         uint32_t                 ruleset_id,
         nm_ruleset_rx_callback_t cb,
@@ -290,6 +293,42 @@ typedef struct nm_abi_table_t {
         uint64_t*             out_token);
     nm_status_t (NM_CALL *unregister_chat_channel_handler)(uint64_t token);
     nm_status_t (NM_CALL *send_chat_line)(const char* text_utf8);
+
+    /* Native disk file overlay directories & buffer release (4) */
+    nm_status_t (NM_CALL *register_file_overlay_dir)(
+        const char* root_dir_utf8,
+        uint64_t*   out_token);
+    nm_status_t (NM_CALL *unregister_file_overlay_dir)(uint64_t token);
+    nm_status_t (NM_CALL *has_file_overlay)(
+        const char* virtual_path_utf8,
+        size_t*     out_size);
+    nm_status_t (NM_CALL *free_file_overlay_buffer)(uint8_t* data);
+
+    /* Live FMOD 2.03 (.ogg) & engine audio playback (5) */
+    nm_status_t (NM_CALL *audio_play_ogg)(
+        const char* virtual_or_disk_path_utf8,
+        float       volume,
+        int32_t     loop,
+        int32_t*    out_handle);
+    nm_status_t (NM_CALL *audio_play_event)(
+        const char* fmod_event_utf8,
+        float       volume,
+        int32_t*    out_handle);
+    nm_status_t (NM_CALL *audio_stop)(int32_t channel_handle);
+    nm_status_t (NM_CALL *audio_set_volume)(int32_t channel_handle, float volume);
+    nm_status_t (NM_CALL *audio_is_playing)(int32_t channel_handle, int32_t* out_playing);
+
+    /* Live native UI bridge (6) */
+    nm_status_t (NM_CALL *ui_get_root)(void** out_root);
+    nm_status_t (NM_CALL *ui_create_window)(const char* virtual_path_utf8, void** out_control);
+    nm_status_t (NM_CALL *ui_find_child)(void* parent_control, const char* dot_path_utf8, void** out_child);
+    nm_status_t (NM_CALL *ui_set_visible)(void* control, int32_t visible);
+    nm_status_t (NM_CALL *ui_set_text)(void* control, const char* text_utf8, int32_t is_button);
+    nm_status_t (NM_CALL *ui_subscribe_click)(
+        void*                  button_control,
+        nm_ui_event_callback_t cb,
+        void*                  user_data,
+        uint64_t*              out_token);
 } nm_abi_table_t;
 
 /* Exported C ABI functions. */
@@ -349,6 +388,38 @@ NM_API nm_status_t NM_CALL nm_resolve_file_overlay(
     const char* virtual_path_utf8,
     uint8_t**   out_data,
     size_t*     out_size);
+NM_API nm_status_t NM_CALL nm_register_file_overlay_dir(
+    const char* root_dir_utf8,
+    uint64_t*   out_token);
+NM_API nm_status_t NM_CALL nm_unregister_file_overlay_dir(uint64_t token);
+NM_API nm_status_t NM_CALL nm_has_file_overlay(
+    const char* virtual_path_utf8,
+    size_t*     out_size);
+NM_API nm_status_t NM_CALL nm_free_file_overlay_buffer(uint8_t* data);
+
+NM_API nm_status_t NM_CALL nm_audio_play_ogg(
+    const char* virtual_or_disk_path_utf8,
+    float       volume,
+    int32_t     loop,
+    int32_t*    out_handle);
+NM_API nm_status_t NM_CALL nm_audio_play_event(
+    const char* fmod_event_utf8,
+    float       volume,
+    int32_t*    out_handle);
+NM_API nm_status_t NM_CALL nm_audio_stop(int32_t channel_handle);
+NM_API nm_status_t NM_CALL nm_audio_set_volume(int32_t channel_handle, float volume);
+NM_API nm_status_t NM_CALL nm_audio_is_playing(int32_t channel_handle, int32_t* out_playing);
+
+NM_API nm_status_t NM_CALL nm_ui_get_root(void** out_root);
+NM_API nm_status_t NM_CALL nm_ui_create_window(const char* virtual_path_utf8, void** out_control);
+NM_API nm_status_t NM_CALL nm_ui_find_child(void* parent_control, const char* dot_path_utf8, void** out_child);
+NM_API nm_status_t NM_CALL nm_ui_set_visible(void* control, int32_t visible);
+NM_API nm_status_t NM_CALL nm_ui_set_text(void* control, const char* text_utf8, int32_t is_button);
+NM_API nm_status_t NM_CALL nm_ui_subscribe_click(
+    void*                  button_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token);
 
 NM_API nm_status_t NM_CALL nm_register_ruleset_handler(
     uint32_t                 ruleset_id,

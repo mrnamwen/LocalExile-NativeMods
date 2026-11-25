@@ -127,7 +127,7 @@ public sealed class ClientHostRuntime : IDisposable
         Scheduler = new GameThreadScheduler(_bridge);
         FileOverlayService = new FileOverlayService(_bridge);
         UiControls = new UiControlRegistry();
-        Ui = new UiService(FileOverlayService, UiControls);
+        Ui = new UiService(FileOverlayService, UiControls, _bridge);
         GealBuiltins = new GealBuiltinRegistry();
         Scripts = new ScriptService(_bridge, GealBuiltins);
         Audio = new AudioService(_bridge);
@@ -146,6 +146,27 @@ public sealed class ClientHostRuntime : IDisposable
         _systemChannel = Router.CreateChannel(MessageCodec.SystemChannel);
         _systemSubs.Add(_systemChannel.On<ServerHandshake>(HandleServerHandshake));
         _systemSubs.Add(_systemChannel.On<ServerUiCommand>(HandleServerUiCommand));
+
+        // Passive S->C ##NM chat fallback listener when HostRuleset is primary so servers
+        // sending either 0x2c9 ruleset packets OR ##NM chat lines reach client mods seamlessly.
+        if (_options.TransportKind == NetTransportKind.HostRuleset)
+        {
+            _systemSubs.Add(_bridge.RegisterChatInterceptor((_, text) =>
+            {
+                if (Router.TransportInfo.Kind == NetTransportKind.ChatFallback)
+                {
+                    return false;
+                }
+
+                if (!MessageCodec.TryDecodeServerChatEnvelope(text, out ModEnvelope? env) || env is null)
+                {
+                    return false;
+                }
+
+                Router.DispatchEnvelope(env);
+                return true;
+            }));
+        }
 
         _frameSub = _bridge.RegisterFrameCallback(OnFrame);
     }
