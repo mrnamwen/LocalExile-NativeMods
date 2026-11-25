@@ -71,6 +71,7 @@ begin Frame
 		begin Frame
 			id = stored_mod_box;
 			size = $inner, 66;
+			float = centre;
 			margin = 0, 0, 0, 10;
 			pixel_border_colour = rgb( 110, 190, 235 );
 			visible = false;
@@ -258,6 +259,7 @@ begin Frame
 			id = status_label;
 			width = $inner;
 			auto_size = true;
+			float = centre;
 			font = Fonts.Normal;
 			foreground_colour = Colours.White;
 			text = "Select a modifier row, then click Confirm.";
@@ -279,6 +281,7 @@ begin Frame
 		begin Frame
 			id = action_row;
 			size = $inner, Sizes[ "Button" ].Size.Height;
+			float = centre;
 			propagate_properties = false;
 
 			begin Button
