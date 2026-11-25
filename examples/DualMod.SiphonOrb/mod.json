@@ -1,0 +1,99 @@
+{
+  "id": "siphon",
+  "name": "Orb of Siphoning",
+  "description": "Adds Orb of Siphoning and Charged Orb of Siphoning custom currencies with a native Recombinator-style modifier picker UI to steal an explicit modifier from one Magic/Rare item and imbue it onto another.",
+  "author": "LocalExile Community",
+  "version": "1.0.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "siphon.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": false,
+    "sdkVersionRange": ">=0.1.0-poc <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "assembly": "siphon.Client.dll",
+    "payloadDir": "client",
+    "overlays": [
+      "Metadata/UI/Mods/Siphon/SiphonPicker.ui",
+      "Metadata/Items/Currency/Mods/Siphon/SiphonOrbEmpty.it",
+      "Metadata/Items/Currency/Mods/Siphon/SiphonOrbCharged.it"
+    ],
+    "replaces": [
+      "Data/BaseItemTypes.datc64",
+      "Data/ItemVisualIdentity.datc64",
+      "Data/CurrencyItems.datc64"
+    ],
+    "rawAccess": false,
+    "customOpcodes": [
+      {
+        "id": 1201,
+        "name": "SiphonOpenPicker",
+        "direction": "ServerToClient"
+      },
+      {
+        "id": 1202,
+        "name": "SiphonSelectAffix",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1203,
+        "name": "SiphonCancelPicker",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1204,
+        "name": "SiphonResultNotify",
+        "direction": "ServerToClient"
+      }
+    ],
+    "gealBuiltins": [],
+    "customControls": [],
+    "contentRegistries": [
+      {
+        "table": "BaseItemTypes",
+        "entryId": "Metadata/Items/Currency/Mods/Siphon/SiphonOrbEmpty",
+        "mode": "append"
+      },
+      {
+        "table": "BaseItemTypes",
+        "entryId": "Metadata/Items/Currency/Mods/Siphon/SiphonOrbCharged",
+        "mode": "append"
+      },
+      {
+        "table": "ItemVisualIdentity",
+        "entryId": "SiphonOrbEmpty",
+        "mode": "append"
+      },
+      {
+        "table": "ItemVisualIdentity",
+        "entryId": "SiphonOrbCharged",
+        "mode": "append"
+      },
+      {
+        "table": "CurrencyItems",
+        "entryId": "Metadata/Items/Currency/Mods/Siphon/SiphonOrbEmpty",
+        "mode": "append"
+      },
+      {
+        "table": "CurrencyItems",
+        "entryId": "Metadata/Items/Currency/Mods/Siphon/SiphonOrbCharged",
+        "mode": "append"
+      }
+    ],
+    "serverHalf": {
+      "id": "siphon",
+      "minVersion": "1.0.0",
+      "supportsGracefulFallback": true,
+      "channelName": "siphon"
+    }
+  }
+}

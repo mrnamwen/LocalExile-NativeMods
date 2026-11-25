@@ -1,0 +1,299 @@
+// Orb of Siphoning — Native 3.29.3d Recombinator-style modifier picker layout.
+// Verified 3.29.3d UI rules:
+// - Leading comment before <DEFINITIONS>
+// - 100% stock registered 3.29.3d control types (Frame, StackLayout, Label, Picture, Button)
+// - Every ancestor Frame/StackLayout carries an explicit unique id (case-sensitive FindChild)
+// - Mixed-case modifier text rendered via Label (Fonts.Normal, MiddleLeft); Button stays action-only
+// - Spacer Frame after Picture inside StackLayout (never puts margin on Picture inside StackLayout)
+// - Hiding affix_row_N collapses the row in StackLayout and blocks clicks on child affix_btn_N
+
+<DEFINITIONS>
+
+const $w = 1120;
+const $pad = 28;
+const $inner = 1064;
+
+begin Frame
+	id = siphon_picker_window;
+	aspect_mode = scaley;
+	size = $w, 720;
+	float = centre;
+	y = 180;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	border = normal,
+		"Art/2DArt/UIImages/Common/OrnateTopLeft", "Art/2DArt/UIImages/Common/OrnateTop", "Art/2DArt/UIImages/Common/OrnateTopRight",
+		"Art/2DArt/UIImages/Common/OrnateLeft", "Art/2DArt/UIImages/Common/OrnateRight",
+		"Art/2DArt/UIImages/Common/OrnateBottomLeft", "Art/2DArt/UIImages/Common/OrnateBottom", "Art/2DArt/UIImages/Common/OrnateBottomRight";
+	border_position = outside;
+	background = "Art/2DArt/UIImages/Common/Background1", tile;
+
+	begin StackLayout
+		id = body;
+		auto_size = true, true;
+		margin = $pad, 20, $pad, 20;
+		float = centre;
+
+		begin Label
+			id = title_label;
+			font = Fonts.LargeSC;
+			foreground_colour = rgb( 212, 180, 120 );
+			float = centre;
+			text = "Orb of Siphoning — Select Modifier";
+			margin = 0, 0, 0, 4;
+		end
+
+		begin Label
+			id = subtitle_label;
+			width = $inner;
+			auto_size = true;
+			font = Fonts.Normal;
+			foreground_colour = rgb( 225, 225, 205 );
+			float = centre;
+			text = "Choose an explicit modifier on the target item.";
+			margin = 0, 0, 0, 8;
+		end
+
+		begin Picture
+			id = header_divider;
+			float = centre;
+			source = "Art/2DArt/UIImages/InGame/Divider";
+			size = $w - 220, 8;
+		end
+
+		begin Frame
+			id = header_spacer;
+			size = 10, 10;
+		end
+
+		begin Frame
+			id = stored_mod_box;
+			size = $inner, 66;
+			margin = 0, 0, 0, 10;
+			pixel_border_colour = rgb( 110, 190, 235 );
+			visible = false;
+
+			begin Label
+				id = stored_mod_title;
+				location = 14, 6;
+				size = $inner - 28, 22;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.NormalSC;
+				foreground_colour = rgb( 212, 180, 120 );
+				text = "Stored Siphoned Modifier";
+			end
+
+			begin Label
+				id = stored_mod_label;
+				location = 14, 30;
+				size = $inner - 28, 30;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.Normal;
+				foreground_colour = rgb( 150, 220, 255 );
+				text = "(None)";
+			end
+		end
+
+		begin StackLayout
+			id = affix_list;
+			auto_size = true, true;
+			float = centre;
+
+			begin Frame
+				id = affix_row_0;
+				size = $inner, 54;
+				margin = 0, 0, 0, 8;
+				pixel_border_colour = Colours.BorderColour;
+
+				begin Button
+					id = affix_btn_0;
+					location = 10, 5;
+					size = 170, 44;
+					text = "Select";
+				end
+
+				begin Label
+					id = affix_label_0;
+					location = 196, 0;
+					size = $inner - 210, 54;
+					auto_size = false;
+					text_align = MiddleLeft;
+					font = Fonts.Normal;
+					foreground_colour = rgb( 136, 136, 255 );
+					text = "[Prefix] Modifier 1";
+				end
+			end
+
+			begin Frame
+				id = affix_row_1;
+				size = $inner, 54;
+				margin = 0, 0, 0, 8;
+				pixel_border_colour = Colours.BorderColour;
+
+				begin Button
+					id = affix_btn_1;
+					location = 10, 5;
+					size = 170, 44;
+					text = "Select";
+				end
+
+				begin Label
+					id = affix_label_1;
+					location = 196, 0;
+					size = $inner - 210, 54;
+					auto_size = false;
+					text_align = MiddleLeft;
+					font = Fonts.Normal;
+					foreground_colour = rgb( 136, 136, 255 );
+					text = "[Prefix] Modifier 2";
+				end
+			end
+
+			begin Frame
+				id = affix_row_2;
+				size = $inner, 54;
+				margin = 0, 0, 0, 8;
+				pixel_border_colour = Colours.BorderColour;
+
+				begin Button
+					id = affix_btn_2;
+					location = 10, 5;
+					size = 170, 44;
+					text = "Select";
+				end
+
+				begin Label
+					id = affix_label_2;
+					location = 196, 0;
+					size = $inner - 210, 54;
+					auto_size = false;
+					text_align = MiddleLeft;
+					font = Fonts.Normal;
+					foreground_colour = rgb( 136, 136, 255 );
+					text = "[Prefix] Modifier 3";
+				end
+			end
+
+			begin Frame
+				id = affix_row_3;
+				size = $inner, 54;
+				margin = 0, 0, 0, 8;
+				pixel_border_colour = Colours.BorderColour;
+
+				begin Button
+					id = affix_btn_3;
+					location = 10, 5;
+					size = 170, 44;
+					text = "Select";
+				end
+
+				begin Label
+					id = affix_label_3;
+					location = 196, 0;
+					size = $inner - 210, 54;
+					auto_size = false;
+					text_align = MiddleLeft;
+					font = Fonts.Normal;
+					foreground_colour = rgb( 136, 136, 255 );
+					text = "[Suffix] Modifier 4";
+				end
+			end
+
+			begin Frame
+				id = affix_row_4;
+				size = $inner, 54;
+				margin = 0, 0, 0, 8;
+				pixel_border_colour = Colours.BorderColour;
+
+				begin Button
+					id = affix_btn_4;
+					location = 10, 5;
+					size = 170, 44;
+					text = "Select";
+				end
+
+				begin Label
+					id = affix_label_4;
+					location = 196, 0;
+					size = $inner - 210, 54;
+					auto_size = false;
+					text_align = MiddleLeft;
+					font = Fonts.Normal;
+					foreground_colour = rgb( 136, 136, 255 );
+					text = "[Suffix] Modifier 5";
+				end
+			end
+
+			begin Frame
+				id = affix_row_5;
+				size = $inner, 54;
+				margin = 0, 0, 0, 8;
+				pixel_border_colour = Colours.BorderColour;
+
+				begin Button
+					id = affix_btn_5;
+					location = 10, 5;
+					size = 170, 44;
+					text = "Select";
+				end
+
+				begin Label
+					id = affix_label_5;
+					location = 196, 0;
+					size = $inner - 210, 54;
+					auto_size = false;
+					text_align = MiddleLeft;
+					font = Fonts.Normal;
+					foreground_colour = rgb( 136, 136, 255 );
+					text = "[Suffix] Modifier 6";
+				end
+			end
+		end
+
+		begin Label
+			id = status_label;
+			width = $inner;
+			auto_size = true;
+			font = Fonts.Normal;
+			foreground_colour = Colours.White;
+			text = "Select a modifier row, then click Confirm.";
+			margin = 0, 4, 0, 10;
+		end
+
+		begin Picture
+			id = footer_divider;
+			float = centre;
+			source = "Art/2DArt/UIImages/InGame/Divider";
+			size = $w - 220, 8;
+		end
+
+		begin Frame
+			id = footer_spacer;
+			size = 10, 12;
+		end
+
+		begin Frame
+			id = action_row;
+			size = $inner, Sizes[ "Button" ].Size.Height;
+			propagate_properties = false;
+
+			begin Button
+				id = confirm_button;
+				size = Sizes[ "Button" ].Size.Width, Sizes[ "Button" ].Size.Height;
+				float = inside left, 0;
+				text = "Confirm Siphon";
+			end
+
+			begin Button
+				id = cancel_button;
+				size = Sizes[ "Button" ].Size.Width, Sizes[ "Button" ].Size.Height;
+				float = inside right, 0;
+				text = "Cancel";
+			end
+		end
+	end
+end
