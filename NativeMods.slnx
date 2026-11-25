@@ -6,6 +6,11 @@
     <Project Path="src/LocalExile.Client.Patcher/LocalExile.Client.Patcher.csproj" />
     <Project Path="src/LocalExile.Client.Waypoint/LocalExile.Client.Waypoint.csproj" />
   </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/DualMod.HarvestGarden/Shared/DualMod.HarvestGarden.Shared.csproj" />
+    <Project Path="examples/DualMod.HarvestGarden/Server/DualMod.HarvestGarden.Server.csproj" />
+    <Project Path="examples/DualMod.HarvestGarden/Client/DualMod.HarvestGarden.Client.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LocalExile.Client.Tests/LocalExile.Client.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.Patcher.Tests/LocalExile.Client.Patcher.Tests.csproj" />

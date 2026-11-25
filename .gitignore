@@ -1,3 +1,19 @@
+# Existing spike artifacts
 *.so
 *.log
 overlay/
+
+# .NET build & test outputs
+bin/
+obj/
+TestResults/
+.vs/
+*.user
+
+# CMake / native build outputs
+build/
+*.dll
+*.pdb
+*.exe
+*.dylib
+*.a
