@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.MaxwellPet.Shared</RootNamespace>
+    <AssemblyName>DualMod.MaxwellPet.Shared</AssemblyName>
+  </PropertyGroup>
+</Project>

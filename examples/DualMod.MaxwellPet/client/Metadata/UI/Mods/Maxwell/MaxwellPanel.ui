@@ -1,0 +1,235 @@
+// Maxwell the Cat Pet MTX — Native 3.29.3d control panel layout.
+// Follows verified 3.29.3d UI rules:
+// - Leading comment before <DEFINITIONS> (avoids parser syntax error at byte 0)
+// - 100% stock registered 3.29.3d control types (safe for native ui.control_load in live Proton)
+// - Unique sibling IDs under every parent container
+// - Spacer Frame after Picture inside StackLayout (never puts margin on Picture inside StackLayout)
+
+<DEFINITIONS>
+
+const $w = 1040;
+const $pad = 30;
+
+begin Frame
+	id = maxwell_pet_window;
+	aspect_mode = scaley;
+	size = $w, 600;
+	float = centre;
+	y = 240;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	border = normal,
+		"Art/2DArt/UIImages/Common/OrnateTopLeft", "Art/2DArt/UIImages/Common/OrnateTop", "Art/2DArt/UIImages/Common/OrnateTopRight",
+		"Art/2DArt/UIImages/Common/OrnateLeft", "Art/2DArt/UIImages/Common/OrnateRight",
+		"Art/2DArt/UIImages/Common/OrnateBottomLeft", "Art/2DArt/UIImages/Common/OrnateBottom", "Art/2DArt/UIImages/Common/OrnateBottomRight";
+	border_position = outside;
+	background = "Art/2DArt/UIImages/Common/Background1", tile;
+
+	begin StackLayout
+		id = body;
+		auto_size = true, true;
+		margin = $pad, 20, $pad, 20;
+		float = centre;
+
+		begin Label
+			id = title_label;
+			font = Fonts.NormalSC;
+			foreground_colour = rgb( 255, 224, 130 );
+			float = centre;
+			text = "Maxwell the Cat — Pet MTX Controller";
+			margin = 0, 0, 0, 6;
+		end
+
+		begin Picture
+			id = header_divider;
+			float = centre;
+			source = "Art/2DArt/UIImages/InGame/Divider";
+			size = $w - 200, 8;
+		end
+
+		begin Frame
+			id = divider_spacer;
+			size = 10, 12;
+		end
+
+		begin Label
+			id = status_label;
+			width = $w - 2 * $pad;
+			auto_size = true;
+			foreground_colour = Colours.White;
+			font = Fonts.Normal;
+			text = "Maxwell is resting. Click Summon Maxwell or run /maxwell summon.";
+			margin = 0, 0, 0, 8;
+		end
+
+		begin Label
+			id = telemetry_label;
+			width = $w - 2 * $pad;
+			auto_size = true;
+			foreground_colour = rgb( 140, 220, 255 );
+			font = Fonts.NormalSC;
+			text = "Yaw: 0.0 deg | Spin: 90 deg/s | Float: 14.0 | Music: Stopped";
+			margin = 0, 0, 0, 16;
+		end
+
+		begin Frame
+			id = spin_row;
+			size = $w - 2 * $pad, 56;
+			margin = 0, 0, 0, 12;
+			pixel_border_colour = Colours.BorderColour;
+
+			begin Label
+				id = spin_label;
+				location = 14, 0;
+				size = 280, 56;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.NormalSC;
+				foreground_colour = Colours.LabelTextColour;
+				text = "Spin Speed (deg/s)";
+			end
+
+			begin Button
+				id = spin_slower_button;
+				location = 310, 6;
+				size = 110, 44;
+				text = "-30";
+			end
+
+			begin TextBox
+				id = spin_box;
+				location = 434, 4;
+				size = 220, 48;
+				font = Fonts[ "TextBox" ].Normal;
+				caret_colour = Colours.White;
+				pixel_border_colour = argb( 0, 0, 0, 0 );
+				text = "90";
+			end
+
+			begin Button
+				id = spin_faster_button;
+				location = 670, 6;
+				size = 110, 44;
+				text = "+30";
+			end
+		end
+
+		begin Frame
+			id = float_row;
+			size = $w - 2 * $pad, 56;
+			margin = 0, 0, 0, 12;
+			pixel_border_colour = Colours.BorderColour;
+
+			begin Label
+				id = float_label;
+				location = 14, 0;
+				size = 280, 56;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.NormalSC;
+				foreground_colour = Colours.LabelTextColour;
+				text = "Float Height";
+			end
+
+			begin Button
+				id = float_lower_button;
+				location = 310, 6;
+				size = 110, 44;
+				text = "-5";
+			end
+
+			begin TextBox
+				id = float_box;
+				location = 434, 4;
+				size = 220, 48;
+				font = Fonts[ "TextBox" ].Normal;
+				caret_colour = Colours.White;
+				pixel_border_colour = argb( 0, 0, 0, 0 );
+				text = "14";
+			end
+
+			begin Button
+				id = float_higher_button;
+				location = 670, 6;
+				size = 110, 44;
+				text = "+5";
+			end
+		end
+
+		begin Frame
+			id = audio_row;
+			size = $w - 2 * $pad, 56;
+			margin = 0, 0, 0, 10;
+			pixel_border_colour = Colours.BorderColour;
+
+			begin Button
+				id = music_play_button;
+				location = 14, 6;
+				size = 240, 44;
+				text = "Play Music";
+			end
+
+			begin Button
+				id = vol_down_button;
+				location = 274, 6;
+				size = 110, 44;
+				text = "Vol -";
+			end
+
+			begin Label
+				id = volume_label;
+				location = 400, 0;
+				size = 260, 56;
+				auto_size = false;
+				text_align = MiddleCentre;
+				font = Fonts.NormalSC;
+				foreground_colour = Colours.White;
+				text = "Volume: 75%";
+			end
+
+			begin Button
+				id = vol_up_button;
+				location = 670, 6;
+				size = 110, 44;
+				text = "Vol +";
+			end
+		end
+
+		begin CheckBox
+			id = music_mute_checkbox;
+			font = Fonts.NormalSC;
+			foreground_colour = Colours.LabelTextColour;
+			size = 620, 42;
+			text_side = right;
+			text = "Mute Stock Market Music (looping)";
+			margin = 0, 0, 0, 16;
+		end
+
+		begin Frame
+			id = action_row;
+			size = $w - 2 * $pad, Sizes[ "Button" ].Size.Height;
+			propagate_properties = false;
+
+			begin Button
+				id = summon_button;
+				size = Sizes[ "Button" ].Size.Width, Sizes[ "Button" ].Size.Height;
+				float = inside left, 0;
+				text = "Summon Maxwell";
+			end
+
+			begin Button based on summon_button
+				id = dance_button;
+				float = centre;
+				text = "Maxwell Dance";
+			end
+
+			begin Button based on summon_button
+				id = close_button;
+				float = inside right, 0;
+				text = "Close";
+			end
+		end
+	end
+end

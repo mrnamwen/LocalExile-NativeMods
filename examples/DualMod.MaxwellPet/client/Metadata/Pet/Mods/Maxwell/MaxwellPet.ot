@@ -1,0 +1,23 @@
+version 2
+extends "Metadata/Pet/Pet"
+
+// Brand-new Maxwell the Cat Pet MTX object type.
+// Extends Metadata/Pet/Pet with NO extra serialized components so PetObject.BaseComponents
+// (Positioned, Stats, Pathfinding, Buffs, Life, Animated, Actor, PetAi) matches 0x02bb verbatim.
+
+Animated
+{
+	animated_object = "Metadata/Pet/Mods/Maxwell/MaxwellPet.ao"
+}
+
+client
+{
+	Functions
+	{
+		on_maxwell_dance =
+		{
+			local boost = arg1;
+			MaxwellDance( boost );
+		}
+	}
+}

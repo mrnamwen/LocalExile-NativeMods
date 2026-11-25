@@ -1,0 +1,85 @@
+{
+  "id": "maxwell",
+  "name": "Maxwell the Cat Pet MTX",
+  "description": "Adds Maxwell the Cat as a brand-new spinning, floating Pet MTX (appended MtxTypes/MtxTypeGameSpecific/Pet rows, never replacing stock pets) with a native control panel and looping Stock Market audio.",
+  "author": "LocalExile Community",
+  "version": "1.0.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "maxwell.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": false,
+    "sdkVersionRange": ">=0.1.0-poc <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "assembly": "maxwell.Client.dll",
+    "payloadDir": "client",
+    "overlays": [
+      "Metadata/UI/Mods/Maxwell/MaxwellPanel.ui",
+      "Metadata/Pet/Mods/Maxwell/MaxwellPet.ot"
+    ],
+    "replaces": [
+      "Data/MtxTypes.datc64",
+      "Data/MtxTypeGameSpecific.datc64",
+      "Data/Pet.datc64"
+    ],
+    "rawAccess": false,
+    "customOpcodes": [
+      {
+        "id": 1101,
+        "name": "MaxwellTogglePet",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1102,
+        "name": "MaxwellAudioControl",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1103,
+        "name": "MaxwellStateSync",
+        "direction": "ServerToClient"
+      },
+      {
+        "id": 1104,
+        "name": "MaxwellOpenPanel",
+        "direction": "ServerToClient"
+      }
+    ],
+    "gealBuiltins": [
+      "MaxwellDance"
+    ],
+    "customControls": [],
+    "contentRegistries": [
+      {
+        "table": "MtxTypes",
+        "entryId": "Metadata/Items/Pets/Mods/MaxwellPet",
+        "mode": "append"
+      },
+      {
+        "table": "MtxTypeGameSpecific",
+        "entryId": "Metadata/Items/Pets/Mods/MaxwellPet",
+        "mode": "append"
+      },
+      {
+        "table": "Pet",
+        "entryId": "Metadata/Pet/Mods/Maxwell/MaxwellPet",
+        "mode": "append"
+      }
+    ],
+    "serverHalf": {
+      "id": "maxwell",
+      "minVersion": "1.0.0",
+      "supportsGracefulFallback": true,
+      "channelName": "maxwell"
+    }
+  }
+}
