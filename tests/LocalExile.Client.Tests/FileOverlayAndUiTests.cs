@@ -396,4 +396,112 @@ public sealed class FileOverlayAndUiTests
         Assert.False(bridge.SimulateNativeUiClick(nativeConfirm.Handle));
         Assert.Equal(1, postReloadConfirmClicks);
     }
+
+    [Fact]
+    public void UiService_BasicButton_BindsNativeClicksWithoutCallingSetNativeUiText()
+    {
+        const string recombCardUi = """
+            // Recombinator item-card BasicButton hit-test & captionless verification
+            <DEFINITIONS>
+
+            begin Frame
+                id = recomb_card_win;
+                size = 960, 520;
+                visible = true;
+
+                begin BasicButton
+                    id = close_button;
+                    location = 900, 10;
+                    size = 41, 41;
+                    mouse_enabled = true;
+                end
+
+                begin Frame
+                    id = affix_row_0;
+                    visible = true;
+
+                    begin BasicButton
+                        id = affix_btn_0;
+                        size = 872, 52;
+                        mouse_enabled = true;
+
+                        begin Picture
+                            id = affix_sel_bg_0;
+                            source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+                            mouse_enabled = false;
+                            visible = false;
+                        end
+
+                        begin Label
+                            id = affix_label_0;
+                            text = "+97 to maximum Life";
+                            mouse_enabled = false;
+                        end
+                    end
+                end
+
+                begin Button
+                    id = confirm_button;
+                    text = "Siphon Modifier";
+                end
+            end
+            """;
+
+        using var bridge = new SimulatedNativeBridge { EnableSimulatedNativeUi = true };
+        using var host = new ClientHostRuntime(bridge);
+        const string uiPath = "Metadata/UI/Mods/Siphon/RecombCardTest.ui";
+        using IDisposable overlay = host.FileOverlayService.RegisterVirtualTextFile(uiPath, recombCardUi);
+
+        IUiWindow win = host.Ui.Load(uiPath, "recomb_card_win");
+        IButton closeBtn = win.Require<IButton>("close_button");
+        IButton rowBtn = win.Require<IButton>("affix_row_0.affix_btn_0");
+        ILabel rowLabel = win.Require<ILabel>("affix_row_0.affix_btn_0.affix_label_0");
+        IUiControl selBg = win.Require<IUiControl>("affix_row_0.affix_btn_0.affix_sel_bg_0");
+        IButton confirmBtn = win.Require<IButton>("confirm_button");
+
+        Assert.Equal("BasicButton", rowBtn.ControlType);
+        Assert.Equal("BasicButton", closeBtn.ControlType);
+        Assert.Equal("Button", confirmBtn.ControlType);
+        Assert.False(selBg.Visible);
+
+        var nativeRowBtn = bridge.GetSimulatedNativeUiControl(uiPath, "affix_btn_0")!;
+        var nativeCloseBtn = bridge.GetSimulatedNativeUiControl(uiPath, "close_button")!;
+        var nativeConfirmBtn = bridge.GetSimulatedNativeUiControl(uiPath, "confirm_button")!;
+        var nativeSelBg = bridge.GetSimulatedNativeUiControl(uiPath, "affix_sel_bg_0")!;
+        var nativeRowLbl = bridge.GetSimulatedNativeUiControl(uiPath, "affix_label_0")!;
+
+        Assert.False(nativeSelBg.Visible);
+        Assert.Equal(0, nativeRowBtn.SetTextCallCount);
+        Assert.Equal(0, nativeCloseBtn.SetTextCallCount);
+        Assert.Equal(1, nativeConfirmBtn.SetTextCallCount);
+        Assert.Equal(1, nativeRowLbl.SetTextCallCount);
+
+        // Updating managed Text on BasicButton must NOT call native SetNativeUiText (no inner label at +0x408).
+        rowBtn.Text = "[SELECTED]";
+        Assert.Equal("[SELECTED]", rowBtn.Text);
+        Assert.Equal(0, nativeRowBtn.SetTextCallCount);
+
+        // Native click routing still fires cleanly on BasicButton (+0x2A0 event list).
+        int rowClicks = 0;
+        int closeClicks = 0;
+        rowBtn.Clicked += () =>
+        {
+            rowClicks++;
+            selBg.Visible = true;
+        };
+        closeBtn.Clicked += () => closeClicks++;
+
+        Assert.True(bridge.SimulateNativeUiClick(nativeRowBtn.Handle));
+        Assert.True(bridge.SimulateNativeUiClick(nativeCloseBtn.Handle));
+        Assert.Equal(1, rowClicks);
+        Assert.Equal(1, closeClicks);
+        Assert.True(nativeSelBg.Visible);
+
+        // Hiding parent row blocks clicks on BasicButton just like standard Button.
+        win.Require<IUiControl>("affix_row_0").Visible = false;
+        Assert.False(bridge.SimulateNativeUiClick(nativeRowBtn.Handle));
+        Assert.Equal(1, rowClicks);
+
+        win.Close();
+    }
 }
