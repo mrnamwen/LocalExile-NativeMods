@@ -15,6 +15,7 @@ Developer documentation for the **NativeMods 3.29** Proof of Concept — a unive
 | [Waypoint Integration](waypoint-integration.md) | Launcher & mod packagers | `mod.json` `nativeClient` manifest schema, `LocalExile.Client.Waypoint` API, security & trust model, `.ui` linting, stored-block bundles, install layout |
 | [Authoring Dual-Side Mods](authoring-dual-mods.md) | Mod authors | End-to-end walkthrough of `examples/DualMod.HarvestGarden/` (Server + Client + Shared + `.ui` + `.ot` GEAL script + custom opcode + hot reload + graceful degradation) |
 | [Spike R1 Proton Results](r1-proton-results.md) | Contributors, testers | Empirical `.NET 10` CoreCLR + `StateStack::PassA` live 3.29.3d Proton results (`proxy` & `import-patch` modes, VEH `0xE06D7363` coexistence, TID migration finding) |
+| [Maxwell Pet MTX PoC Results](maxwell-pet-poc.md) | Contributors, testers | Empirical live 3.29.3d Proton results for `DualMod.MaxwellPet` (16/16 pass: Cosmetics `K` menu Pet Slot 1 equip, Route A `.datc64` + 18 3D assets, centered interactive `MaxwellPanel.ui`, looping FMOD 2.03 OGG audio `-23.1 dB`) |
 
 ## Architecture Overview
 
@@ -70,7 +71,7 @@ flowchart TB
 | `src/LocalExile.Client.Waypoint/` | Waypoint manifest parser, `.ui`/conflict validator, stored-block bundle packer, and installer |
 | `examples/DualMod.HarvestGarden/` | End-to-end dual-side Harvest Garden PoC mod |
 | `examples/DualMod.MaxwellPet/` | End-to-end brand-new Pet MTX dual-side mod (`Maxwell the Cat`, Cosmetics `K` menu, `.ui` panel, looping `.ogg` audio) |
-| `scripts/` | Cross-compilation (`build-win64.sh`), Maxwell asset generator (`build-maxwell-assets.sh`), and isolated `Xvfb` Proton test runners (`run-r1-proton.sh`) |
+| `scripts/` | Cross-compilation (`build-win64.sh`), Maxwell asset generator (`build-maxwell-assets.sh`), and isolated `Xvfb` Proton test runners (`run-r1-proton.sh`, `run-maxwell-proton.sh`) |
 | `tests/` | Automated xUnit test suites for Patcher, SDK/Host/ServerBridge, AssetPipeline, MaxwellPet, and Waypoint/HarvestGarden E2E |
 | `.codexmind/` | Cross-session research findings, architecture decisions, and known regressions |
 
