@@ -10,7 +10,7 @@ namespace DualMod.HarvestGarden.Server;
 /// handles the <c>/garden</c> chat command with graceful text fallback when the player lacks NativeMods,
 /// and synchronizes typed state over <see cref="ClientBridgeHost"/> when the player has the client mod.
 /// </summary>
-public sealed class GardenServerMod
+public sealed class GardenServerMod : IDisposable
 {
     private const int DefaultMaxPlots = 6;
     private const int DefaultLifeforcePerSeed = 25;
@@ -18,6 +18,8 @@ public sealed class GardenServerMod
 
     private readonly ClientBridgeHost _bridge;
     private readonly ConcurrentDictionary<string, CharacterGardenState> _gardens = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _connectionCharacters = new(StringComparer.Ordinal);
+    private readonly List<IDisposable> _subscriptions = [];
 
     public GardenServerMod(ClientBridgeHost bridge)
     {
@@ -25,44 +27,61 @@ public sealed class GardenServerMod
     }
 
     /// <summary>
-    /// Registers client session message handlers whenever a NativeMods client completes handshake.
-    /// In a LocalExile Gateway deployment, <c>IMod.Load(IModContext)</c> wires this alongside
-    /// <c>GameEvents.Command(id, "garden", ...)</c>.
+    /// Attaches channel message handlers to <see cref="ClientBridgeHost"/>.
+    /// In a LocalExile Gateway deployment, <c>IMod.Load(IModContext)</c> calls <see cref="Attach"/>
+    /// alongside registering <c>GameEvents.Command(id, "garden", ...)</c>.
     /// </summary>
     public void Attach()
     {
-        _bridge.ClientReady += OnClientReady;
+        if (_subscriptions.Count > 0)
+            return;
+
+        _subscriptions.Add(_bridge.On<PlantSeedRequest>(GardenProtocol.ChannelName, (session, req) =>
+        {
+            if (!session.HasClientMod(GardenProtocol.ModId))
+                return;
+
+            string character = _connectionCharacters.GetValueOrDefault(session.ConnectionId, session.ConnectionId);
+            var snapshot = PlantSeed(character, req.SeedName);
+            session.SendAsync(GardenProtocol.ChannelName, snapshot).GetAwaiter().GetResult();
+        }));
+
+        _subscriptions.Add(_bridge.On<HarvestPlotRequest>(GardenProtocol.ChannelName, (session, req) =>
+        {
+            if (!session.HasClientMod(GardenProtocol.ModId))
+                return;
+
+            string character = _connectionCharacters.GetValueOrDefault(session.ConnectionId, session.ConnectionId);
+            var snapshot = HarvestPlots(character, req.PlotIndex);
+            session.SendAsync(GardenProtocol.ChannelName, snapshot).GetAwaiter().GetResult();
+        }));
     }
 
     public void Detach()
     {
-        _bridge.ClientReady -= OnClientReady;
+        foreach (var sub in _subscriptions)
+            sub.Dispose();
+        _subscriptions.Clear();
     }
 
-    private void OnClientReady(IClientSession session)
-    {
-        if (!session.HasClientMod(GardenProtocol.ModId))
-            return;
-
-        session.On<PlantSeedRequest>(GardenProtocol.ChannelName, async req =>
-        {
-            var snapshot = PlantSeed(session.CharacterName ?? session.ConnectionId, req.SeedName);
-            await session.SendAsync(GardenProtocol.ChannelName, snapshot);
-        });
-
-        session.On<HarvestPlotRequest>(GardenProtocol.ChannelName, async req =>
-        {
-            var snapshot = HarvestPlots(session.CharacterName ?? session.ConnectionId, req.PlotIndex);
-            await session.SendAsync(GardenProtocol.ChannelName, snapshot);
-        });
-    }
+    public void Dispose() => Detach();
 
     /// <summary>
     /// Handles the <c>/garden [plant &lt;seed&gt; | harvest]</c> command.
     /// Returns a chat reply line for players without NativeMods, or pushes rich UI sync to NativeMods clients.
     /// </summary>
-    public async Task<string> HandleGardenCommandAsync(string connectionId, string characterName, string[] args)
+    public async Task<string> HandleGardenCommandAsync(
+        string connectionId,
+        string characterName,
+        string[] args,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(characterName);
+        args ??= [];
+
+        _connectionCharacters[connectionId] = characterName;
+
         var session = _bridge.For(connectionId);
         bool hasRichClient = session.HasNativeHost && session.HasClientMod(GardenProtocol.ModId);
 
@@ -71,7 +90,7 @@ public sealed class GardenServerMod
             string seedName = args.Length > 1 ? string.Join(' ', args[1..]) : "Wild Thornfruit";
             var snapshot = PlantSeed(characterName, seedName);
             if (hasRichClient)
-                await session.SendAsync(GardenProtocol.ChannelName, snapshot);
+                await session.SendAsync(GardenProtocol.ChannelName, snapshot, cancellationToken: cancellationToken).ConfigureAwait(false);
             return snapshot.StatusMessage;
         }
 
@@ -79,14 +98,17 @@ public sealed class GardenServerMod
         {
             var snapshot = HarvestPlots(characterName, -1);
             if (hasRichClient)
-                await session.SendAsync(GardenProtocol.ChannelName, snapshot);
+                await session.SendAsync(GardenProtocol.ChannelName, snapshot, cancellationToken: cancellationToken).ConfigureAwait(false);
             return snapshot.StatusMessage;
         }
 
         var current = BuildSnapshot(characterName, $"Welcome to the Sacred Grove, {characterName}.");
         if (hasRichClient)
         {
-            await session.SendAsync(GardenProtocol.ChannelName, new GardenOpenWindowCommand(characterName, current));
+            await session.SendAsync(
+                GardenProtocol.ChannelName,
+                new GardenOpenWindowCommand(characterName, current),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             return $"[Harvest Garden] Opened Seed Stockpile window ({current.Plots.Count} active plot(s), {current.Lifeforce} lifeforce).";
         }
 
@@ -99,7 +121,7 @@ public sealed class GardenServerMod
                "Use '/garden plant <seed>' or '/garden harvest'. Install NativeMods via Waypoint for the native UI.";
     }
 
-    /// <summary>Authoritative server operation: plants a seed and immediately advances existing plots by 1 growth stage.</summary>
+    /// <summary>Authoritative server operation: plants a seed and advances existing plots by 1 growth stage.</summary>
     public GardenStateSnapshot PlantSeed(string characterName, string seedName)
     {
         string normalizedSeed = string.IsNullOrWhiteSpace(seedName) ? "Wild Thornfruit" : seedName.Trim();
@@ -107,7 +129,6 @@ public sealed class GardenServerMod
 
         lock (state)
         {
-            // Advance existing planted seeds by one cycle (like completing a Harvest encounter)
             foreach (var existing in state.Plots)
             {
                 if (existing.GrowthStage < MaxGrowthStage)
@@ -121,13 +142,13 @@ public sealed class GardenServerMod
             }
 
             int nextIndex = state.Plots.Count;
-            state.Plots.Add(new MutablePlot(nextIndex, normalizedSeed, GrowthStage: 1));
+            state.Plots.Add(new MutablePlot(nextIndex, normalizedSeed, growthStage: 1));
             return BuildSnapshotLocked(characterName, state,
                 $"Planted '{normalizedSeed}' in Plot #{nextIndex + 1}. ({state.Plots.Count}/{DefaultMaxPlots} plots active)");
         }
     }
 
-    /// <summary>Authoritative server operation: harvests ripe plots (or forces ripening in PoC demo when requested) and grants lifeforce.</summary>
+    /// <summary>Authoritative server operation: harvests plots and awards Condensed Lifeforce.</summary>
     public GardenStateSnapshot HarvestPlots(string characterName, int plotIndex = -1)
     {
         var state = _gardens.GetOrAdd(characterName, _ => new CharacterGardenState());
@@ -148,7 +169,6 @@ public sealed class GardenServerMod
                 state.Plots.Clear();
             }
 
-            // Re-index remaining plots
             for (int i = 0; i < state.Plots.Count; i++)
                 state.Plots[i].PlotIndex = i;
 

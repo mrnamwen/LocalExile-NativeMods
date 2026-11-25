@@ -1,12 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,6 +13,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LocalExile.Client.Waypoint\LocalExile.Client.Waypoint.csproj" />
-    <ProjectReference Include="..\..\examples\DualMod.HarvestGarden\DualMod.HarvestGarden.Shared.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.Patcher\LocalExile.Client.Patcher.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.Host\LocalExile.Client.Host.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
+    <ProjectReference Include="..\..\examples\DualMod.HarvestGarden\Shared\DualMod.HarvestGarden.Shared.csproj" />
+    <ProjectReference Include="..\..\examples\DualMod.HarvestGarden\Server\DualMod.HarvestGarden.Server.csproj" />
+    <!-- Built alongside tests so HarvestGardenEndToEndTests can install & dynamically load harvest-garden.Client.dll
+         into ClientModLoader's collectible AssemblyLoadContext without binding it into the default ALC. -->
+    <ProjectReference Include="..\..\examples\DualMod.HarvestGarden\Client\DualMod.HarvestGarden.Client.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

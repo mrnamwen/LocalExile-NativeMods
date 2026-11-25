@@ -21,7 +21,7 @@ public static class GardenProtocol
     public const ushort OpcodeOpenWindow = 1004;
 
     /// <summary>Host-channel custom ruleset ID for the Sacred Grove per-area mechanic.</summary>
-    public const uint GardenRulesetId = 0xA1;
+    public const byte GardenRulesetId = 0xA1;
 }
 
 /// <summary>Client -> Server: player requests planting a named seed into the Sacred Grove.</summary>
