@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LocalExile.Client.Host</RootNamespace>
+    <AssemblyName>LocalExile.Client.Host</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Managed client host runtime for LocalExile NativeMods.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>LocalExile.Client.Sdk</RootNamespace>
+    <AssemblyName>LocalExile.Client.Sdk</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>Public versioned modding API for LocalExile 3.29 client mods.</Description>
+  </PropertyGroup>
+</Project>
