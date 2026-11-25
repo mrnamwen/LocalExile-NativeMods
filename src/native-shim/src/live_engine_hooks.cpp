@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -476,6 +477,9 @@ void* g_ui_event_vtable[4] = {
 std::mutex                          g_ui_handlers_mutex;
 uint64_t                            g_ui_next_token = 1;
 std::vector<UiClickHandlerRecord*>  g_ui_handlers;
+std::mutex                          g_ui_windows_mutex;
+void*                               g_ui_windows_root = nullptr;
+std::unordered_map<std::string, void*> g_ui_loaded_windows;
 
 // Resolves the live game InstanceClient socket pointer via network.app_global_ref (0x00f3b30).
 void* resolve_live_game_socket(nm_build_id_t build_id, uint64_t image_base) {
@@ -754,6 +758,11 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
         std::lock_guard<std::mutex> lock(g_hit_log_mutex);
         g_logged_overlay_hits.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(g_ui_windows_mutex);
+        g_ui_windows_root = nullptr;
+        g_ui_loaded_windows.clear();
+    }
 #endif
 }
 
@@ -808,29 +817,40 @@ nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, voi
         return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
     }
 
-    const EmbeddedSymbol* sym_pool   = find_symbol(build_id_, "ui.control_pool");
-    const EmbeddedSymbol* sym_create = find_symbol(build_id_, "ui.frame_create");
-    const EmbeddedSymbol* sym_add    = find_symbol(build_id_, "ui.add_child");
+    // Reuse an already-loaded native window for the same (root, path) so re-opening
+    // never triggers PoE's fatal duplicate-sibling-id exception (matches spikes/garden-demo.js).
+    const std::string normalized_key = OverlayAndChannels::normalize_virtual_path(virtual_path_utf8);
+    {
+        std::lock_guard<std::mutex> lock(g_ui_windows_mutex);
+        if (g_ui_windows_root != root) {
+            g_ui_windows_root = root;
+            g_ui_loaded_windows.clear();
+        } else {
+            auto it = g_ui_loaded_windows.find(normalized_key);
+            if (it != g_ui_loaded_windows.end() && it->second != nullptr) {
+                *out_control = it->second;
+                (void)ui_set_visible(it->second, 1);
+                logger_logf("INFO", "[UI] Reused existing native window '%s' (root=%p, control=%p)",
+                            virtual_path_utf8, root, it->second);
+                return NM_OK;
+            }
+        }
+    }
+
     const EmbeddedSymbol* sym_load   = find_symbol(build_id_, "ui.control_load");
     const EmbeddedSymbol* sym_assign = find_symbol(build_id_, "runtime.wstring_assign");
-    if (!sym_pool || !sym_create || !sym_add || !sym_load || !sym_assign) {
+    if (!sym_load || !sym_assign) {
         return NM_ERR_SYMBOL_NOT_FOUND;
     }
 
     struct CreateWinCtx {
         void*        root;
-        uint64_t     pool_addr;
-        uint64_t     create_addr;
-        uint64_t     add_addr;
         uint64_t     load_addr;
         uint64_t     assign_addr;
         std::wstring wide_path;
         void*        created = nullptr;
     } ctx{
         root,
-        image_base_ + sym_pool->rva,
-        image_base_ + sym_create->rva,
-        image_base_ + sym_add->rva,
         image_base_ + sym_load->rva,
         image_base_ + sym_assign->rva,
         utf8_to_wide_hooks(virtual_path_utf8),
@@ -839,34 +859,33 @@ nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, voi
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<CreateWinCtx*>(raw);
-        using PoolFn   = void*(NM_CALL*)();
-        using CreateFn = void*(NM_CALL*)(void*);
-        using AddFn    = void(NM_CALL*)(void*, uint64_t, void*);
         using LoadFn   = void(NM_CALL*)(void*, const void*);
         using AssignFn = void*(NM_CALL*)(void*, const wchar_t*, uint64_t);
 
-        auto pool_fn   = reinterpret_cast<PoolFn>(static_cast<uintptr_t>(c->pool_addr));
-        auto create_fn = reinterpret_cast<CreateFn>(static_cast<uintptr_t>(c->create_addr));
-        auto add_fn    = reinterpret_cast<AddFn>(static_cast<uintptr_t>(c->add_addr));
         auto load_fn   = reinterpret_cast<LoadFn>(static_cast<uintptr_t>(c->load_addr));
         auto assign_fn = reinterpret_cast<AssignFn>(static_cast<uintptr_t>(c->assign_addr));
 
-        void* frame = create_fn(pool_fn());
-        if (!frame) return -1;
-
+        // Snapshot root's child vector before Control::Load(root, &ws) so we return the
+        // actual loaded top-level control (matches spikes/garden-demo.js:10).
         auto* root_bytes = static_cast<uint8_t*>(c->root);
-        auto* begin = *reinterpret_cast<uint8_t**>(root_bytes + 0xC0);
-        auto* end   = *reinterpret_cast<uint8_t**>(root_bytes + 0xC8);
-        const uint64_t idx = (end >= begin) ? static_cast<uint64_t>(end - begin) / sizeof(void*) : 0ull;
-        add_fn(root_bytes + 0xB8, idx, frame);
+        auto* old_begin = *reinterpret_cast<uint8_t**>(root_bytes + 0xC0);
+        auto* old_end   = *reinterpret_cast<uint8_t**>(root_bytes + 0xC8);
+        const size_t old_count = (old_end >= old_begin) ? static_cast<size_t>(old_end - old_begin) / sizeof(void*) : 0u;
 
         MsvcWString ws{};
         std::memset(&ws, 0, sizeof(ws));
         ws.cap = 7;
         assign_fn(&ws, c->wide_path.c_str(), static_cast<uint64_t>(c->wide_path.size()));
-        load_fn(frame, &ws);
-        c->created = frame;
-        return 0;
+        load_fn(c->root, &ws);
+
+        auto* new_begin = *reinterpret_cast<uint8_t**>(root_bytes + 0xC0);
+        auto* new_end   = *reinterpret_cast<uint8_t**>(root_bytes + 0xC8);
+        const size_t new_count = (new_end >= new_begin) ? static_cast<size_t>(new_end - new_begin) / sizeof(void*) : 0u;
+        if (new_count > old_count && new_end != nullptr) {
+            c->created = *(reinterpret_cast<void**>(new_end) - 1);
+            return 0;
+        }
+        return -2;
     };
 
     int64_t rc = 0;
@@ -878,8 +897,14 @@ nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, voi
         return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(g_ui_windows_mutex);
+        g_ui_windows_root = root;
+        g_ui_loaded_windows[normalized_key] = ctx.created;
+    }
+
     *out_control = ctx.created;
-    logger_logf("INFO", "[UI] Loaded native window '%s' (root=%p, control=%p)", virtual_path_utf8, root, ctx.created);
+    logger_logf("INFO", "[UI] Loaded native window '%s' directly onto root (root=%p, control=%p)", virtual_path_utf8, root, ctx.created);
     return NM_OK;
 #else
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;

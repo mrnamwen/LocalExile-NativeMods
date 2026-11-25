@@ -290,6 +290,9 @@ public sealed class AddressLibraryTests
 
             label.Text = "Maxwell Spinning!";
             Assert.Equal("Maxwell Spinning!", _lastNativeUiText);
+            int callsAfterChange = _nativeUiSetTextCalls;
+            label.Text = "Maxwell Spinning!"; // unchanged text must not churn native SetText
+            Assert.Equal(callsAfterChange, _nativeUiSetTextCalls);
             win.Visible = false;
             Assert.Equal(0, _lastNativeUiVisible);
             win.Visible = true;
@@ -330,6 +333,7 @@ public sealed class AddressLibraryTests
     private static float _lastAudioVolume;
     private static bool _mockAudioActive;
     private static string? _lastNativeUiText;
+    private static int _nativeUiSetTextCalls;
     private static int _lastNativeUiVisible;
     private static unsafe delegate* unmanaged[Cdecl]<void*, void*, void> _mockClickCb;
     private static unsafe void* _mockClickUd;
@@ -527,6 +531,7 @@ public sealed class AddressLibraryTests
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe NmStatus MockUiSetText(void* control, byte* textUtf8, int isButton)
     {
+        Interlocked.Increment(ref _nativeUiSetTextCalls);
         _lastNativeUiText = Marshal.PtrToStringUTF8((nint)textUtf8);
         return NmStatus.Ok;
     }

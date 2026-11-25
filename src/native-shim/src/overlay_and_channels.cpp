@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -29,6 +30,102 @@ bool is_safe_relative_virtual_path(const std::string& normalized) {
         }
     }
     return true;
+}
+
+bool is_poe_utf16_text_extension(const std::string& normalized_path) {
+    const size_t dot = normalized_path.rfind('.');
+    if (dot == std::string::npos) return false;
+    const std::string_view ext(normalized_path.data() + dot, normalized_path.size() - dot);
+    return ext == ".ui" || ext == ".ot" || ext == ".ao" || ext == ".act" || ext == ".amd" || ext == ".sm";
+}
+
+// Detects plain UTF-8/ASCII text overlays that need UTF-16LE + BOM + CRLF transcoding
+// for PoE 3.29's wide parser while leaving existing UTF-16LE (both BOM FF FE and BOM-less
+// .sm/.amd containing NUL bytes) completely untouched.
+bool needs_utf8_to_utf16le_transcode(const std::string& normalized_path, const uint8_t* data, size_t size) {
+    if (!data || size == 0) return false;
+    if (!is_poe_utf16_text_extension(normalized_path)) return false;
+    if (size >= 2 && ((data[0] == 0xFFu && data[1] == 0xFEu) || (data[0] == 0xFEu && data[1] == 0xFFu))) {
+        return false;
+    }
+    if (std::memchr(data, 0, size) != nullptr) {
+        return false;
+    }
+    return true;
+}
+
+void transcode_utf8_to_utf16le_bom_crlf(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
+    out.clear();
+    size_t i = 0;
+    if (size >= 3 && data[0] == 0xEFu && data[1] == 0xBBu && data[2] == 0xBFu) {
+        i = 3;
+    }
+
+    out.reserve(2 + (size - i) * 2 + 16);
+    out.push_back(0xFFu);
+    out.push_back(0xFEu);
+
+    auto push_u16 = [&out](uint16_t cu) {
+        out.push_back(static_cast<uint8_t>(cu & 0xFFu));
+        out.push_back(static_cast<uint8_t>((cu >> 8) & 0xFFu));
+    };
+
+    while (i < size) {
+        uint32_t cp = 0;
+        const uint8_t b0 = data[i];
+        if (b0 < 0x80u) {
+            cp = b0;
+            ++i;
+        } else if ((b0 & 0xE0u) == 0xC0u && i + 1 < size && (data[i + 1] & 0xC0u) == 0x80u) {
+            cp = ((static_cast<uint32_t>(b0 & 0x1Fu)) << 6) | (data[i + 1] & 0x3Fu);
+            i += 2;
+        } else if ((b0 & 0xF0u) == 0xE0u && i + 2 < size &&
+                   (data[i + 1] & 0xC0u) == 0x80u && (data[i + 2] & 0xC0u) == 0x80u) {
+            cp = ((static_cast<uint32_t>(b0 & 0x0Fu)) << 12) |
+                 ((static_cast<uint32_t>(data[i + 1] & 0x3Fu)) << 6) |
+                 (data[i + 2] & 0x3Fu);
+            i += 3;
+        } else if ((b0 & 0xF8u) == 0xF0u && i + 3 < size &&
+                   (data[i + 1] & 0xC0u) == 0x80u && (data[i + 2] & 0xC0u) == 0x80u &&
+                   (data[i + 3] & 0xC0u) == 0x80u) {
+            cp = ((static_cast<uint32_t>(b0 & 0x07u)) << 18) |
+                 ((static_cast<uint32_t>(data[i + 1] & 0x3Fu)) << 12) |
+                 ((static_cast<uint32_t>(data[i + 2] & 0x3Fu)) << 6) |
+                 (data[i + 3] & 0x3Fu);
+            i += 4;
+        } else {
+            cp = 0xFFFDu;
+            ++i;
+        }
+
+        if (cp == '\r') {
+            if (i < size && data[i] == '\n') {
+                ++i;
+            }
+            push_u16('\r');
+            push_u16('\n');
+        } else if (cp == '\n') {
+            push_u16('\r');
+            push_u16('\n');
+        } else if (cp <= 0xFFFFu) {
+            push_u16(static_cast<uint16_t>(cp));
+        } else if (cp <= 0x10FFFFu) {
+            cp -= 0x10000u;
+            push_u16(static_cast<uint16_t>(0xD800u + (cp >> 10)));
+            push_u16(static_cast<uint16_t>(0xDC00u + (cp & 0x3FFu)));
+        } else {
+            push_u16(0xFFFDu);
+        }
+    }
+}
+
+void maybe_transcode_poe_text_inplace(const std::string& normalized_path, std::vector<uint8_t>& bytes) {
+    if (!needs_utf8_to_utf16le_transcode(normalized_path, bytes.data(), bytes.size())) {
+        return;
+    }
+    std::vector<uint8_t> transcoded;
+    transcode_utf8_to_utf16le_bom_crlf(bytes.data(), bytes.size(), transcoded);
+    bytes = std::move(transcoded);
 }
 
 #if defined(_WIN32)
@@ -281,22 +378,35 @@ nm_status_t OverlayAndChannels::has_file_overlay(const char* virtual_path_utf8, 
         uint8_t* data = nullptr;
         size_t size = 0;
         if (it->cb(normalized.c_str(), &data, &size, it->user_data) == NM_OK && data != nullptr) {
+            size_t final_size = size;
+            if (out_size && needs_utf8_to_utf16le_transcode(normalized, data, size)) {
+                std::vector<uint8_t> transcoded;
+                transcode_utf8_to_utf16le_bom_crlf(data, size, transcoded);
+                final_size = transcoded.size();
+            }
             if (it->free_cb) {
                 it->free_cb(data, it->user_data);
             }
             if (out_size) {
-                *out_size = size;
+                *out_size = final_size;
             }
             return NM_OK;
         }
     }
 
-    // 2. Native disk overlay directories (LIFO, fast stat without reading file).
+    // 2. Native disk overlay directories (LIFO, fast stat without reading file for binary assets).
     for (auto it = dir_snapshot.rbegin(); it != dir_snapshot.rend(); ++it) {
         size_t sz = 0;
         std::string resolved;
         if (stat_disk_overlay(it->root_dir, normalized, sz, resolved)) {
             if (out_size) {
+                if (is_poe_utf16_text_extension(normalized) && sz > 0) {
+                    std::vector<uint8_t> bytes;
+                    if (read_disk_file(resolved, bytes)) {
+                        maybe_transcode_poe_text_inplace(normalized, bytes);
+                        sz = bytes.size();
+                    }
+                }
                 *out_size = sz;
             }
             return NM_OK;
@@ -334,6 +444,7 @@ bool OverlayAndChannels::resolve_file_overlay_owned(const char* virtual_path_utf
             if (it->free_cb) {
                 it->free_cb(data, it->user_data);
             }
+            maybe_transcode_poe_text_inplace(normalized, out_bytes);
             return true;
         }
     }
@@ -344,6 +455,7 @@ bool OverlayAndChannels::resolve_file_overlay_owned(const char* virtual_path_utf
         std::string resolved;
         if (stat_disk_overlay(it->root_dir, normalized, sz, resolved)) {
             if (read_disk_file(resolved, out_bytes)) {
+                maybe_transcode_poe_text_inplace(normalized, out_bytes);
                 return true;
             }
         }
@@ -377,6 +489,25 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
         uint8_t* data = nullptr;
         size_t size = 0;
         if (it->cb(normalized.c_str(), &data, &size, it->user_data) == NM_OK && data != nullptr) {
+            if (needs_utf8_to_utf16le_transcode(normalized, data, size)) {
+                std::vector<uint8_t> transcoded;
+                transcode_utf8_to_utf16le_bom_crlf(data, size, transcoded);
+                if (it->free_cb) {
+                    it->free_cb(data, it->user_data);
+                }
+                auto* buf = new uint8_t[std::max<size_t>(1, transcoded.size())];
+                if (!transcoded.empty()) {
+                    std::memcpy(buf, transcoded.data(), transcoded.size());
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    owned_buffers_[buf] = OwnedBufferRecord{nullptr, nullptr, true};
+                }
+                *out_data = buf;
+                *out_size = transcoded.size();
+                return NM_OK;
+            }
+
             if (it->free_cb) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 owned_buffers_[data] = OwnedBufferRecord{it->free_cb, it->user_data, false};
@@ -394,6 +525,7 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
         if (stat_disk_overlay(it->root_dir, normalized, sz, resolved)) {
             std::vector<uint8_t> bytes;
             if (read_disk_file(resolved, bytes)) {
+                maybe_transcode_poe_text_inplace(normalized, bytes);
                 auto* buf = new uint8_t[std::max<size_t>(1, bytes.size())];
                 if (!bytes.empty()) {
                     std::memcpy(buf, bytes.data(), bytes.size());
