@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using LocalExile.Client.Host.Addresses;
 using LocalExile.Client.Host.Loading;
 using LocalExile.Client.Host.Native;
@@ -53,6 +54,7 @@ public sealed class ClientHostRuntime : IDisposable
     private bool _started;
     private bool _disposed;
     private long _frameCount;
+    private long _lastAutoHandshakeTimestamp;
 
     /// <summary>Total number of game frames processed by this host runtime.</summary>
     public long FrameCount => Interlocked.Read(ref _frameCount);
@@ -263,6 +265,26 @@ public sealed class ClientHostRuntime : IDisposable
         if (frame is 1 or 5 or 60 or 120 || frame % 300 == 0)
         {
             Log("INFO", "host", $"Managed frame tick #{frame} (dt={deltaSeconds:F4}s, loadedMods={Loader.LoadedMods.Count}).");
+        }
+
+        // Automatically negotiate ClientHandshake on live NativeShimBridge connections once the
+        // InstanceClient socket is active (keeps SimulatedNativeBridge tests deterministic).
+        if (_bridge is NativeShimBridge && LastServerHandshake is null && frame >= 30)
+        {
+            long lastTs = Interlocked.Read(ref _lastAutoHandshakeTimestamp);
+            if (lastTs == 0 || Stopwatch.GetElapsedTime(lastTs) >= TimeSpan.FromSeconds(2))
+            {
+                Interlocked.Exchange(ref _lastAutoHandshakeTimestamp, Stopwatch.GetTimestamp());
+                try
+                {
+                    SendHandshake();
+                    Log("INFO", "host", $"Sent automatic live ClientHandshake on frame #{frame} (mods={Loader.LoadedMods.Count}).");
+                }
+                catch
+                {
+                    // Expected before entering an instance (login / character select has no InstanceClient socket yet).
+                }
+            }
         }
 
         Lifecycle.RaiseFrame(deltaSeconds);

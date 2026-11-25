@@ -173,6 +173,53 @@ public sealed class EndToEndBridgeTests
         Assert.False(stockClient.HasClientMod("garden"));
     }
 
+    [Theory]
+    [InlineData(0, new byte[] { 0xA0, 0x00 })]
+    [InlineData(1, new byte[] { 0xA0, 0x01 })]
+    [InlineData(0x7F, new byte[] { 0xA0, 0x7F })]
+    [InlineData(0x80, new byte[] { 0xA0, 0x80, 0x80 })]
+    [InlineData(0x0123, new byte[] { 0xA0, 0x81, 0x23 })]
+    [InlineData(0x3FFF, new byte[] { 0xA0, 0xBF, 0xFF })]
+    [InlineData(0x4000, new byte[] { 0xA0, 0xC0, 0x40, 0x00 })]
+    [InlineData(0xFFFF, new byte[] { 0xA0, 0xC0, 0xFF, 0xFF })]
+    public void MessageCodec_RulesetBody_UsesPoeCompactUIntWireFraming(int payloadLength, byte[] expectedHeader)
+    {
+        byte[] payload = new byte[payloadLength];
+        for (int i = 0; i < payload.Length; i++)
+        {
+            payload[i] = (byte)(i & 0xFF);
+        }
+
+        byte[] body = MessageCodec.EncodeRulesetBody(0xA0, payload);
+        Assert.Equal(expectedHeader.Length + payloadLength, body.Length);
+        Assert.Equal(expectedHeader, body[..expectedHeader.Length]);
+
+        Assert.True(MessageCodec.TryDecodeRulesetBody(body, out byte decodedRulesetId, out ReadOnlyMemory<byte> decodedPayload));
+        Assert.Equal(0xA0, decodedRulesetId);
+        Assert.Equal(payload, decodedPayload.ToArray());
+
+        byte[] full = MessageCodec.EncodeFullRulesetPacket(IOpcodeRegistry.ClientRulesetOpcode, 0xA0, payload);
+        Assert.Equal(0x02, full[0]);
+        Assert.Equal(0xCA, full[1]);
+        Assert.True(MessageCodec.TryDecodeFullRulesetPacket(full, out ushort opcode, out byte fullRulesetId, out ReadOnlyMemory<byte> fullPayload));
+        Assert.Equal(IOpcodeRegistry.ClientRulesetOpcode, opcode);
+        Assert.Equal(0xA0, fullRulesetId);
+        Assert.Equal(payload, fullPayload.ToArray());
+    }
+
+    [Fact]
+    public void MessageCodec_TryDecodeRulesetBody_RejectsTruncatedAndOversizedCompactUInt()
+    {
+        Assert.False(MessageCodec.TryDecodeRulesetBody(Array.Empty<byte>(), out _, out _));
+        Assert.False(MessageCodec.TryDecodeRulesetBody(new byte[] { 0xA0 }, out _, out _));
+        // 2-byte CompactUInt missing second length byte
+        Assert.False(MessageCodec.TryDecodeRulesetBody(new byte[] { 0xA0, 0x80 }, out _, out _));
+        // 3-byte CompactUInt claiming 0x10000 (> MaxRulesetPayloadBytes 0xFFFF)
+        Assert.False(MessageCodec.TryDecodeRulesetBody(new byte[] { 0xA0, 0xC1, 0x00, 0x00 }, out _, out _));
+        // Claimed 4 bytes but only 2 bytes follow
+        Assert.False(MessageCodec.TryDecodeRulesetBody(new byte[] { 0xA0, 0x04, 0x11, 0x22 }, out _, out _));
+    }
+
     private sealed class LoopbackGatewaySink(SimulatedNativeBridge simBridge) : IGatewayPacketSink
     {
         public Task SendPacketAsync(string connectionId, ushort opcode, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)

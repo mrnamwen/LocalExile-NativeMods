@@ -299,6 +299,17 @@ public sealed class AddressLibraryTests
             Assert.True(_mockClickCb is not null);
             _mockClickCb((void*)0x2002, _mockClickUd);
             Assert.True(clicked);
+
+            // Auto-handshake: frames 1..29 do not send; frame 30 sends ClientHandshake automatically.
+            _lastSentRulesetLen = 0;
+            for (int f = 0; f < 29; f++)
+            {
+                rt.TickFrame(1f / 60f);
+            }
+            Assert.Equal(0, _lastSentRulesetLen);
+
+            rt.TickFrame(1f / 60f); // frame #30
+            Assert.True(_lastSentRulesetLen > 0);
         }
         finally
         {
