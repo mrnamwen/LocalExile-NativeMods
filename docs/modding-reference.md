@@ -584,14 +584,14 @@ var bridge = new ClientBridgeHost(gatewaySink, new ClientBridgeOptions
     HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId // 0xA0
 });
 
-// Subscribe to typed C->S messages on your mod's channel:
-IDisposable sub = bridge.On<ToggleEffectRequest>("my-feature", async (session, req) =>
+// Subscribe to typed C->S messages on your mod's channel (Action<IClientSession, T>; avoid async void):
+IDisposable sub = bridge.On<ToggleEffectRequest>("my-feature", (session, req) =>
 {
     if (!session.HasClientMod("my-feature"))
         return;
 
     var sync = new EffectStateSync(req.Enabled, req.Intensity, "Updated!");
-    await session.SendAsync("my-feature", sync);
+    _ = session.SendAsync("my-feature", sync);
 });
 
 // Graceful degradation in a slash command handler:
@@ -616,10 +616,10 @@ if (session.HasNativeHost)
 {
     ServerUiWindowHandle win = await session.Ui.OpenAsync("Metadata/UI/Mods/MyServerMod/Panel.ui", "my_win");
     await win.SetTextAsync("status_label", "Driven straight from the server!");
-    win.OnButtonClick("apply_button", async s =>
+    win.OnButtonClick("apply_button", s =>
     {
-        await win.SetTextAsync("status_label", "Server received button click!");
-        await s.Ui.PlayAudioAsync("Audio/Mods/MyServerMod/ding.ogg");
+        _ = win.SetTextAsync("status_label", "Server received button click!");
+        _ = s.Ui.PlayAudioAsync("Audio/Mods/MyServerMod/ding.ogg");
     });
 }
 ```
@@ -732,8 +732,8 @@ var spec = new PetMtxPatchSpec
     IconDdsPath = "Art/2DItems/Pets/Mods/MyMod/MyCustomPet.dds",
 };
 
+// AppendPetMtx clones template rows, writes hashes/foreign rows, and internally runs VerifyAppendedPetMtx(...)
 PatchedPetMtxResult patched = MaxwellDatPatcher.AppendPetMtx(stockMtxTypes, stockMtxGs, stockPet, spec);
-MaxwellDatPatcher.VerifyAppendedPetMtx(patched, spec);
 
 // Write to your overlay dir (served via NATIVEMODS_OVERLAY_DIR and declared in mod.json replaces[])
 File.WriteAllBytes(Path.Combine(outDir, "Data/MtxTypes.datc64"), patched.MtxTypesBytes);
@@ -932,11 +932,11 @@ using var host = new ClientHostRuntime(bridge, new ClientHostOptions
     ShadowCopyRoot = Path.Combine(tempRoot, "shadow"),
 });
 host.Start();
-host.Loader.LoadFromDirectory(Path.Combine(tempLocalExileRoot, "Mods", "Client", "my-feature"));
+host.Loader.LoadModFromDirectory(Path.Combine(tempLocalExileRoot, "Mods", "Client", "my-feature"));
 host.TickFrame(1f / 60f);
 
 // Verify zero ALC pinning (catches System.Text.Json leaks & forgotten event unsubscriptions!)
-UnloadResult unload = host.Loader.UnloadMod("my-feature");
+ModUnloadResult unload = await host.Loader.UnloadModAsync("my-feature");
 Assert.True(unload.UnloadedCleanly);
 ```
 
@@ -1022,7 +1022,7 @@ When verifying a live Proton run, check `nativemods-shim.log` for:
 | `PAY003` in `DualModPackageValidator` | Asset path is outside `Mods/<id>/` (or `Mods/<last-hyphen-segment>/`) and not listed in `replaces` | Move asset under `Mods/<namespace>/` or explicitly list stock override in `nativeClient.replaces` |
 | `NC008` / `RawAccessDeniedException` | Mod uses `context.Raw` without `rawAccess: true` + `rawAccessJustification` | Add both fields to `mod.json` (and pass `InstallOptions.AllowRawAccess = true` on install) |
 | `NC016` | Attempted to append to a closed `.datc64` table (`ItemClasses`) | Ride an existing `ItemClasses` value and append to `BaseItemTypes` instead |
-| `UnloadResult.UnloadedCleanly == false` | Collectible ALC pinned by static cache or leaked delegate | Use `context.Net.Send`/`CollectibleJsonCodec` (never static `JsonSerializerOptions`), call `context.TrackDisposable(...)`, and unsubscribe `Game.Frame` in `Unload()` |
+| `ModUnloadResult.UnloadedCleanly == false` | Collectible ALC pinned by static cache or leaked delegate | Use `context.Net.Send`/`CollectibleJsonCodec` (never static `JsonSerializerOptions`), call `context.TrackDisposable(...)`, and unsubscribe `Game.Frame` in `Unload()` |
 | Client disconnects / buffer underflow on `0x02bb` pet spawn | `.ot` file added an extra serialized component (e.g., `StateMachine`) | Extend `"Metadata/Pet/Pet"` with **zero extra serialized components** |
 | Client crashes opening Cosmetics (`K`) tab | Owned `MtxTypes.HASH32` missing or mismatched in `MtxTypeGameSpecific.datc64` | Ensure `MtxTypeGameSpecific.HASH32 == MtxTypes.HASH32 == MurmurHash2(MtxTypes.Id, 0)` and both tables are overlaid before startup via `NATIVEMODS_OVERLAY_DIR` |
 | Pet missing from Cosmetics (`K`) tab on server | `Pet.Id` used plural `Metadata/Pets/...` or included `.ot` | Use singular `Metadata/Pet/Mods/<Name>/<Pet>` (no `.ot` suffix) so `CosmeticEffects.PetTypes()` recognizes it |
