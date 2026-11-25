@@ -184,6 +184,21 @@ public class UiControlNode : IUiControl
     public void SetProperty(string name, string value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            if (string.Equals(name, "text", StringComparison.OrdinalIgnoreCase))
+            {
+                Text = value;
+                return;
+            }
+
+            if (string.Equals(name, "visible", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out bool visibleVal))
+            {
+                Visible = visibleVal;
+                return;
+            }
+        }
+
         _properties[name] = value;
         if (string.Equals(name, "text", StringComparison.OrdinalIgnoreCase))
         {
@@ -195,6 +210,27 @@ public class UiControlNode : IUiControl
         }
 
         _customBehavior?.OnPropertyChanged(name, value);
+    }
+
+    internal bool IsEffectivelyVisible()
+    {
+        UiControlNode? cur = this;
+        while (cur is not null)
+        {
+            if (!cur.Visible)
+            {
+                return false;
+            }
+
+            if (cur is UiWindowNode win && !win.IsOpen)
+            {
+                return false;
+            }
+
+            cur = cur.Parent;
+        }
+
+        return true;
     }
 
     internal void AddChild(UiControlNode child)
@@ -309,7 +345,7 @@ public sealed class UiButtonNode(string id, UiControlNode? parent) : UiControlNo
     /// <inheritdoc/>
     public void Click()
     {
-        if (Enabled && Visible)
+        if (Enabled && IsEffectivelyVisible())
         {
             Clicked?.Invoke();
         }
@@ -398,6 +434,7 @@ public sealed class UiWindowNode : UiControlNode, IUiWindow
 {
     private readonly Action<UiWindowNode> _reloadAction;
     private readonly Action<UiWindowNode> _closeAction;
+    private readonly List<IDisposable> _nativeSubscriptions = [];
 
     internal UiWindowNode(string windowId, string sourcePath, Action<UiWindowNode> reloadAction, Action<UiWindowNode> closeAction)
         : base(windowId, "Frame", null)
@@ -405,6 +442,21 @@ public sealed class UiWindowNode : UiControlNode, IUiWindow
         SourcePath = sourcePath;
         _reloadAction = reloadAction;
         _closeAction = closeAction;
+    }
+
+    internal void TrackNativeSubscription(IDisposable subscription)
+    {
+        _nativeSubscriptions.Add(subscription);
+    }
+
+    internal void ReleaseNativeSubscriptions()
+    {
+        foreach (IDisposable sub in _nativeSubscriptions)
+        {
+            sub.Dispose();
+        }
+
+        _nativeSubscriptions.Clear();
     }
 
     /// <inheritdoc/>
@@ -436,6 +488,7 @@ public sealed class UiWindowNode : UiControlNode, IUiWindow
         }
 
         IsOpen = false;
+        ReleaseNativeSubscriptions();
         DestroyCustomRecursive();
         _closeAction(this);
         Closed?.Invoke();
@@ -491,13 +544,13 @@ public sealed class UiService : IUiService
 
         var window = new UiWindowNode(resolvedId, virtualPath, ReloadInternal, CloseInternal);
         AttachParsedTree(window, parsedRoot);
-        BindNativeControlsIfLive(window, virtualPath);
 
         lock (_gate)
         {
             if (_windows.TryGetValue(resolvedId, out UiWindowNode? existing))
             {
                 existing.IsOpen = false;
+                existing.ReleaseNativeSubscriptions();
                 if (existing.NativeControlHandle != nint.Zero && _bridge is not null)
                 {
                     _bridge.SetNativeUiVisible(existing.NativeControlHandle, false);
@@ -506,6 +559,7 @@ public sealed class UiService : IUiService
                 existing.DestroyCustomRecursive();
             }
 
+            BindNativeControlsIfLive(window, virtualPath);
             _windows[resolvedId] = window;
         }
 
@@ -584,15 +638,23 @@ public sealed class UiService : IUiService
         string source = _files.ReadAllText(window.SourcePath)
             ?? throw new FileNotFoundException($"UI layout '{window.SourcePath}' could not be reloaded.", window.SourcePath);
 
+        window.ReleaseNativeSubscriptions();
         window.DestroyCustomRecursive();
         window.MutableChildren.Clear();
         UiControlNode parsedRoot = ParseUiDocument(source, window.SourcePath);
         AttachParsedTree(window, parsedRoot);
+        if (window.NativeControlHandle != nint.Zero && _bridge is not null)
+        {
+            _bridge.SetNativeUiVisible(window.NativeControlHandle, window.Visible);
+            BindChildrenRecursive(window, window.NativeControlHandle, window);
+        }
+
         window.InitializeCustomRecursive();
     }
 
     private void CloseInternal(UiWindowNode window)
     {
+        window.ReleaseNativeSubscriptions();
         if (window.NativeControlHandle != nint.Zero && _bridge is not null)
         {
             _bridge.SetNativeUiVisible(window.NativeControlHandle, false);
@@ -622,10 +684,11 @@ public sealed class UiService : IUiService
 
         window.NativeBridge = _bridge;
         window.NativeControlHandle = nativeRoot;
-        BindChildrenRecursive(nativeRoot, window);
+        _bridge.SetNativeUiVisible(nativeRoot, window.Visible);
+        BindChildrenRecursive(window, nativeRoot, window);
     }
 
-    private void BindChildrenRecursive(nint nativeParent, UiControlNode parentNode)
+    private void BindChildrenRecursive(UiWindowNode window, nint nativeParent, UiControlNode parentNode)
     {
         if (_bridge is null)
         {
@@ -638,22 +701,39 @@ public sealed class UiService : IUiService
             if (!string.IsNullOrWhiteSpace(child.Id))
             {
                 nativeChild = _bridge.FindNativeUiChild(nativeParent, child.Id);
+                if (nativeChild == nint.Zero && window.NativeControlHandle != nint.Zero && !string.IsNullOrWhiteSpace(child.Path))
+                {
+                    nativeChild = _bridge.FindNativeUiChild(window.NativeControlHandle, child.Path);
+                }
             }
 
             if (nativeChild != nint.Zero)
             {
                 child.NativeBridge = _bridge;
                 child.NativeControlHandle = nativeChild;
+
+                // Synchronize parsed initial visibility & text so reused native windows reset any
+                // hidden rows or stale captions from previous open/close cycles.
+                _bridge.SetNativeUiVisible(nativeChild, child.Visible);
                 if (child is UiButtonNode button)
                 {
-                    _ = _bridge.SubscribeNativeUiClick(nativeChild, button.Click);
+                    if (child.Properties.ContainsKey("text") || !string.IsNullOrEmpty(child.Text))
+                    {
+                        _bridge.SetNativeUiText(nativeChild, child.Text, isButton: true);
+                    }
+
+                    window.TrackNativeSubscription(_bridge.SubscribeNativeUiClick(nativeChild, button.Click));
+                }
+                else if (child is UiLabelNode && (child.Properties.ContainsKey("text") || !string.IsNullOrEmpty(child.Text)))
+                {
+                    _bridge.SetNativeUiText(nativeChild, child.Text, isButton: false);
                 }
 
-                BindChildrenRecursive(nativeChild, child);
+                BindChildrenRecursive(window, nativeChild, child);
             }
             else
             {
-                BindChildrenRecursive(nativeParent, child);
+                BindChildrenRecursive(window, nativeParent, child);
             }
         }
     }

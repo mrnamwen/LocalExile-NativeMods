@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -261,7 +262,7 @@ void maybe_trace_miss(const char* hook_name, const std::string& path) {
     if (!g_trace_files.load(std::memory_order_relaxed)) return;
     const std::string norm = OverlayAndChannels::normalize_virtual_path(path.c_str());
     if (norm.find("mods/") != std::string::npos || norm.find("maxwell") != std::string::npos ||
-        norm.find(".dat") != std::string::npos) {
+        norm.find("siphon") != std::string::npos || norm.find(".dat") != std::string::npos) {
         logger_logf("INFO", "[OVERLAY-TRACE] miss '%s' (%s)", norm.c_str(), hook_name);
     }
 }
@@ -541,19 +542,39 @@ struct UiClickHandlerRecord {
     void*                  user_data;
 };
 
+std::mutex                                      g_ui_handlers_mutex;
+uint64_t                                        g_ui_next_token = 1;
+std::vector<UiClickHandlerRecord*>              g_ui_handlers;
+std::unordered_map<void*, UiClickHandlerRecord*> g_ui_button_slots;
+std::mutex                                      g_ui_windows_mutex;
+void*                                           g_ui_windows_root = nullptr;
+std::unordered_map<std::string, void*>          g_ui_loaded_windows;
+
 void* NM_CALL ui_event_destroy(void* self, uint64_t /*flags*/) { return self; }
 uint64_t NM_CALL ui_event_size(void* /*self*/) { return 0x10ull; }
 uint64_t NM_CALL ui_event_kind(void* /*self*/) { return 2ull; }
 void NM_CALL ui_event_invoke(void* entry_slot) {
     if (!entry_slot) return;
     auto* rec = *reinterpret_cast<UiClickHandlerRecord**>(static_cast<uint8_t*>(entry_slot) + 8);
-    if (!rec || !rec->cb) return;
+    if (!rec) return;
+
     struct InvokeCtx {
-        UiClickHandlerRecord* rec;
-    } ctx{rec};
+        void*                  control;
+        nm_ui_event_callback_t cb;
+        void*                  user_data;
+    } ctx{nullptr, nullptr, nullptr};
+
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        ctx.control   = rec->control;
+        ctx.cb        = rec->cb;
+        ctx.user_data = rec->user_data;
+    }
+    if (!ctx.cb) return;
+
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<InvokeCtx*>(raw);
-        c->rec->cb(c->rec->control, c->rec->user_data);
+        c->cb(c->control, c->user_data);
         return 0;
     };
     nm_exception_info_t ex{};
@@ -567,12 +588,78 @@ void* g_ui_event_vtable[4] = {
     reinterpret_cast<void*>(&ui_event_invoke),
 };
 
-std::mutex                          g_ui_handlers_mutex;
-uint64_t                            g_ui_next_token = 1;
-std::vector<UiClickHandlerRecord*>  g_ui_handlers;
-std::mutex                          g_ui_windows_mutex;
-void*                               g_ui_windows_root = nullptr;
-std::unordered_map<std::string, void*> g_ui_loaded_windows;
+bool is_control_in_parent_children(void* parent, void* target) {
+    if (!parent || !target) return false;
+    auto* parent_bytes = static_cast<const uint8_t*>(parent);
+    if (!is_ptr_readable(parent_bytes + 0xC0, 2 * sizeof(void*))) return false;
+    auto* begin = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC0);
+    auto* end   = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC8);
+    if (!begin || !end || end < begin) return false;
+    const size_t count = static_cast<size_t>(end - begin);
+    if (count == 0 || count > 2048 || !is_ptr_readable(begin, count * sizeof(void*))) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (begin[i] == target) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool control_id_equals(const void* control, const wchar_t* target, size_t target_len) {
+    if (!control || !target || target_len == 0) return false;
+    const auto* ws_addr = static_cast<const uint8_t*>(control) + 0x1B8;
+    if (!is_ptr_readable(ws_addr, sizeof(MsvcWString))) return false;
+    const auto* ws = reinterpret_cast<const MsvcWString*>(ws_addr);
+    if (ws->size != target_len || ws->size > 4096) return false;
+    const wchar_t* chars = (ws->cap >= 8) ? ws->ptr : ws->buf;
+    if (!chars || !is_ptr_readable(chars, target_len * sizeof(wchar_t))) return false;
+    return std::wmemcmp(chars, target, target_len) == 0;
+}
+
+void* find_child_recursive_by_segment(void* parent, const wchar_t* seg, size_t seg_len, int depth) {
+    if (!parent || !seg || seg_len == 0 || depth > 16) return nullptr;
+    const auto* parent_bytes = static_cast<const uint8_t*>(parent);
+    if (!is_ptr_readable(parent_bytes + 0xC0, 2 * sizeof(void*))) return nullptr;
+    auto* begin = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC0);
+    auto* end   = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC8);
+    if (!begin || !end || end < begin) return nullptr;
+    const size_t count = static_cast<size_t>(end - begin);
+    if (count == 0 || count > 512 || !is_ptr_readable(begin, count * sizeof(void*))) return nullptr;
+
+    // Pass 1: direct children first (matches native Control::Find priority).
+    for (size_t i = 0; i < count; ++i) {
+        void* child = begin[i];
+        if (child && control_id_equals(child, seg, seg_len)) {
+            return child;
+        }
+    }
+    // Pass 2: descend through unnamed or intermediate containers.
+    for (size_t i = 0; i < count; ++i) {
+        void* child = begin[i];
+        if (child) {
+            if (void* nested = find_child_recursive_by_segment(child, seg, seg_len, depth + 1)) {
+                return nested;
+            }
+        }
+    }
+    return nullptr;
+}
+
+void* find_child_fallback_dot_path(void* parent, const std::wstring& dot_path) {
+    if (!parent || dot_path.empty()) return nullptr;
+    void* current = parent;
+    size_t pos = 0;
+    while (pos < dot_path.size() && current != nullptr) {
+        const size_t dot = dot_path.find(L'.', pos);
+        const size_t seg_len = (dot == std::wstring::npos) ? (dot_path.size() - pos) : (dot - pos);
+        if (seg_len > 0) {
+            current = find_child_recursive_by_segment(current, dot_path.c_str() + pos, seg_len, 0);
+        }
+        if (dot == std::wstring::npos) break;
+        pos = dot + 1;
+    }
+    return current;
+}
 
 // Resolves and caches the live App global pointer address via network.app_global_ref (0x00f3b30).
 uint64_t resolve_app_global_addr(nm_build_id_t build_id, uint64_t image_base) {
@@ -888,6 +975,16 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
         g_ui_windows_root = nullptr;
         g_ui_loaded_windows.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        for (UiClickHandlerRecord* rec : g_ui_handlers) {
+            if (rec) {
+                rec->cb = nullptr;
+                rec->user_data = nullptr;
+            }
+        }
+        g_ui_button_slots.clear();
+    }
 #endif
 }
 
@@ -980,14 +1077,27 @@ nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, voi
         if (g_ui_windows_root != root) {
             g_ui_windows_root = root;
             g_ui_loaded_windows.clear();
+            std::lock_guard<std::mutex> hlock(g_ui_handlers_mutex);
+            for (UiClickHandlerRecord* rec : g_ui_handlers) {
+                if (rec) {
+                    rec->cb = nullptr;
+                    rec->user_data = nullptr;
+                }
+            }
+            g_ui_button_slots.clear();
         } else {
             auto it = g_ui_loaded_windows.find(normalized_key);
             if (it != g_ui_loaded_windows.end() && it->second != nullptr) {
-                *out_control = it->second;
-                (void)ui_set_visible(it->second, 1);
-                logger_logf("INFO", "[UI] Reused existing native window '%s' (root=%p, control=%p)",
-                            virtual_path_utf8, root, it->second);
-                return NM_OK;
+                if (is_control_in_parent_children(root, it->second) && is_ptr_readable(it->second, 0x200)) {
+                    *out_control = it->second;
+                    (void)ui_set_visible(it->second, 1);
+                    logger_logf("INFO", "[UI] Reused existing native window '%s' (root=%p, control=%p)",
+                                virtual_path_utf8, root, it->second);
+                    return NM_OK;
+                }
+                logger_logf("INFO", "[UI] Cached native window '%s' (%p) no longer attached to root %p; reloading fresh",
+                            virtual_path_utf8, it->second, root);
+                g_ui_loaded_windows.erase(it);
             }
         }
     }
@@ -1083,10 +1193,14 @@ nm_status_t LiveEngineHooks::ui_find_child(void* parent_control, const char* dot
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<FindCtx*>(raw);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->parent) + 0xB8, 0x18)) return -1;
         using FindFn = void*(NM_CALL*)(void*, const WStringView*);
         auto find_fn = reinterpret_cast<FindFn>(static_cast<uintptr_t>(c->find_addr));
         WStringView wv{c->wide_path.c_str(), static_cast<uint64_t>(c->wide_path.size())};
         c->found = find_fn(static_cast<uint8_t*>(c->parent) + 0xB8, &wv);
+        if (!c->found) {
+            c->found = find_child_fallback_dot_path(c->parent, c->wide_path);
+        }
         return 0;
     };
 
@@ -1115,12 +1229,15 @@ nm_status_t LiveEngineHooks::ui_set_visible(void* control, int32_t visible) {
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<VisCtx*>(raw);
+        if (!is_ptr_readable(c->control, 0x1F0)) return -1;
         using SetVisFn = void(NM_CALL*)(void*, uint8_t);
         reinterpret_cast<SetVisFn>(static_cast<uintptr_t>(c->fn_addr))(c->control, c->vis);
         return 0;
     };
+    int64_t rc = 0;
     nm_exception_info_t ex{};
-    return invoke_guarded(fn, &ctx, nullptr, &ex);
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
 #else
     (void)visible;
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
@@ -1134,24 +1251,62 @@ nm_status_t LiveEngineHooks::ui_set_text(void* control, const char* text_utf8, i
     const EmbeddedSymbol* sym_assign = find_symbol(build_id_, "runtime.wstring_assign");
     if (!sym_assign || sym_assign->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
 
+    const EmbeddedSymbol* sym_btn_vt = find_symbol(build_id_, "ui.vtable_button");
+    const EmbeddedSymbol* sym_lbl_vt = find_symbol(build_id_, "ui.vtable_label");
+    const uint64_t btn_vt_addr = (sym_btn_vt && sym_btn_vt->rva != 0) ? (image_base_ + sym_btn_vt->rva) : 0ull;
+    const uint64_t lbl_vt_addr = (sym_lbl_vt && sym_lbl_vt->rva != 0) ? (image_base_ + sym_lbl_vt->rva) : 0ull;
+
     struct TextCtx {
         void*        control;
         size_t       iface_offset;
+        uint64_t     btn_vt_addr;
+        uint64_t     lbl_vt_addr;
         uint64_t     assign_addr;
         std::wstring wide_text;
-    } ctx{control, is_button ? 0x3F8u : 0x298u, image_base_ + sym_assign->rva, utf8_to_wide_hooks(text_utf8)};
+    } ctx{
+        control,
+        is_button ? 0x3F8u : 0x298u,
+        btn_vt_addr,
+        lbl_vt_addr,
+        image_base_ + sym_assign->rva,
+        utf8_to_wide_hooks(text_utf8),
+    };
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<TextCtx*>(raw);
+        if (!is_ptr_readable(c->control, sizeof(void*))) return -1;
+
+        // Auto-verify Button (+0x3F8, internal child Label at +0x408) vs Label (+0x298)
+        // against the real 3.29.3d primary vtable so callers can never hit a wrong subobject offset.
+        const uint64_t primary_vt = reinterpret_cast<uint64_t>(*reinterpret_cast<void* const*>(c->control));
+        size_t offset = c->iface_offset;
+        bool target_is_button = (offset == 0x3F8u);
+        if (c->btn_vt_addr != 0 && primary_vt == c->btn_vt_addr) {
+            offset = 0x3F8u;
+            target_is_button = true;
+        } else if (c->lbl_vt_addr != 0 && primary_vt == c->lbl_vt_addr) {
+            offset = 0x298u;
+            target_is_button = false;
+        }
+
+        if (target_is_button) {
+            if (!is_ptr_readable(static_cast<const uint8_t*>(c->control) + 0x408, sizeof(void*))) return -2;
+            void* inner_label = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->control) + 0x408);
+            if (!inner_label) return -3;
+        }
+
+        void* sub = static_cast<uint8_t*>(c->control) + offset;
+        if (!is_ptr_readable(sub, sizeof(void*))) return -4;
+        void** vtbl = *reinterpret_cast<void***>(sub);
+        if (!vtbl || !is_ptr_readable(vtbl, 3 * sizeof(void*)) || !vtbl[2]) return -5;
+
         using AssignFn  = void*(NM_CALL*)(void*, const wchar_t*, uint64_t);
         using SetTextFn = void(NM_CALL*)(void*, const void*);
         auto assign_fn = reinterpret_cast<AssignFn>(static_cast<uintptr_t>(c->assign_addr));
+        auto set_text  = reinterpret_cast<SetTextFn>(vtbl[2]);
 
-        void* sub = static_cast<uint8_t*>(c->control) + c->iface_offset;
-        void** vtbl = *reinterpret_cast<void***>(sub);
-        if (!vtbl || !vtbl[2]) return -1;
-        auto set_text = reinterpret_cast<SetTextFn>(vtbl[2]);
-
+        // Both Button::SetText (0x1418f4c70) and Label::SetText (0x1418c2c10) take std::wstring
+        // by value and destroy the passed buffer via 0x140134500 on return.
         MsvcWString ws{};
         std::memset(&ws, 0, sizeof(ws));
         ws.cap = 7;
@@ -1163,7 +1318,12 @@ nm_status_t LiveEngineHooks::ui_set_text(void* control, const char* text_utf8, i
     int64_t rc = 0;
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
-    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+    if (st != NM_OK || rc != 0) {
+        logger_logf("WARN", "[UI] ui_set_text(ctrl=%p, is_button=%d) failed (st=%d, rc=%lld, ex=0x%08X)",
+                    control, is_button, static_cast<int>(st), static_cast<long long>(rc), ex.exception_code);
+        return NM_ERR_GAME_EXCEPTION;
+    }
+    return NM_OK;
 #else
     (void)is_button;
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
@@ -1182,6 +1342,21 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
     const EmbeddedSymbol* sym_get  = find_symbol(build_id_, "ui.event_list_get");
     const EmbeddedSymbol* sym_grow = find_symbol(build_id_, "ui.event_list_grow");
     if (!sym_get || !sym_grow || sym_get->rva == 0 || sym_grow->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    // Reuse existing handler slot for this native Button control so closing/reopening
+    // a window never appends duplicate entries into PoE's button+0x2a0 event list!
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        auto it = g_ui_button_slots.find(button_control);
+        if (it != g_ui_button_slots.end() && it->second != nullptr) {
+            UiClickHandlerRecord* existing = it->second;
+            existing->token = g_ui_next_token++;
+            existing->cb = cb;
+            existing->user_data = user_data;
+            *out_token = existing->token;
+            return NM_OK;
+        }
+    }
 
     auto* rec = new UiClickHandlerRecord{};
     {
@@ -1202,6 +1377,7 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<SubCtx*>(raw);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->button) + 0x2A0, sizeof(void*))) return -2;
         using EventGetFn  = void*(NM_CALL*)(void*, void*, uint8_t);
         using EventGrowFn = void(NM_CALL*)(void*);
         using StepFn      = uint64_t(NM_CALL*)(void*);
@@ -1243,7 +1419,15 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
     if (st != NM_OK || rc != 0) {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        rec->cb = nullptr;
+        rec->user_data = nullptr;
         return NM_ERR_GAME_EXCEPTION;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        g_ui_button_slots[button_control] = rec;
     }
 
     *out_token = rec->token;

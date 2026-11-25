@@ -32,13 +32,38 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly List<(uint ObjectId, string EffectPath)> _playedEffects = [];
     private readonly Dictionary<(uint ObjectId, string EntryName, bool IsEvent), Func<GealArguments, GealValue>> _gealObjectHandlers = [];
     private readonly List<nint> _allocatedBuffers = [];
+    private readonly Dictionary<string, nint> _nativeUiWindowsByPath = new(StringComparer.Ordinal);
+    private readonly Dictionary<(nint Parent, string Key), nint> _nativeUiChildren = [];
+    private readonly Dictionary<nint, SimulatedNativeUiControl> _nativeUiControls = [];
     private readonly Lock _gate = new();
 
     private int _gameThreadId;
     private ulong _nextHookHandle = 1;
     private int _nextAudioChannel = 1;
     private uint _nextClientObjectId = 0x8000_0001u;
+    private long _nextNativeUiHandle = 0x1000;
     private bool _disposed;
+
+    /// <summary>Snapshot of simulated native 3.29 UI control state (when <see cref="EnableSimulatedNativeUi"/> is <c>true</c>).</summary>
+    public sealed class SimulatedNativeUiControl
+    {
+        public required nint Handle { get; init; }
+        public required nint ParentHandle { get; init; }
+        public required string Key { get; init; }
+        public bool Visible { get; set; } = true;
+        public string Text { get; set; } = string.Empty;
+        public bool? LastSetTextIsButton { get; set; }
+        public int SetTextCallCount { get; set; }
+        public int SetVisibleCallCount { get; set; }
+        public int NativeSubscribeCount { get; set; }
+        public Action? ActiveClickHandler { get; set; }
+    }
+
+    /// <summary>
+    /// Enables deterministic simulation of the native 3.29 UI window/child/visibility/text/click bridge
+    /// (window caching by normalized path, per-button click slot replacement, ancestor visibility checks).
+    /// </summary>
+    public bool EnableSimulatedNativeUi { get; set; }
 
     /// <inheritdoc/>
     public ClientBuildId DetectedBuild { get; }
@@ -713,19 +738,228 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
-    public nint CreateNativeUiWindow(string virtualPath) => nint.Zero;
+    public nint CreateNativeUiWindow(string virtualPath)
+    {
+        if (!EnableSimulatedNativeUi || string.IsNullOrWhiteSpace(virtualPath))
+        {
+            return nint.Zero;
+        }
+
+        string norm = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
+        lock (_gate)
+        {
+            if (_nativeUiWindowsByPath.TryGetValue(norm, out nint existing))
+            {
+                if (_nativeUiControls.TryGetValue(existing, out SimulatedNativeUiControl? ctrl))
+                {
+                    ctrl.Visible = true;
+                    ctrl.SetVisibleCallCount++;
+                }
+
+                return existing;
+            }
+
+            nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            _nativeUiWindowsByPath[norm] = handle;
+            _nativeUiControls[handle] = new SimulatedNativeUiControl
+            {
+                Handle = handle,
+                ParentHandle = nint.Zero,
+                Key = norm,
+                Visible = true,
+            };
+            return handle;
+        }
+    }
 
     /// <inheritdoc/>
-    public nint FindNativeUiChild(nint parentControl, string dotPath) => nint.Zero;
+    public nint FindNativeUiChild(nint parentControl, string dotPath)
+    {
+        if (!EnableSimulatedNativeUi || parentControl == nint.Zero || string.IsNullOrWhiteSpace(dotPath))
+        {
+            return nint.Zero;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.ContainsKey(parentControl))
+            {
+                return nint.Zero;
+            }
+
+            var key = (parentControl, dotPath.Trim());
+            if (_nativeUiChildren.TryGetValue(key, out nint existing))
+            {
+                return existing;
+            }
+
+            nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            _nativeUiChildren[key] = handle;
+            _nativeUiControls[handle] = new SimulatedNativeUiControl
+            {
+                Handle = handle,
+                ParentHandle = parentControl,
+                Key = key.Item2,
+                Visible = true,
+            };
+            return handle;
+        }
+    }
 
     /// <inheritdoc/>
-    public void SetNativeUiVisible(nint control, bool visible) { }
+    public void SetNativeUiVisible(nint control, bool visible)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.Visible = visible;
+                ctrl.SetVisibleCallCount++;
+            }
+        }
+    }
 
     /// <inheritdoc/>
-    public void SetNativeUiText(nint control, string text, bool isButton) { }
+    public void SetNativeUiText(nint control, string text, bool isButton)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.Text = text ?? string.Empty;
+                ctrl.LastSetTextIsButton = isButton;
+                ctrl.SetTextCallCount++;
+            }
+        }
+    }
 
     /// <inheritdoc/>
-    public IDisposable SubscribeNativeUiClick(nint buttonControl, Action onClicked) => NoopDisposable.Instance;
+    public IDisposable SubscribeNativeUiClick(nint buttonControl, Action onClicked)
+    {
+        ArgumentNullException.ThrowIfNull(onClicked);
+        if (!EnableSimulatedNativeUi || buttonControl == nint.Zero)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(buttonControl, out SimulatedNativeUiControl? ctrl))
+            {
+                return NoopDisposable.Instance;
+            }
+
+            ctrl.NativeSubscribeCount++;
+            ctrl.ActiveClickHandler = onClicked;
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                if (_nativeUiControls.TryGetValue(buttonControl, out SimulatedNativeUiControl? ctrl) &&
+                    ReferenceEquals(ctrl.ActiveClickHandler, onClicked))
+                {
+                    ctrl.ActiveClickHandler = null;
+                }
+            }
+        });
+    }
+
+    /// <summary>Gets the simulated native UI control state for a control id under the given window path, or <c>null</c>.</summary>
+    public SimulatedNativeUiControl? GetSimulatedNativeUiControl(string virtualPath, string? childId = null)
+    {
+        string norm = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
+        lock (_gate)
+        {
+            if (!_nativeUiWindowsByPath.TryGetValue(norm, out nint root))
+            {
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(childId))
+            {
+                return _nativeUiControls.TryGetValue(root, out var rootCtrl) ? rootCtrl : null;
+            }
+
+            foreach (SimulatedNativeUiControl ctrl in _nativeUiControls.Values)
+            {
+                if (string.Equals(ctrl.Key, childId, StringComparison.OrdinalIgnoreCase) &&
+                    IsDescendantOf(ctrl.Handle, root))
+                {
+                    return ctrl;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Simulates a native PoE 3.29 mouse click on a native button control.
+    /// Respects native ancestor visibility (<c>Control::SetVisible</c> clears hit-testing on hidden subtrees).
+    /// Returns <c>true</c> if a live click handler was invoked.
+    /// </summary>
+    public bool SimulateNativeUiClick(nint buttonHandle)
+    {
+        Action? handler = null;
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(buttonHandle, out SimulatedNativeUiControl? ctrl) ||
+                ctrl.ActiveClickHandler is null)
+            {
+                return false;
+            }
+
+            // Native Control::SetVisible blocks clicks on hidden controls and all descendants.
+            nint cur = buttonHandle;
+            while (cur != nint.Zero && _nativeUiControls.TryGetValue(cur, out SimulatedNativeUiControl? node))
+            {
+                if (!node.Visible)
+                {
+                    return false;
+                }
+
+                cur = node.ParentHandle;
+            }
+
+            handler = ctrl.ActiveClickHandler;
+        }
+
+        handler.Invoke();
+        return true;
+    }
+
+    private bool IsDescendantOf(nint handle, nint ancestor)
+    {
+        nint cur = handle;
+        while (cur != nint.Zero)
+        {
+            if (cur == ancestor)
+            {
+                return true;
+            }
+
+            if (!_nativeUiControls.TryGetValue(cur, out SimulatedNativeUiControl? node))
+            {
+                break;
+            }
+
+            cur = node.ParentHandle;
+        }
+
+        return false;
+    }
 
     /// <inheritdoc/>
     public int ReadStat(string statKey, int defaultValue)

@@ -690,6 +690,20 @@ int test_overlay_hash_prefilter_and_connection_token() {
     CHECK(nm_get_active_connection_token(&conn_tok) == NM_OK);
     CHECK(conn_tok == 0ull);
 
+    // 4. Verify native UI ABI argument validation & safe non-live status codes
+    void* ui_ptr = nullptr;
+    uint64_t click_tok = 0;
+    auto dummy_click = [](void*, void*) {};
+    CHECK(nm_ui_get_root(nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_create_window(nullptr, &ui_ptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_create_window("Metadata/UI/Mods/Siphon/SiphonPicker.ui", &ui_ptr) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_find_child(nullptr, "affix_row_0", &ui_ptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_set_visible(nullptr, 0) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_set_text(nullptr, "test", 1) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_subscribe_click(nullptr, dummy_click, nullptr, &click_tok) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_subscribe_click(reinterpret_cast<void*>(0x1234), dummy_click, nullptr, &click_tok)
+          == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
     CHECK(nm_unregister_file_overlay(tok) == NM_OK);
     CHECK(nm_shutdown() == NM_OK);
     ++g_tests_passed;
