@@ -53,6 +53,7 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
         {
             string connId = ConnectionKey(player);
             _players[connId] = player;
+            _serverMod.BindConnection(connId, Program.CharacterName(player));
             await _bridge.HandleIncomingChatCommandAsync(connId, "/nm " + string.Join(' ', args));
         });
 
@@ -62,11 +63,12 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
             if (bytes.Length <= 2) return false;
             string connId = ConnectionKey(player);
             _players[connId] = player;
+            _serverMod.BindConnection(connId, Program.CharacterName(player));
             return await _bridge.HandleIncomingPacketAsync(connId, IOpcodeRegistry.ClientRulesetOpcode, bytes.AsMemory(2));
         });
 
         // Area entry: ensure live MtxCatalog/CosmeticEffects include Maxwell, grant 0x0204 ownership,
-        // and sync if the player already has Maxwell equipped in the Cosmetics (K) menu.
+        // and sync if the player already has Maxwell equipped (or unequipped) in the Cosmetics (K) menu.
         GameEvents.PlayerEntered.Add(id, async player =>
         {
             string connId = ConnectionKey(player);
@@ -76,18 +78,28 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
             _registrar.ApplyToLiveCatalogs(Game.Mtx, Game.MtxEffects, mod.Log);
             await _serverMod.OnPlayerEnteredAsync(connId, character);
             _registrar.ObserveLiveGatewayPlayer(connId, character, Game.WornCosmetics(player), player.Pets);
+            await _serverMod.ReconcileCosmeticAndPetStateAsync(
+                connId,
+                character,
+                _registrar.IsEquipped(connId, MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash),
+                SnapshotPetIds(player));
         });
 
-        // AreaTick (~4 Hz): detect Cosmetics (K) menu equip/unequip transitions in real time so clicking
+        // AreaTick: detect Cosmetics (K) menu equip/unequip transitions in real time so clicking
         // "Maxwell the Cat Pet" in Pet Slot 1 (18) or 2 (19) starts/stops Stock Market music and updates MaxwellPanel.ui!
-        GameEvents.AreaTick.Add(id, GameEvents.Always((player, _) =>
+        GameEvents.AreaTick.Add(id, GameEvents.Always(async (player, _) =>
         {
-            if (player.Closed) return Task.CompletedTask;
+            if (player.Closed || player.LeavingArea) return;
             string connId = ConnectionKey(player);
+            string character = Program.CharacterName(player);
             _players[connId] = player;
             _registrar.ApplyToLiveCatalogs(Game.Mtx, Game.MtxEffects, mod.Log);
-            _registrar.ObserveLiveGatewayPlayer(connId, Program.CharacterName(player), Game.WornCosmetics(player), player.Pets);
-            return Task.CompletedTask;
+            _registrar.ObserveLiveGatewayPlayer(connId, character, Game.WornCosmetics(player), player.Pets);
+            await _serverMod.ReconcileCosmeticAndPetStateAsync(
+                connId,
+                character,
+                _registrar.IsEquipped(connId, MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash),
+                SnapshotPetIds(player));
         }));
 
         GameEvents.PlayerLeaving.Add(id, (player, reason) =>
@@ -97,6 +109,7 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
                 string connId = ConnectionKey(player);
                 _players.TryRemove(connId, out _);
                 _registrar.ClearConnection(connId);
+                _serverMod.OnPlayerLeft(connId);
                 _bridge.RemoveSession(connId);
             }
             return Task.CompletedTask;
@@ -116,6 +129,14 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
     }
 
     private static string ConnectionKey(Player player) => $"{player.Connection.Remote}#{player.Id}";
+
+    private static uint[] SnapshotPetIds(Player player)
+    {
+        lock (player.Pets)
+        {
+            return player.Pets.Count == 0 ? [] : [.. player.Pets.Keys];
+        }
+    }
 
     private sealed class LocalExileGatewaySink(ConcurrentDictionary<string, Player> players) : IGatewayPacketSink
     {
@@ -193,10 +214,13 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
         {
             if (!players.TryGetValue(connectionId, out var player) || player.Closed || petEntityId == 0) return;
 
+            bool removed;
             lock (player.Pets)
             {
-                player.Pets.Remove(petEntityId);
+                removed = player.Pets.Remove(petEntityId);
             }
+
+            if (!removed) return;
 
             await Game.SendWorldRemoval(player, petEntityId,
                 $"0x{InstanceProtocol.RemoveObjectId:x4} remove Maxwell pet 0x{petEntityId:x}");

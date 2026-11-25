@@ -296,12 +296,22 @@ public sealed class LocalExilePetMtxRegistrar : IDisposable
                 }
 
                 var current = new ObservedEquipState(worn.Slot, entityId);
-                if (!hadPrevious || previous != current)
+                bool newlyEquipped = !hadPrevious;
+                bool slotChanged = hadPrevious && previous.Slot != worn.Slot;
+                bool respawnedWithNewEntity = hadPrevious && entityId != 0 && previous.EntityId != entityId;
+
+                if (newlyEquipped || slotChanged || respawnedWithNewEntity)
                 {
                     _observed[key] = current;
                     var evt = new PetMtxEquipChangedEvent(connectionId, characterName, pet, IsEquipped: true, worn.Slot, entityId);
                     events.Add(evt);
                     PetEquipChanged?.Invoke(evt);
+                }
+                else if (hadPrevious && previous != current)
+                {
+                    // The pet entity was despawned (for example via /maxwell dismiss) while the Cosmetics (K)
+                    // slot itself did not change; track the cleared entity ID without firing a false re-equip.
+                    _observed[key] = current;
                 }
             }
             else if (hadPrevious)
@@ -315,6 +325,13 @@ public sealed class LocalExilePetMtxRegistrar : IDisposable
 
         return events;
     }
+
+    /// <summary>
+    /// Returns <c>true</c> if <paramref name="connectionId"/> is currently observed as wearing the custom Pet MTX
+    /// identified by <paramref name="mtxTypeHash"/> in Cosmetics Pet Slot 1 or 2.
+    /// </summary>
+    public bool IsEquipped(string connectionId, uint mtxTypeHash) =>
+        !string.IsNullOrWhiteSpace(connectionId) && _observed.ContainsKey((connectionId, mtxTypeHash));
 
     /// <summary>
     /// Reflection-assisted convenience overload for LocalExile Gateway <c>IMod</c> scripts: reads
