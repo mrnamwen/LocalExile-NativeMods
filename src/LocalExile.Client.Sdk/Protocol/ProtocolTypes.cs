@@ -323,8 +323,9 @@ public static class MessageCodec
     }
 
     /// <summary>
-    /// Encodes a ruleset wire packet body matching the 3.29 client ruleset framing:
-    /// <c>[u8 rulesetId][u16 BE payloadLength][payload]</c> (the 2-byte big-endian opcode <c>0x02C9</c> or <c>0x02CA</c>
+    /// Encodes a ruleset wire packet body matching the 3.29 client ruleset framing (<c>0x141fa7c10</c>/<c>0x14089f790</c>
+    /// and LocalExile <c>InstanceRulesets</c>):
+    /// <c>[u8 rulesetId][CompactUInt payloadLength][payload]</c> (the 2-byte big-endian opcode <c>0x02C9</c> or <c>0x02CA</c>
     /// is carried in the packet opcode header or optionally prepended via <see cref="EncodeFullRulesetPacket"/>).
     /// </summary>
     public static byte[] EncodeRulesetBody(byte rulesetId, ReadOnlySpan<byte> innerPayload)
@@ -339,34 +340,66 @@ public static class MessageCodec
             throw new ArgumentException($"Ruleset payload length {innerPayload.Length} exceeds 3.29 client limit of {MaxRulesetPayloadBytes} bytes.", nameof(innerPayload));
         }
 
-        byte[] body = new byte[3 + innerPayload.Length];
+        uint length = (uint)innerPayload.Length;
+        int lengthBytes = length <= 0x7Fu ? 1 : length <= 0x3FFFu ? 2 : 3;
+        byte[] body = new byte[1 + lengthBytes + innerPayload.Length];
         body[0] = rulesetId;
-        BinaryPrimitives.WriteUInt16BigEndian(body.AsSpan(1, 2), (ushort)innerPayload.Length);
-        innerPayload.CopyTo(body.AsSpan(3));
+        if (lengthBytes == 1)
+        {
+            body[1] = (byte)length;
+        }
+        else if (lengthBytes == 2)
+        {
+            body[1] = (byte)(0x80u | ((length >> 8) & 0x3Fu));
+            body[2] = (byte)(length & 0xFFu);
+        }
+        else
+        {
+            body[1] = (byte)(0xC0u | ((length >> 16) & 0x1Fu));
+            body[2] = (byte)((length >> 8) & 0xFFu);
+            body[3] = (byte)(length & 0xFFu);
+        }
+
+        innerPayload.CopyTo(body.AsSpan(1 + lengthBytes));
         return body;
     }
 
     /// <summary>
-    /// Decodes a ruleset wire packet body (<c>[u8 rulesetId][u16 BE length][payload]</c>).
+    /// Decodes a ruleset wire packet body (<c>[u8 rulesetId][CompactUInt length][payload]</c>).
     /// </summary>
     public static bool TryDecodeRulesetBody(ReadOnlyMemory<byte> body, out byte rulesetId, out ReadOnlyMemory<byte> innerPayload)
     {
         rulesetId = 0;
         innerPayload = ReadOnlyMemory<byte>.Empty;
-        if (body.Length < 3)
+        if (body.Length < 2)
         {
             return false;
         }
 
         ReadOnlySpan<byte> span = body.Span;
         rulesetId = span[0];
-        ushort length = BinaryPrimitives.ReadUInt16BigEndian(span.Slice(1, 2));
-        if (3 + length > body.Length)
+        byte first = span[1];
+        int lengthBytes = first < 0x80 ? 1 : first < 0xC0 ? 2 : first < 0xE0 ? 3 : first < 0xF0 ? 4 : 5;
+        if (1 + lengthBytes > body.Length)
         {
             return false;
         }
 
-        innerPayload = body.Slice(3, length);
+        uint length = lengthBytes switch
+        {
+            1 => first,
+            2 => (uint)(((first & 0x3F) << 8) | span[2]),
+            3 => (uint)(((first & 0x1F) << 16) | (span[2] << 8) | span[3]),
+            4 => (uint)(((first & 0x0F) << 24) | (span[2] << 16) | (span[3] << 8) | span[4]),
+            _ => (uint)((span[2] << 24) | (span[3] << 16) | (span[4] << 8) | span[5]),
+        };
+
+        if (length > MaxRulesetPayloadBytes || 1 + lengthBytes + (long)length > body.Length)
+        {
+            return false;
+        }
+
+        innerPayload = body.Slice(1 + lengthBytes, (int)length);
         return true;
     }
 
@@ -390,7 +423,7 @@ public static class MessageCodec
         opcode = 0;
         rulesetId = 0;
         innerPayload = ReadOnlyMemory<byte>.Empty;
-        if (packet.Length < 5)
+        if (packet.Length < 4)
         {
             return false;
         }
