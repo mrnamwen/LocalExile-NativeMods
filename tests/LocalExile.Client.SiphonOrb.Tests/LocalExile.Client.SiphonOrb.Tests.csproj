@@ -18,8 +18,11 @@
     <ProjectReference Include="..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
     <ProjectReference Include="..\..\examples\DualMod.SiphonOrb\Shared\DualMod.SiphonOrb.Shared.csproj" />
     <ProjectReference Include="..\..\examples\DualMod.SiphonOrb\Server\DualMod.SiphonOrb.Server.csproj" />
+    <ProjectReference Include="..\..\examples\DualMod.MaxwellPet\Shared\DualMod.MaxwellPet.Shared.csproj" />
+    <ProjectReference Include="..\..\examples\DualMod.MaxwellPet\Server\DualMod.MaxwellPet.Server.csproj" />
     <!-- Built alongside tests without binding into the default ALC so ClientModLoader can load
-         siphon.Client.dll in a collectible AssemblyLoadContext and verify UnloadedCleanly == true. -->
+         siphon.Client.dll and maxwell.Client.dll in collectible AssemblyLoadContexts and verify clean unload. -->
     <ProjectReference Include="..\..\examples\DualMod.SiphonOrb\Client\DualMod.SiphonOrb.Client.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\examples\DualMod.MaxwellPet\Client\DualMod.MaxwellPet.Client.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>
