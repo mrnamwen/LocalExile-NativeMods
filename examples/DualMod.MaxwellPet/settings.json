@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "settings": {
+    "defaultSpinSpeed": {
+      "type": "number",
+      "default": 90,
+      "min": 0,
+      "max": 720,
+      "label": "Default Spin Speed (deg/s)",
+      "description": "Default rotation speed in degrees per second when summoning Maxwell."
+    },
+    "defaultFloatHeight": {
+      "type": "number",
+      "default": 14,
+      "min": 0,
+      "max": 60,
+      "label": "Default Float Height",
+      "description": "Default hover height offset above ground for Maxwell."
+    },
+    "defaultMusicVolume": {
+      "type": "number",
+      "default": 0.75,
+      "min": 0,
+      "max": 1,
+      "label": "Default Music Volume",
+      "description": "Linear playback volume (0.0 - 1.0) for Audio/Mods/Maxwell/stock_market.ogg."
+    },
+    "autoPlayMusicOnSummon": {
+      "type": "bool",
+      "default": true,
+      "label": "Auto-Play Stock Market Music",
+      "description": "Automatically loop Audio/Mods/Maxwell/stock_market.ogg while Maxwell is summoned."
+    }
+  }
+}
