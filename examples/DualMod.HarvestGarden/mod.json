@@ -1,0 +1,78 @@
+{
+  "id": "harvest-garden",
+  "name": "Harvest Garden",
+  "description": "Functional 3.11-inspired Sacred Grove seed stockpile, custom GrowthGauge UI, GEAL plot ripening, and server-authoritative lifeforce.",
+  "author": "LocalExile Community",
+  "version": "1.0.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "harvest-garden.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": false,
+    "sdkVersionRange": ">=0.1.0-poc <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "assembly": "harvest-garden.Client.dll",
+    "payloadDir": "client",
+    "overlays": [
+      "Metadata/UI/Mods/Garden/Stockpile.ui",
+      "Metadata/MiscellaneousObjects/Mods/Garden/Plot.ot"
+    ],
+    "replaces": [],
+    "rawAccess": false,
+    "customOpcodes": [
+      {
+        "id": 1001,
+        "name": "GardenPlantSeed",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1002,
+        "name": "GardenHarvestPlot",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1003,
+        "name": "GardenSyncState",
+        "direction": "ServerToClient"
+      },
+      {
+        "id": 1004,
+        "name": "GardenOpenWindow",
+        "direction": "ServerToClient"
+      }
+    ],
+    "gealBuiltins": [
+      "GardenRipen"
+    ],
+    "customControls": [
+      "GrowthGauge"
+    ],
+    "contentRegistries": [
+      {
+        "table": "BaseItemTypes",
+        "entryId": "Metadata/Items/Mods/Garden/WildSeed",
+        "mode": "append"
+      },
+      {
+        "table": "MiscObjects",
+        "entryId": "Metadata/MiscellaneousObjects/Mods/Garden/Plot",
+        "mode": "append"
+      }
+    ],
+    "serverHalf": {
+      "id": "harvest-garden",
+      "minVersion": "1.0.0",
+      "supportsGracefulFallback": true,
+      "channelName": "harvest-garden"
+    }
+  }
+}
