@@ -41,10 +41,12 @@ public sealed class RgbaImage
     }
 
     /// <summary>
-    /// Creates a flat tangent-space normal/gloss/AO map (<c>N=(0,0,1)</c>, gentle gloss/AO) for meshes without a baked normal map.
+    /// Creates a flat tangent-space normal/AO/roughness map for PoE 3.29 <c>DielectricSpecGloss.fxgraph</c>
+    /// (<c>R=128</c> normal X, <c>G=128</c> normal Y, <c>B=255</c> full indirect AO, <c>A=212</c> ~0.83 roughness when <c>UseRoughness=true</c>,
+    /// matching stock <c>AfterLifeCat_normal_DXT5.dds</c> and matte fur).
     /// </summary>
     public static RgbaImage CreateFlatNormalGlossAo(int width = 64, int height = 64) =>
-        CreateSolid(width, height, 128, 128, 255, 180);
+        CreateSolid(width, height, 128, 128, 255, 212);
 
     /// <summary>
     /// Generates a full box-filtered mipmap chain from mip 0 down to 1x1.

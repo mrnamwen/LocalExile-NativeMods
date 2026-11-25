@@ -50,6 +50,25 @@ public sealed class DdsTextureConverterTests
         byte[] badHeader = (byte[])output.HeaderBytes.Clone();
         badHeader[0] = 99; // wrong version
         Assert.Throws<InvalidDataException>(() => DdsTextureConverter.Validate(output.DdsBytes, badHeader));
+
+        // Embedded legacy DDS dwDepth at header offset 28 + 24 = 52 must be 1 (stock 3.29.3d)
+        Assert.Equal((byte)1, output.HeaderBytes[52]);
+        byte[] zeroDepthHeader = (byte[])output.HeaderBytes.Clone();
+        zeroDepthHeader[52] = 0;
+        Assert.Throws<InvalidDataException>(() => DdsTextureConverter.Validate(output.DdsBytes, zeroDepthHeader));
+    }
+
+    [Fact]
+    public void CreateFlatNormalGlossAo_MatchesDielectricSpecGlossMatteFurPacking()
+    {
+        RgbaImage normal = RgbaImage.CreateFlatNormalGlossAo(16, 16);
+        Assert.Equal(16, normal.Width);
+        Assert.Equal(16, normal.Height);
+        // R=128 (Nx=0), G=128 (Ny=0), B=255 (full AO), A=212 (~0.83 roughness with UseRoughness=true)
+        Assert.Equal((byte)128, normal.Pixels[0]);
+        Assert.Equal((byte)128, normal.Pixels[1]);
+        Assert.Equal((byte)255, normal.Pixels[2]);
+        Assert.Equal((byte)212, normal.Pixels[3]);
     }
 
     private static RgbaImage CreateGradientImage(int w, int h)

@@ -160,7 +160,13 @@ public static class DdsTextureConverter
 
         int embH = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(embedded.Slice(12, 4)));
         int embW = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(embedded.Slice(16, 4)));
+        uint embDepth = BinaryPrimitives.ReadUInt32LittleEndian(embedded.Slice(24, 4));
         int embMips = Math.Max(1, checked((int)BinaryPrimitives.ReadUInt32LittleEndian(embedded.Slice(28, 4))));
+        if (embDepth != 1u)
+        {
+            throw new InvalidDataException($"Embedded DDS dwDepth mismatch: expected 1 (stock 3.29.3d), got {embDepth}.");
+        }
+
         int expectedEmbPayload = ComputeExpectedPayloadBytes(embW, embH, embMips, dxgiFormat: 28);
         if (embedded.Length != LegacyHeaderSize + expectedEmbPayload)
         {
@@ -278,7 +284,7 @@ public static class DdsTextureConverter
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(12, 4), (uint)top.Height);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(16, 4), (uint)top.Width);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(20, 4), (uint)(top.Width * 4));
-        BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(24, 4), 0u);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(24, 4), 1u); // dwDepth = 1 (matches stock 3.29.3d embedded DDS)
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(28, 4), (uint)mips.Count);
         // DDS_PIXELFORMAT: RGBA8 masks matching stock 3.29.3d embedded DDS headers
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(76, 4), 32u);

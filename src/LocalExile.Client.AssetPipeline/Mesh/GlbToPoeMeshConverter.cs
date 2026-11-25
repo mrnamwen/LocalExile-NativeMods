@@ -24,7 +24,9 @@ public sealed record PoePetAssetBundle(
     IReadOnlyList<string> ShapeNames,
     IReadOnlyList<string> MaterialPaths,
     IReadOnlyList<string> TextureAlbedoPaths,
-    string FlatNormalTexturePath);
+    string FlatNormalTexturePath,
+    IReadOnlyList<int?> TextureBaseColorImageIndices,
+    IReadOnlyList<bool> TextureIsAlphaBlend);
 
 /// <summary>
 /// Converts a parsed glTF 2.0 <c>.glb</c> scene into a complete, native Path of Exile 3.29.3d Pet asset set:
@@ -62,6 +64,8 @@ public static class GlbToPoeMeshConverter
         var shapes = new List<PoeShapeRange>();
         var materialPaths = new List<string>();
         var albedoPaths = new List<string>();
+        var baseColorImageIndices = new List<int?>();
+        var isAlphaBlends = new List<bool>();
         var files = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
 
         string flatNormalPath = $"{options.ArtBasePath}/textures/{options.ModelBaseName}_flat_normal.dds";
@@ -73,6 +77,7 @@ public static class GlbToPoeMeshConverter
                 ? scene.Materials[prim.MaterialIndex]
                 : new GlbMaterial($"mat_{pIdx}", "OPAQUE", false, null);
 
+            bool isAlphaBlend = string.Equals(mat.AlphaMode, "BLEND", StringComparison.OrdinalIgnoreCase);
             uint baseVertex = (uint)allVertices.Count;
             uint firstIndex = (uint)allIndices.Count;
 
@@ -107,18 +112,45 @@ public static class GlbToPoeMeshConverter
                 allIndices.Add(baseVertex + localIdx);
             }
 
+            // Thin double-sided alpha cards (such as whiskers) need explicit back-face geometry in PoE 3.29
+            // because DielectricSpecGloss + ForceAlpha uses single-sided backface culling.
+            if (mat.DoubleSided && isAlphaBlend)
+            {
+                uint backBaseVertex = (uint)allVertices.Count;
+                for (int i = 0; i < poePositions.Length; i++)
+                {
+                    allVertices.Add(new PoeVertex(
+                        poePositions[i],
+                        -poeNormals[i],
+                        tangents[i],
+                        -handedness[i],
+                        prim.Uvs[i],
+                        Bone0: 0,
+                        Weight0: 255));
+                }
+
+                for (int i = 0; i + 2 < prim.Indices.Length; i += 3)
+                {
+                    allIndices.Add(backBaseVertex + prim.Indices[i]);
+                    allIndices.Add(backBaseVertex + prim.Indices[i + 2]);
+                    allIndices.Add(backBaseVertex + prim.Indices[i + 1]);
+                }
+            }
+
             string cleanName = SanitizeIdentifier(mat.Name, $"shape{pIdx}");
             string shapeName = $"{cleanName}Shape";
-            shapes.Add(new PoeShapeRange(shapeName, firstIndex, (uint)prim.Indices.Length));
+            uint emittedIndices = (uint)allIndices.Count - firstIndex;
+            shapes.Add(new PoeShapeRange(shapeName, firstIndex, emittedIndices));
 
-            bool isAlphaBlend = string.Equals(mat.AlphaMode, "BLEND", StringComparison.OrdinalIgnoreCase);
             string texSuffix = isAlphaBlend ? "rgba" : "dxt1";
-            string formatLabel = isAlphaBlend ? "RGBA8" : "DXT1";
+            string formatLabel = isAlphaBlend ? "Uncompressed" : "DXT1";
             string albedoPath = $"{options.ArtBasePath}/textures/{options.ModelBaseName}_{cleanName}_{texSuffix}.dds";
             string matPath = $"{options.ArtBasePath}/textures/{options.ModelBaseName}_{cleanName}.mat";
 
             albedoPaths.Add(albedoPath);
             materialPaths.Add(matPath);
+            baseColorImageIndices.Add(mat.BaseColorImageIndex);
+            isAlphaBlends.Add(isAlphaBlend);
             files[matPath] = BuildMatJson(albedoPath, flatNormalPath, formatLabel, isAlphaBlend);
         }
 
@@ -157,7 +189,9 @@ public static class GlbToPoeMeshConverter
             [.. shapes.Select(s => s.Name)],
             materialPaths,
             albedoPaths,
-            flatNormalPath);
+            flatNormalPath,
+            baseColorImageIndices,
+            isAlphaBlends);
     }
 
     /// <summary>
@@ -185,74 +219,44 @@ public static class GlbToPoeMeshConverter
 
     private static byte[] BuildMatJson(string albedoPath, string normalPath, string albedoFormat, bool alphaBlend)
     {
+        object dielectricGraph = new
+        {
+            parent = "Metadata/Materials/DielectricSpecGloss.fxgraph",
+            custom_parameters = new object[]
+            {
+                new
+                {
+                    name = "AlbedoTransparency_TEX",
+                    parameters = new object[]
+                    {
+                        new { path = albedoPath, format = albedoFormat, srgb = true },
+                        new { value = "SamplerDynamicWrap" },
+                    },
+                },
+                new
+                {
+                    name = "NormalGlossAO_TEX",
+                    parameters = new object[]
+                    {
+                        new { path = normalPath, format = "Uncompressed", srgb = false },
+                        new { value = "SamplerDynamicWrap" },
+                    },
+                },
+                new
+                {
+                    name = "UseRoughness",
+                    parameters = new object[] { new { value = true } },
+                },
+            },
+        };
+
         object[] graphs = alphaBlend
             ?
             [
                 new { parent = "Metadata/Effects/Graphs/General/ForceAlpha.fxgraph" },
-                new
-                {
-                    parent = "Metadata/Materials/DielectricSpecGloss.fxgraph",
-                    custom_parameters = new object[]
-                    {
-                        new
-                        {
-                            name = "AlbedoTransparency_TEX",
-                            parameters = new object[]
-                            {
-                                new { path = albedoPath, srgb = true },
-                                new { value = "SamplerDynamicWrap" },
-                            },
-                        },
-                        new
-                        {
-                            name = "NormalGlossAO_TEX",
-                            parameters = new object[]
-                            {
-                                new { path = normalPath, srgb = false },
-                                new { value = "SamplerDynamicWrap" },
-                            },
-                        },
-                        new
-                        {
-                            name = "UseRoughness",
-                            parameters = new object[] { new { value = true } },
-                        },
-                    },
-                },
+                dielectricGraph,
             ]
-            :
-            [
-                new
-                {
-                    parent = "Metadata/Materials/DielectricSpecGloss.fxgraph",
-                    custom_parameters = new object[]
-                    {
-                        new
-                        {
-                            name = "AlbedoTransparency_TEX",
-                            parameters = new object[]
-                            {
-                                new { path = albedoPath, format = albedoFormat, srgb = true },
-                                new { value = "SamplerDynamicWrap" },
-                            },
-                        },
-                        new
-                        {
-                            name = "NormalGlossAO_TEX",
-                            parameters = new object[]
-                            {
-                                new { path = normalPath, srgb = false },
-                                new { value = "SamplerDynamicWrap" },
-                            },
-                        },
-                        new
-                        {
-                            name = "UseRoughness",
-                            parameters = new object[] { new { value = true } },
-                        },
-                    },
-                },
-            ];
+            : [dielectricGraph];
 
         object defaultGraph = alphaBlend
             ? new { version = 3, shader_group = new[] { "Material" } }
@@ -263,7 +267,7 @@ public static class GlbToPoeMeshConverter
             version = 4,
             textures = new object[]
             {
-                new { filename = normalPath, format = "RGBA8", count = 1 },
+                new { filename = normalPath, format = "Uncompressed", count = 1 },
                 new { filename = albedoPath, format = albedoFormat, count = 1 },
             },
             defaultgraph = defaultGraph,

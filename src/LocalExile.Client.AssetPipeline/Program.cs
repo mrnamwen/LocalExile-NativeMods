@@ -78,13 +78,21 @@ public static class Program
         }
 
         // 2. Convert textures to PoE 3.29 .dds + .dds.header
-        byte[] bodyRaw = zipBodyTex ?? (scene.Images.Count > 0 ? scene.Images[0].Data : throw new InvalidDataException("Missing body texture."));
-        byte[] whiskersRaw = zipWhiskersTex ?? (scene.Images.Count > 1 ? scene.Images[1].Data : throw new InvalidDataException("Missing whiskers texture."));
+        // CRITICAL: Always prefer the GLB's own embedded images for 3D mesh albedo textures!
+        // Sketchfab zip archives often include separate loose textures/gltf_embedded_* files that are
+        // vertically inverted relative to the GLB's embedded images & TEXCOORD_0 UVs.
+        (byte[] bodyRaw, string bodyExt) = ResolveGlbMaterialImage(scene, bundle, 0, zipBodyTex, ".jpeg", "body");
+        (byte[] whiskersRaw, string whiskersExt) = ResolveGlbMaterialImage(scene, bundle, 1, zipWhiskersTex, ".png", "whiskers");
 
-        RgbaImage bodyImg = RgbaImage.DecodeBytesWithImageMagick(bodyRaw, ".jpeg");
-        RgbaImage whiskersImg = RgbaImage.DecodeBytesWithImageMagick(whiskersRaw, ".png");
+        RgbaImage bodyImg = RgbaImage.DecodeBytesWithImageMagick(bodyRaw, bodyExt);
+        RgbaImage whiskersImg = RgbaImage.DecodeBytesWithImageMagick(whiskersRaw, whiskersExt);
         RgbaImage flatNormalImg = RgbaImage.CreateFlatNormalGlossAo(64, 64);
-        RgbaImage iconImg = bodyImg.ResizeBilinear(156, 156);
+
+        // For the 2D Cosmetics Pet Slot icon, prefer the upright portrait texture from the zip if present.
+        RgbaImage iconSourceImg = zipBodyTex is not null
+            ? RgbaImage.DecodeBytesWithImageMagick(zipBodyTex, ".jpeg")
+            : bodyImg;
+        RgbaImage iconImg = iconSourceImg.ResizeBilinear(156, 156);
 
         DdsOutput bodyDds = DdsTextureConverter.ConvertFromRgba(bodyImg, PoeDdsFormat.Bc1);
         DdsOutput whiskersDds = DdsTextureConverter.ConvertFromRgba(whiskersImg, PoeDdsFormat.Rgba8);
@@ -180,6 +188,22 @@ public static class Program
             if (doc.RootElement.GetProperty("version").GetInt32() != 4)
             {
                 throw new InvalidDataException($"Unexpected .mat version in '{matFile}'.");
+            }
+
+            foreach (JsonElement texEl in doc.RootElement.GetProperty("textures").EnumerateArray())
+            {
+                string fmt = texEl.GetProperty("format").GetString() ?? string.Empty;
+                if (fmt is not ("DXT1" or "BC1" or "DXT5" or "BC7" or "Uncompressed"))
+                {
+                    throw new InvalidDataException($"Invalid PoE 3.29 .mat texture format '{fmt}' in '{matFile}'.");
+                }
+
+                string filename = texEl.GetProperty("filename").GetString() ?? string.Empty;
+                string fullTexPath = ResolveVirtualPath(rootDir, filename);
+                if (!File.Exists(fullTexPath) || !File.Exists(fullTexPath + ".header"))
+                {
+                    throw new FileNotFoundException($"Material '{matFile}' references missing texture '{filename}' (or its .header).", fullTexPath);
+                }
             }
         }
 
@@ -301,6 +325,43 @@ public static class Program
         {
             throw new InvalidDataException($"File '{path}' does not contain expected token '{mustContain}'.");
         }
+    }
+
+    public static (byte[] Data, string FileExtension) ResolveGlbMaterialImage(
+        GlbScene scene,
+        PoePetAssetBundle bundle,
+        int materialSlot,
+        byte[]? fallbackZipBytes,
+        string fallbackExtension,
+        string label)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        ArgumentNullException.ThrowIfNull(bundle);
+
+        int? mappedIdx = materialSlot < bundle.TextureBaseColorImageIndices.Count
+            ? bundle.TextureBaseColorImageIndices[materialSlot]
+            : null;
+        int imgIdx = mappedIdx ?? materialSlot;
+
+        if ((uint)imgIdx < (uint)scene.Images.Count && scene.Images[imgIdx].Data.Length > 0)
+        {
+            GlbImage emb = scene.Images[imgIdx];
+            string ext = emb.MimeType.ToLowerInvariant() switch
+            {
+                "image/png" => ".png",
+                "image/jpeg" or "image/jpg" => ".jpeg",
+                "image/webp" => ".webp",
+                _ => fallbackExtension,
+            };
+            return (emb.Data, ext);
+        }
+
+        if (fallbackZipBytes is { Length: > 0 })
+        {
+            return (fallbackZipBytes, fallbackExtension);
+        }
+
+        throw new InvalidDataException($"Missing {label} texture (neither GLB embedded image #{imgIdx} nor zip fallback found).");
     }
 
     private static byte[] ReadEntryBytes(ZipArchiveEntry entry)

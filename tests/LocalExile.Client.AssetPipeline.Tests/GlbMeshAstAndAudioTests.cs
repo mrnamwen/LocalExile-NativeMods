@@ -47,15 +47,97 @@ public sealed class GlbMeshAstAndAudioTests
         Assert.Contains("extends \"Metadata/Pet/Pet\"", otText, StringComparison.Ordinal);
         Assert.DoesNotContain("StateMachine", otText, StringComparison.Ordinal);
 
-        // Validate .mat files parse as version 4 JSON and whiskers includes ForceAlpha
+        // Validate .mat files parse as version 4 JSON, use valid PoE 3.29 format labels (never "RGBA8"), and whiskers includes ForceAlpha
         string bodyMat = Encoding.Unicode.GetString(bundle.Files["Art/Models/Mods/Maxwell/textures/maxwell_body.mat"]);
+        Assert.DoesNotContain("\"RGBA8\"", bodyMat, StringComparison.Ordinal);
         using (JsonDocument doc = JsonDocument.Parse(bodyMat))
         {
             Assert.Equal(4, doc.RootElement.GetProperty("version").GetInt32());
+            JsonElement textures = doc.RootElement.GetProperty("textures");
+            Assert.Equal("Uncompressed", textures[0].GetProperty("format").GetString());
+            Assert.Equal("DXT1", textures[1].GetProperty("format").GetString());
         }
 
         string whiskersMat = Encoding.Unicode.GetString(bundle.Files["Art/Models/Mods/Maxwell/textures/maxwell_whiskers.mat"]);
         Assert.Contains("ForceAlpha.fxgraph", whiskersMat, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"RGBA8\"", whiskersMat, StringComparison.Ordinal);
+        Assert.Contains("\"format\":\"Uncompressed\"", whiskersMat, StringComparison.Ordinal);
+
+        // Validate SMD vertex nw=0x80 (-128) and tw=+/-127 matching stock 3.29.3d Rig_*.smd
+        int vertsOffset = 53 + (smdInfo.Shapes.Count * 8) + (smdInfo.TriangleCount * 3 * 2);
+        for (int i = 0; i < smdInfo.VertexCount; i++)
+        {
+            int vo = vertsOffset + (i * 32);
+            Assert.Equal((byte)0x80, smd[vo + 15]);
+            sbyte tw = unchecked((sbyte)smd[vo + 19]);
+            Assert.True(tw is 127 or -127, $"Expected tw in {{-127, 127}}, got {tw}");
+        }
+    }
+
+    [Fact]
+    public void GlbToPoeMeshConverter_EmitsBackFacesForDoubleSidedAlphaBlendCards()
+    {
+        var scene = new GlbScene(
+            Primitives:
+            [
+                new GlbPrimitive(
+                    "whiskers",
+                    MaterialIndex: 0,
+                    Positions: [new(0, 0, 0), new(1, 0, 0), new(0, 1, 0)],
+                    Normals: [new(0, 0, 1), new(0, 0, 1), new(0, 0, 1)],
+                    Uvs: [new(0, 0), new(1, 0), new(0, 1)],
+                    Indices: [0, 1, 2]),
+            ],
+            Materials: [new GlbMaterial("whiskers", "BLEND", DoubleSided: true, BaseColorImageIndex: 0)],
+            Images: [new GlbImage("image/png", [1, 2, 3, 4])]);
+
+        PoePetAssetBundle bundle = GlbToPoeMeshConverter.Convert(scene, new PoePetMeshOptions());
+        Assert.Equal(6, bundle.VertexCount);
+        Assert.Equal(2, bundle.TriangleCount);
+        Assert.Equal([0], bundle.TextureBaseColorImageIndices);
+        Assert.Equal([true], bundle.TextureIsAlphaBlend);
+    }
+
+    [Fact]
+    public void ResolveGlbMaterialImage_PrefersGlbEmbeddedImageOverLooseZipFallback()
+    {
+        byte[] glbBody = [0xFF, 0xD8, 0x01, 0x02];
+        byte[] glbWhiskers = [0x89, 0x50, 0x4E, 0x47];
+        byte[] invertedZipBody = [0xAA, 0xBB, 0xCC, 0xDD];
+
+        var scene = new GlbScene(
+            Primitives:
+            [
+                new GlbPrimitive("body", 0, [new(0, 0, 0), new(1, 0, 0), new(0, 1, 0)], [new(0, 0, 1), new(0, 0, 1), new(0, 0, 1)], [new(0, 0), new(1, 0), new(0, 1)], [0, 1, 2]),
+                new GlbPrimitive("whiskers", 1, [new(0, 0, 0), new(1, 0, 0), new(0, 1, 0)], [new(0, 0, 1), new(0, 0, 1), new(0, 0, 1)], [new(0, 0), new(1, 0), new(0, 1)], [0, 1, 2]),
+            ],
+            Materials:
+            [
+                new GlbMaterial("dingus", "OPAQUE", DoubleSided: true, BaseColorImageIndex: 0),
+                new GlbMaterial("whiskers", "BLEND", DoubleSided: true, BaseColorImageIndex: 1),
+            ],
+            Images:
+            [
+                new GlbImage("image/jpeg", glbBody),
+                new GlbImage("image/png", glbWhiskers),
+            ]);
+
+        PoePetAssetBundle bundle = GlbToPoeMeshConverter.Convert(scene, new PoePetMeshOptions());
+
+        // Even when a loose zip texture is provided, 3D mesh albedo MUST use the GLB's own embedded image so it matches TEXCOORD_0!
+        (byte[] resolvedBody, string bodyExt) = Program.ResolveGlbMaterialImage(scene, bundle, 0, invertedZipBody, ".jpeg", "body");
+        Assert.Same(glbBody, resolvedBody);
+        Assert.Equal(".jpeg", bodyExt);
+
+        (byte[] resolvedWhiskers, string whiskersExt) = Program.ResolveGlbMaterialImage(scene, bundle, 1, invertedZipBody, ".png", "whiskers");
+        Assert.Same(glbWhiskers, resolvedWhiskers);
+        Assert.Equal(".png", whiskersExt);
+
+        // Fallback to zip texture ONLY when GLB has no embedded image
+        var emptyImgScene = scene with { Images = [] };
+        (byte[] fallback, string fallbackExt) = Program.ResolveGlbMaterialImage(emptyImgScene, bundle, 0, invertedZipBody, ".jpeg", "body");
+        Assert.Same(invertedZipBody, fallback);
+        Assert.Equal(".jpeg", fallbackExt);
     }
 
     [Fact]
