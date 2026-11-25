@@ -142,7 +142,13 @@ public class UiControlNode : IUiControl
         get => _text;
         set
         {
-            _text = value ?? string.Empty;
+            string normalized = value ?? string.Empty;
+            if (string.Equals(_text, normalized, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _text = normalized;
             _properties["text"] = _text;
             if (NativeControlHandle != nint.Zero && NativeBridge is not null)
             {

@@ -350,13 +350,26 @@ int test_frame_queue_concurrency_and_isolation() {
 int test_file_overlay_and_channels() {
     CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
 
-    // File overlay registration + path normalization
-    static uint8_t kUiPayload[] = {'U', 'I', '!'};
+    // File overlay registration + path normalization (UTF-16LE BOM payload stays zero-copy,
+    // plain UTF-8 .ui payload auto-transcodes to UTF-16LE+BOM+CRLF with matching has_file_overlay size).
+    static uint8_t kUiPayload[] = {0xFF, 0xFE, 'U', 0x00, 'I', 0x00, '!', 0x00};
+    static uint8_t kUtf8UiPayload[] = {'b', 'e', 'g', 'i', 'n', '\n', 'e', 'n', 'd', '\n'};
+    static uint8_t kBomlessUtf16Sm[] = {'v', 0x00, 'e', 0x00, 'r', 0x00};
     uint64_t ov_tok = 0;
     auto ov_cb = [](const char* path, uint8_t** out_data, size_t* out_size, void*) -> nm_status_t {
         if (std::strcmp(path, "metadata/ui/mods/garden/stockpile.ui") == 0) {
             *out_data = kUiPayload;
             *out_size = sizeof(kUiPayload);
+            return NM_OK;
+        }
+        if (std::strcmp(path, "metadata/ui/mods/maxwell/maxwellpanel.ui") == 0) {
+            *out_data = kUtf8UiPayload;
+            *out_size = sizeof(kUtf8UiPayload);
+            return NM_OK;
+        }
+        if (std::strcmp(path, "art/models/mods/maxwell/maxwell.sm") == 0) {
+            *out_data = kBomlessUtf16Sm;
+            *out_size = sizeof(kBomlessUtf16Sm);
             return NM_OK;
         }
         return NM_ERR_SYMBOL_NOT_FOUND;
@@ -367,6 +380,20 @@ int test_file_overlay_and_channels() {
     size_t sz = 0;
     CHECK(nm_resolve_file_overlay("Metadata\\UI\\Mods\\Garden\\Stockpile.ui", &data, &sz) == NM_OK);
     CHECK(data == kUiPayload && sz == sizeof(kUiPayload));
+
+    // UTF-8 .ui -> UTF-16LE + BOM + CRLF ("begin\r\nend\r\n" = 2 + 12*2 = 26 bytes)
+    size_t transcoded_has_sz = 0;
+    CHECK(nm_has_file_overlay("Metadata/UI/Mods/Maxwell/MaxwellPanel.ui", &transcoded_has_sz) == NM_OK);
+    CHECK(transcoded_has_sz == 26u);
+    CHECK(nm_resolve_file_overlay("Metadata\\UI\\Mods\\Maxwell\\MaxwellPanel.ui", &data, &sz) == NM_OK);
+    CHECK(sz == transcoded_has_sz && data != nullptr && data[0] == 0xFFu && data[1] == 0xFEu);
+    CHECK(data[2] == 'b' && data[3] == 0x00u && data[12] == '\r' && data[13] == 0x00u && data[14] == '\n' && data[15] == 0x00u);
+    CHECK(nm_free_file_overlay_buffer(data) == NM_OK);
+
+    // BOM-less UTF-16LE .sm (already contains NUL bytes) must pass through untouched!
+    CHECK(nm_resolve_file_overlay("Art/Models/Mods/Maxwell/maxwell.sm", &data, &sz) == NM_OK);
+    CHECK(data == kBomlessUtf16Sm && sz == sizeof(kBomlessUtf16Sm));
+
     CHECK(nm_resolve_file_overlay("Metadata/UI/Missing.ui", &data, &sz) == NM_ERR_SYMBOL_NOT_FOUND);
     CHECK(nm_unregister_file_overlay(ov_tok) == NM_OK);
 
@@ -533,7 +560,8 @@ int test_disk_overlays_audio_and_wire_encoders() {
     CHECK(nm_has_file_overlay("data\\pet.datc64", &sz) == NM_OK);
     CHECK(sz == dat_bytes.size());
     CHECK(nm_has_file_overlay("Metadata/Pet/Mods/Maxwell/MaxwellPet.ot", &sz) == NM_OK);
-    CHECK(sz == ot_text.size());
+    // Plain UTF-8 .ot on disk auto-transcodes to UTF-16LE + BOM + CRLF (2 + len*2 bytes).
+    CHECK(sz == 2u + ot_text.size() * 2u);
     CHECK(nm_has_file_overlay("Data/DoesNotExist.datc64", &sz) == NM_ERR_SYMBOL_NOT_FOUND);
     // Reject path traversal
     CHECK(nm_has_file_overlay("../etc/passwd", &sz) == NM_ERR_SYMBOL_NOT_FOUND);
@@ -543,6 +571,11 @@ int test_disk_overlays_audio_and_wire_encoders() {
     CHECK(nm_resolve_file_overlay("DATA/PET.DATC64", &resolved, &resolved_sz) == NM_OK);
     CHECK(resolved != nullptr && resolved_sz == dat_bytes.size());
     CHECK(std::memcmp(resolved, dat_bytes.data(), dat_bytes.size()) == 0);
+    CHECK(nm_free_file_overlay_buffer(resolved) == NM_OK);
+
+    CHECK(nm_resolve_file_overlay("Metadata/Pet/Mods/Maxwell/MaxwellPet.ot", &resolved, &resolved_sz) == NM_OK);
+    CHECK(resolved != nullptr && resolved_sz == 2u + ot_text.size() * 2u);
+    CHECK(resolved[0] == 0xFFu && resolved[1] == 0xFEu && resolved[2] == 'v' && resolved[3] == 0x00u);
     CHECK(nm_free_file_overlay_buffer(resolved) == NM_OK);
 
     CHECK(nm_unregister_file_overlay_dir(dir_tok) == NM_OK);
