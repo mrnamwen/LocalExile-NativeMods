@@ -62,7 +62,7 @@ public sealed class SiphonClientMod : IClientMod
         {
             context.TrackDisposable(game.Files.RegisterVirtualTextFile(
                 SiphonProtocol.EmptyOrbItPath,
-                "version 2\r\nextends \"Metadata/Items/Currency/StackableCurrency\"\r\n",
+                "version 3\r\nextends \"Metadata/Items/Currency/StackableCurrency\"\r\n",
                 priority: 50));
         }
 
@@ -70,7 +70,7 @@ public sealed class SiphonClientMod : IClientMod
         {
             context.TrackDisposable(game.Files.RegisterVirtualTextFile(
                 SiphonProtocol.ChargedOrbItPath,
-                "version 2\r\nextends \"Metadata/Items/Currency/StackableCurrency\"\r\n\r\nBase\r\n{\r\n}\r\n\r\nLocalStats\r\n{\r\n}\r\n\r\nMods\r\n{\r\n\tstat_description_list = \"Metadata/StatDescriptions/stat_descriptions.txt\"\r\n\tmod_stat_description_list = \"Metadata/StatDescriptions/advanced_mod_stat_descriptions.txt\"\r\n\tenable_rarity = normal\r\n\tenable_rarity = magic\r\n\tenable_rarity = rare\r\n\tenable_rarity = unique\r\n}\r\n",
+                "version 3\r\nextends \"Metadata/Items/Currency/StackableCurrency\"\r\n\r\nBase\r\n{\r\n}\r\n\r\nLocalStats\r\n{\r\n}\r\n\r\nMods\r\n{\r\n\tstat_description_list = \"Metadata/StatDescriptions/stat_descriptions.txt\"\r\n\tmod_stat_description_list = \"Metadata/StatDescriptions/advanced_mod_stat_descriptions.txt\"\r\n\tenable_rarity = \"normal\"\r\n\tenable_rarity = \"magic\"\r\n\tenable_rarity = \"rare\"\r\n\tenable_rarity = \"unique\"\r\n}\r\n",
                 priority: 50));
         }
 

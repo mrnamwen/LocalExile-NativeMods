@@ -103,13 +103,15 @@ public sealed class SiphonManifestAndUiTests
         string chargedIt = File.ReadAllText(Path.Combine(repoRoot, "examples", "DualMod.SiphonOrb", "client", "Metadata", "Items", "Currency", "Mods", "Siphon", "SiphonOrbCharged.it"));
         string entrySource = File.ReadAllText(Path.Combine(repoRoot, "examples", "DualMod.SiphonOrb", "Server", "SiphonLocalExileEntry.cs"));
 
+        Assert.Contains("version 3", emptyIt, StringComparison.Ordinal);
         Assert.Contains("extends \"Metadata/Items/Currency/StackableCurrency\"", emptyIt, StringComparison.Ordinal);
         Assert.DoesNotContain("Mods", emptyIt, StringComparison.Ordinal);
 
+        Assert.Contains("version 3", chargedIt, StringComparison.Ordinal);
         Assert.Contains("extends \"Metadata/Items/Currency/StackableCurrency\"", chargedIt, StringComparison.Ordinal);
         Assert.Contains("LocalStats", chargedIt, StringComparison.Ordinal);
         Assert.Contains("Mods", chargedIt, StringComparison.Ordinal);
-        Assert.Contains("enable_rarity = normal", chargedIt, StringComparison.Ordinal);
+        Assert.Contains("enable_rarity = \"normal\"", chargedIt, StringComparison.Ordinal);
 
         Assert.Contains("class SiphonLocalExileEntry : IMod", entrySource, StringComparison.Ordinal);
         Assert.Contains("LocalExileCurrencyRegistrar", entrySource, StringComparison.Ordinal);

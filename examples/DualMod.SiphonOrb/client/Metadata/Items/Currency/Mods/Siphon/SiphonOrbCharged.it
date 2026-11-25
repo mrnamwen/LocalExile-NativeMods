@@ -1,4 +1,4 @@
-version 2
+version 3
 extends "Metadata/Items/Currency/StackableCurrency"
 
 Base
@@ -13,8 +13,8 @@ Mods
 {
 	stat_description_list = "Metadata/StatDescriptions/stat_descriptions.txt"
 	mod_stat_description_list = "Metadata/StatDescriptions/advanced_mod_stat_descriptions.txt"
-	enable_rarity = normal
-	enable_rarity = magic
-	enable_rarity = rare
-	enable_rarity = unique
+	enable_rarity = "normal"
+	enable_rarity = "magic"
+	enable_rarity = "rare"
+	enable_rarity = "unique"
 }
