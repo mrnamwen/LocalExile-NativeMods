@@ -12,6 +12,7 @@ TestResults/
 
 # CMake / native build outputs
 build/
+dist/
 *.dll
 *.pdb
 *.exe

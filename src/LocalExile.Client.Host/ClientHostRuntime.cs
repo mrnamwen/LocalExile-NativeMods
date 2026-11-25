@@ -52,6 +52,10 @@ public sealed class ClientHostRuntime : IDisposable
     private readonly HashSet<(string WindowId, string ControlPath, string EventName)> _subscribedUiEvents = [];
     private bool _started;
     private bool _disposed;
+    private long _frameCount;
+
+    /// <summary>Total number of game frames processed by this host runtime.</summary>
+    public long FrameCount => Interlocked.Read(ref _frameCount);
 
     /// <summary>Underlying native shim or simulated bridge.</summary>
     public INativeBridge Bridge => _bridge;
@@ -234,6 +238,12 @@ public sealed class ClientHostRuntime : IDisposable
 
     private void OnFrame(float deltaSeconds)
     {
+        long frame = Interlocked.Increment(ref _frameCount);
+        if (frame is 1 or 5 or 60 or 120 || frame % 300 == 0)
+        {
+            Log("INFO", "host", $"Managed frame tick #{frame} (dt={deltaSeconds:F4}s, loadedMods={Loader.LoadedMods.Count}).");
+        }
+
         Lifecycle.RaiseFrame(deltaSeconds);
         Loader.TickAllMods(deltaSeconds);
         Ui.TickCustomControls(deltaSeconds);

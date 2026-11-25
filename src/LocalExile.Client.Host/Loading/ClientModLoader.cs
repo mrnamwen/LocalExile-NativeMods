@@ -65,10 +65,11 @@ public sealed class ClientModLoadContext : AssemblyLoadContext
     /// <inheritdoc/>
     protected override Assembly? Load(AssemblyName assemblyName)
     {
-        // Always unify SDK and framework assemblies with the host's default context.
+        // Always unify LocalExile.Client.Sdk with the host's own loaded copy (even when
+        // LocalExile.Client.Host was loaded into hostfxr's IsolatedComponentLoadContext).
         if (string.Equals(assemblyName.Name, "LocalExile.Client.Sdk", StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            return typeof(IClientMod).Assembly;
         }
 
         string candidate = Path.Combine(_modDirectory, assemblyName.Name + ".dll");

@@ -1,6 +1,8 @@
 #include "nativemods_abi.h"
 #include "address_table.hpp"
 #include "exception_wall.hpp"
+#include "hook_engine.hpp"
+#include "shim_logger.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -131,6 +133,7 @@ int test_byte_verification_wildcards() {
 
 // Globals for inline & vtable detour tests
 using TestAddFn = int(*)(int);
+#if !defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 TestAddFn g_inline_trampoline = nullptr;
 int g_detour_hits = 0;
 
@@ -138,6 +141,7 @@ int inline_detour_fn(int x) {
     ++g_detour_hits;
     return g_inline_trampoline(x) + 100;
 }
+#endif
 
 int vtable_orig_fn(int x) { return x * 2; }
 TestAddFn g_vtable_orig = nullptr;
@@ -426,6 +430,28 @@ int test_file_overlay_and_channels() {
     return 0;
 }
 
+int test_prologue_length_and_sha256() {
+    // Real 3.29.3d StateStack::PassA (0x1528f40) prologue: 5 + 5 + 5 = 15 bytes before push rdi (0x57).
+    const uint8_t pass_a_prologue[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10, // mov [rsp+0x10], rbx (5B)
+        0x48, 0x89, 0x6C, 0x24, 0x18, // mov [rsp+0x18], rbp (5B)
+        0x48, 0x89, 0x74, 0x24, 0x20, // mov [rsp+0x20], rsi (5B)
+        0x57,                         // push rdi            (1B)
+        0x48, 0x83, 0xEC, 0x50,       // sub rsp, 0x50       (4B)
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(pass_a_prologue, 14) == 15);
+
+    // Self-contained SHA-256 test vectors (NIST FIPS 180-4)
+    CHECK(nativemods::sha256_hex_bytes(nullptr, 0) ==
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    const uint8_t abc[] = {'a', 'b', 'c'};
+    CHECK(nativemods::sha256_hex_bytes(abc, 3) ==
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -437,6 +463,7 @@ int main() {
     if (test_game_allocator_header_abi() != 0) return 1;
     if (test_frame_queue_concurrency_and_isolation() != 0) return 1;
     if (test_file_overlay_and_channels() != 0) return 1;
+    if (test_prologue_length_and_sha256() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

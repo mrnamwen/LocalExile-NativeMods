@@ -2,6 +2,7 @@
 
 #include "nativemods_abi.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
@@ -37,6 +38,15 @@ public:
 
     static constexpr size_t kAbsJumpSize = 14; // FF 25 00 00 00 00 <u64 target>
 
+    // Computes an instruction-boundary-aligned stolen byte count >= min_len for standard
+    // x86-64 function prologues (returns min_len if an unrecognized opcode is encountered).
+    static size_t compute_stolen_length(const uint8_t* code, size_t min_len = kAbsJumpSize);
+
+    // Allocates/frees an executable page (also used by Win64 register-preserving frame stub).
+    static void* alloc_exec_page(size_t size);
+    static void  free_exec_page(void* ptr, size_t size);
+    static void  emit_abs_jmp_x64(uint8_t* dst, uint64_t target);
+
 private:
     struct HookRecord {
         nm_hook_handle_t     handle = NM_HOOK_INVALID;
@@ -48,10 +58,7 @@ private:
         void*                original_vtable_fn = nullptr;
     };
 
-    static void* alloc_exec_page(size_t size);
-    static void  free_exec_page(void* ptr, size_t size);
-    static bool  write_protected_memory(void* dst, const void* src, size_t len);
-    static void  emit_abs_jmp_x64(uint8_t* dst, uint64_t target);
+    static bool write_protected_memory(void* dst, const void* src, size_t len);
 
     std::mutex                                  mutex_;
     nm_hook_handle_t                            next_handle_ = 1;

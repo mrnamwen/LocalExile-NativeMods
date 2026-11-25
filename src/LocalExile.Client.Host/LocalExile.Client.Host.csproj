@@ -3,6 +3,7 @@
     <RootNamespace>LocalExile.Client.Host</RootNamespace>
     <AssemblyName>LocalExile.Client.Host</AssemblyName>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
     <Description>Managed client host runtime for LocalExile NativeMods.</Description>
   </PropertyGroup>
 
