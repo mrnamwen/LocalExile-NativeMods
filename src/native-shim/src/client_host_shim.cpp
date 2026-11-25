@@ -7,11 +7,13 @@
 #include "game_allocator.hpp"
 #include "hook_engine.hpp"
 #include "overlay_and_channels.hpp"
+#include "shim_logger.hpp"
 
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -36,6 +38,9 @@ struct ShimState {
     FrameQueue          frame_queue;
     OverlayAndChannels  channels;
     CoreClrBootstrapper clr;
+
+    nm_hook_handle_t    frame_hook_handle = NM_HOOK_INVALID;
+    void*               frame_stub_page = nullptr;
 };
 
 ShimState& state() {
@@ -72,6 +77,184 @@ const nm_abi_table_t kAbiTable = {
     &nm_send_chat_line,
 };
 
+#if defined(_WIN32)
+wchar_t               g_dll_dir_w[MAX_PATH] = {};
+std::atomic<void*>    g_frame_trampoline{nullptr};
+std::atomic<uint64_t> g_live_frame_count{0};
+std::atomic<bool>     g_auto_clr_triggered{false};
+LARGE_INTEGER         g_qpc_freq{};
+LARGE_INTEGER         g_last_frame_qpc{};
+
+std::string wide_to_utf8(const wchar_t* wide) {
+    if (!wide || wide[0] == L'\0') return {};
+    const int needed = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
+    if (needed <= 1) return {};
+    std::string out(static_cast<size_t>(needed - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr, nullptr);
+    return out;
+}
+
+bool file_exists_utf8(const std::string& path_utf8) {
+    if (path_utf8.empty()) return false;
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, path_utf8.c_str(), -1, nullptr, 0);
+    if (needed <= 1) return false;
+    std::wstring w(static_cast<size_t>(needed - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path_utf8.c_str(), -1, w.data(), needed);
+    const DWORD attrs = GetFileAttributesW(w.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::string get_env_utf8(const wchar_t* name) {
+    wchar_t buf[1024] = {};
+    const DWORD n = GetEnvironmentVariableW(name, buf, 1024);
+    if (n == 0 || n >= 1024) return {};
+    return wide_to_utf8(buf);
+}
+
+bool is_memory_readable(uint64_t address, size_t len) {
+    if (address == 0 || len == 0) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)), &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT) return false;
+    const DWORD prot = mbi.Protect & 0xFFu;
+    if (prot == PAGE_NOACCESS || (mbi.Protect & PAGE_GUARD) != 0) return false;
+    const uint64_t region_end = reinterpret_cast<uint64_t>(mbi.BaseAddress) + static_cast<uint64_t>(mbi.RegionSize);
+    return (address + len) <= region_end;
+}
+
+void trigger_auto_coreclr_bootstrap(const char* trigger_reason) {
+    if (g_auto_clr_triggered.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    const std::string dll_dir = wide_to_utf8(g_dll_dir_w);
+    const std::string env_host_dir = get_env_utf8(L"NATIVEMODS_HOST_DIR");
+
+    std::string candidates[3];
+    size_t cand_count = 0;
+    if (!env_host_dir.empty()) {
+        candidates[cand_count++] = env_host_dir;
+    }
+    if (!dll_dir.empty()) {
+        candidates[cand_count++] = dll_dir;
+        candidates[cand_count++] = dll_dir + "\\host";
+    }
+
+    for (size_t i = 0; i < cand_count; ++i) {
+        const std::string& dir = candidates[i];
+        const std::string fxr = dir + "\\hostfxr.dll";
+        const std::string cfg = dir + "\\LocalExile.Client.Host.runtimeconfig.json";
+        const std::string asm_dll = dir + "\\LocalExile.Client.Host.dll";
+        if (file_exists_utf8(fxr) && file_exists_utf8(cfg) && file_exists_utf8(asm_dll)) {
+            logger_logf("INFO", "Triggering deferred off-game-thread CoreCLR bootstrap (%s) from '%s'",
+                        trigger_reason, dir.c_str());
+            const nm_status_t st = nm_bootstrap_managed_host(fxr.c_str(), cfg.c_str(), asm_dll.c_str());
+            if (st != NM_OK) {
+                logger_logf("ERROR", "nm_bootstrap_managed_host failed with status %d", static_cast<int>(st));
+            }
+            return;
+        }
+    }
+
+    logger_logf("WARN", "CoreCLR auto-bootstrap skipped (%s): hostfxr.dll + LocalExile.Client.Host.runtimeconfig.json + LocalExile.Client.Host.dll not found beside DLL",
+                trigger_reason);
+}
+
+// Invoked on the game thread by our register-preserving StateStack::PassA (0x1528f40) stub.
+// Returns the trampoline address in RAX so the stub can tail-jump directly to the original function.
+extern "C" void* NM_CALL on_live_game_frame_tick() {
+    const uint64_t frame_num = g_live_frame_count.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    float dt = 1.0f / 60.0f;
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    if (g_qpc_freq.QuadPart > 0 && g_last_frame_qpc.QuadPart > 0) {
+        const double sec = static_cast<double>(now.QuadPart - g_last_frame_qpc.QuadPart) /
+                           static_cast<double>(g_qpc_freq.QuadPart);
+        if (sec >= 0.0001 && sec <= 0.25) {
+            dt = static_cast<float>(sec);
+        }
+    }
+    g_last_frame_qpc = now;
+
+    if (frame_num == 1) {
+        logger_logf("INFO", "First frame hook hit on game thread (tid=%lu, rva=0x1528f40)",
+                    static_cast<unsigned long>(GetCurrentThreadId()));
+        trigger_auto_coreclr_bootstrap("first-frame");
+    } else if (frame_num == 10 || frame_num == 60 || frame_num == 120 || (frame_num % 300) == 0) {
+        auto& s = state();
+        logger_logf("INFO", "Frame heartbeat: frames=%llu tid=%lu coreclr_booted=%d coreclr_booting=%d msvc_cxx_passthrough=%llu",
+                    static_cast<unsigned long long>(frame_num),
+                    static_cast<unsigned long>(GetCurrentThreadId()),
+                    s.clr.is_booted() ? 1 : 0,
+                    s.clr.is_booting() ? 1 : 0,
+                    static_cast<unsigned long long>(get_msvc_cxx_passthrough_count()));
+    }
+
+    (void)nm_drain_main_thread_queue(dt, 64);
+
+    void* tramp = g_frame_trampoline.load(std::memory_order_acquire);
+    while (!tramp) {
+        YieldProcessor();
+        tramp = g_frame_trampoline.load(std::memory_order_acquire);
+    }
+    return tramp;
+}
+
+// Builds a register-preserving x86-64 entry stub for StateStack::PassA (0x1528f40).
+// Preserves rcx, rdx, r8, r9, xmm0..xmm3 and Win64 16-byte stack alignment across on_live_game_frame_tick(),
+// then jumps to the returned trampoline address in RAX.
+void* build_pass_a_frame_stub() {
+    void* page = HookEngine::alloc_exec_page(4096);
+    if (!page) return nullptr;
+    auto* p = static_cast<uint8_t*>(page);
+    size_t i = 0;
+
+    // push rcx ; push rdx ; push r8 ; push r9
+    p[i++] = 0x51;
+    p[i++] = 0x52;
+    p[i++] = 0x41; p[i++] = 0x50;
+    p[i++] = 0x41; p[i++] = 0x51;
+
+    // sub rsp, 0x68  (rsp % 16 == 0, 0x20 shadow + 0x40 xmm0..xmm3 + 0x08 align)
+    p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xEC; p[i++] = 0x68;
+
+    // movaps [rsp+0x20..0x50], xmm0..xmm3
+    p[i++] = 0x0F; p[i++] = 0x29; p[i++] = 0x44; p[i++] = 0x24; p[i++] = 0x20;
+    p[i++] = 0x0F; p[i++] = 0x29; p[i++] = 0x4C; p[i++] = 0x24; p[i++] = 0x30;
+    p[i++] = 0x0F; p[i++] = 0x29; p[i++] = 0x54; p[i++] = 0x24; p[i++] = 0x40;
+    p[i++] = 0x0F; p[i++] = 0x29; p[i++] = 0x5C; p[i++] = 0x24; p[i++] = 0x50;
+
+    // movabs rax, &on_live_game_frame_tick ; call rax
+    const uint64_t cb_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&on_live_game_frame_tick));
+    p[i++] = 0x48; p[i++] = 0xB8;
+    std::memcpy(p + i, &cb_addr, sizeof(cb_addr));
+    i += sizeof(cb_addr);
+    p[i++] = 0xFF; p[i++] = 0xD0;
+
+    // movaps xmm0..xmm3, [rsp+0x20..0x50]  (does not touch RAX)
+    p[i++] = 0x0F; p[i++] = 0x28; p[i++] = 0x44; p[i++] = 0x24; p[i++] = 0x20;
+    p[i++] = 0x0F; p[i++] = 0x28; p[i++] = 0x4C; p[i++] = 0x24; p[i++] = 0x30;
+    p[i++] = 0x0F; p[i++] = 0x28; p[i++] = 0x54; p[i++] = 0x24; p[i++] = 0x40;
+    p[i++] = 0x0F; p[i++] = 0x28; p[i++] = 0x5C; p[i++] = 0x24; p[i++] = 0x50;
+
+    // add rsp, 0x68 ; pop r9 ; pop r8 ; pop rdx ; pop rcx
+    p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xC4; p[i++] = 0x68;
+    p[i++] = 0x41; p[i++] = 0x59;
+    p[i++] = 0x41; p[i++] = 0x58;
+    p[i++] = 0x5A;
+    p[i++] = 0x59;
+
+    // jmp rax (tail-jump to trampoline returned by on_live_game_frame_tick)
+    p[i++] = 0xFF; p[i++] = 0xE0;
+
+    FlushInstructionCache(GetCurrentProcess(), page, i);
+    return page;
+}
+#endif
+
 } // namespace
 
 } // namespace nativemods
@@ -102,6 +285,16 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     std::lock_guard<std::mutex> lock(s.init_mutex);
 
     s.hooks.remove_all();
+    s.frame_hook_handle = NM_HOOK_INVALID;
+    if (s.frame_stub_page) {
+        HookEngine::free_exec_page(s.frame_stub_page, 4096);
+        s.frame_stub_page = nullptr;
+    }
+#if defined(_WIN32)
+    g_frame_trampoline.store(nullptr, std::memory_order_release);
+    g_live_frame_count.store(0, std::memory_order_relaxed);
+    g_auto_clr_triggered.store(false, std::memory_order_release);
+#endif
     s.frame_queue.clear();
     s.channels.clear();
     s.allocator.reset();
@@ -122,26 +315,35 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
 
     // Wire game allocator function pointers ONLY on real Win64 game builds (not synthetic tests).
 #if defined(_WIN32)
+    ensure_exception_wall_installed();
     if (build_id != NM_BUILD_SYNTHETIC) {
         const EmbeddedSymbol* alloc_sym = find_symbol(build_id, "allocator.alloc");
         const EmbeddedSymbol* free_sym  = find_symbol(build_id, "allocator.free");
         if (alloc_sym && free_sym && alloc_sym->rva != 0 && free_sym->rva != 0) {
             const uint64_t alloc_addr = image_base + alloc_sym->rva;
             const uint64_t free_addr  = image_base + free_sym->rva;
-            const bool alloc_ok = !alloc_sym->expected_bytes_hex ||
-                                  verify_memory_bytes(alloc_addr, alloc_sym->expected_bytes_hex) == NM_OK;
-            const bool free_ok  = !free_sym->expected_bytes_hex ||
-                                  verify_memory_bytes(free_addr, free_sym->expected_bytes_hex) == NM_OK;
-            if (alloc_ok && free_ok) {
-                s.allocator.configure(
-                    reinterpret_cast<GameAllocator::RawAllocFn>(static_cast<uintptr_t>(alloc_addr)),
-                    reinterpret_cast<GameAllocator::RawFreeFn>(static_cast<uintptr_t>(free_addr)));
+            if (is_memory_readable(alloc_addr, 16) && is_memory_readable(free_addr, 16)) {
+                const bool alloc_ok = !alloc_sym->expected_bytes_hex ||
+                                      verify_memory_bytes(alloc_addr, alloc_sym->expected_bytes_hex) == NM_OK;
+                const bool free_ok  = !free_sym->expected_bytes_hex ||
+                                      verify_memory_bytes(free_addr, free_sym->expected_bytes_hex) == NM_OK;
+                if (alloc_ok && free_ok) {
+                    s.allocator.configure(
+                        reinterpret_cast<GameAllocator::RawAllocFn>(static_cast<uintptr_t>(alloc_addr)),
+                        reinterpret_cast<GameAllocator::RawFreeFn>(static_cast<uintptr_t>(free_addr)));
+                }
             }
         }
     }
 #endif
 
     s.initialized = true;
+    logger_logf("INFO", "nm_initialize_for_build: build=%s (%d) image_base=0x%llX image_size=0x%X sha256=%s",
+                build_version_string(build_id),
+                static_cast<int>(build_id),
+                static_cast<unsigned long long>(image_base),
+                image_size,
+                s.exe_sha256[0] ? s.exe_sha256 : "<none>");
     return NM_OK;
 }
 
@@ -149,6 +351,14 @@ NM_API nm_status_t NM_CALL nm_shutdown(void) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
     s.hooks.remove_all();
+    s.frame_hook_handle = NM_HOOK_INVALID;
+    if (s.frame_stub_page) {
+        HookEngine::free_exec_page(s.frame_stub_page, 4096);
+        s.frame_stub_page = nullptr;
+    }
+#if defined(_WIN32)
+    g_frame_trampoline.store(nullptr, std::memory_order_release);
+#endif
     s.frame_queue.clear();
     s.channels.clear();
     s.allocator.reset();
@@ -416,40 +626,184 @@ NM_API void NM_CALL LocalExileClientHost_ImportAnchor(void) {
 namespace {
 
 DWORD WINAPI DeferredInitThread(LPVOID) {
-    // Compute base of main game module (supports DYNAMIC_BASE / ASLR).
-    HMODULE main_mod = GetModuleHandleW(nullptr);
-    if (!main_mod) return 0;
+    const std::string dll_dir = wide_to_utf8(g_dll_dir_w);
+    logger_init(dll_dir);
+    ensure_exception_wall_installed();
+    QueryPerformanceFrequency(&g_qpc_freq);
 
-    const auto base = reinterpret_cast<uint64_t>(main_mod);
-    auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(main_mod);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
-    auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    logger_logf("INFO", "DLL_PROCESS_ATTACH deferred init (pid=%lu, tid=%lu, dll_dir='%s', abi=0x%08X)",
+                static_cast<unsigned long>(GetCurrentProcessId()),
+                static_cast<unsigned long>(GetCurrentThreadId()),
+                dll_dir.c_str(),
+                NM_ABI_VERSION);
 
-    // Verify 3.29 frame hook + appGlobal signature before touching any game code.
-    const bool frame_ok = verify_memory_bytes(base + 0x1528fbfull, "488b5d284883eb10") == NM_OK;
-    const bool app_ok   = verify_memory_bytes(base + 0x00f3b30ull, "488b05????????488907488b05") == NM_OK;
-    if (!frame_ok || !app_ok) {
-        // Unknown build: leave client completely stock.
+    if (get_env_utf8(L"NATIVEMODS_DISABLE_AUTO_INIT") == "1") {
+        logger_logf("INFO", "NATIVEMODS_DISABLE_AUTO_INIT=1; skipping automatic build detection");
         return 0;
     }
 
-    // Initialize shim for 3.29.3d (or 3.29.3c if matched by external config).
-    nm_initialize_for_build(NM_BUILD_3_29_3D_328228, base, nt->OptionalHeader.SizeOfImage, nullptr);
+    // Inspect main executable module (supports DYNAMIC_BASE / ASLR).
+    HMODULE main_mod = GetModuleHandleW(nullptr);
+    if (!main_mod) {
+        logger_logf("ERROR", "GetModuleHandleW(nullptr) returned null");
+        return 0;
+    }
+
+    wchar_t exe_path_w[MAX_PATH * 2] = {};
+    const DWORD exe_path_len = GetModuleFileNameW(main_mod, exe_path_w, MAX_PATH * 2);
+    const std::string exe_path_utf8 = (exe_path_len > 0) ? wide_to_utf8(exe_path_w) : std::string("<unknown>");
+
+    const auto base = reinterpret_cast<uint64_t>(main_mod);
+    auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(main_mod);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        logger_logf("ERROR", "Main module at 0x%llX has invalid DOS signature", static_cast<unsigned long long>(base));
+        return 0;
+    }
+    auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + static_cast<uint64_t>(dos->e_lfanew));
+    if (nt->Signature != IMAGE_NT_SIGNATURE) {
+        logger_logf("ERROR", "Main module at 0x%llX has invalid NT signature", static_cast<unsigned long long>(base));
+        return 0;
+    }
+    const uint32_t image_size = nt->OptionalHeader.SizeOfImage;
+
+    std::string exe_sha256;
+    if (exe_path_len > 0 && sha256_hex_file_wide(exe_path_w, exe_sha256)) {
+        logger_logf("INFO", "Main executable: '%s' (image_base=0x%llX, image_size=0x%X, sha256=%s)",
+                    exe_path_utf8.c_str(),
+                    static_cast<unsigned long long>(base),
+                    image_size,
+                    exe_sha256.c_str());
+    } else {
+        logger_logf("WARN", "Main executable: '%s' (image_base=0x%llX, image_size=0x%X, sha256=<unavailable>)",
+                    exe_path_utf8.c_str(),
+                    static_cast<unsigned long long>(base),
+                    image_size);
+    }
+
+    nm_build_id_t detected_build = identify_build_by_sha256(exe_sha256);
+    const char* match_source = (detected_build != NM_BUILD_UNKNOWN) ? "exact-sha256" : "none";
+
+    // Check in-memory 3.29 code signatures (handles LocalExile key-patched Game.patched.exe and .nmimp builds).
+    bool pass_a_ok = false;
+    bool pass_a_hook_ok = false;
+    bool app_global_ok = false;
+
+    if (image_size > 0x1529100u &&
+        is_memory_readable(base + 0x1528f40ull, 16) &&
+        is_memory_readable(base + 0x1528fbfull, 18) &&
+        is_memory_readable(base + 0x00f3b30ull, 16)) {
+        pass_a_ok = verify_memory_bytes(base + 0x1528f40ull, "48895c241048896c24184889742420") == NM_OK;
+        pass_a_hook_ok = verify_memory_bytes(base + 0x1528fbfull, "488b5d284883eb10") == NM_OK;
+        app_global_ok = verify_memory_bytes(base + 0x00f3b30ull, "488b05????????488907488b05") == NM_OK;
+
+        logger_logf("INFO", "3.29 signature check: pass_a(0x1528f40)=%s pass_a_hook(0x1528fbf)=%s app_global_ref(0x00f3b30)=%s",
+                    pass_a_ok ? "OK" : "MISMATCH",
+                    pass_a_hook_ok ? "OK" : "MISMATCH",
+                    app_global_ok ? "OK" : "MISMATCH");
+
+        if (detected_build == NM_BUILD_UNKNOWN && pass_a_ok && pass_a_hook_ok && app_global_ok) {
+            detected_build = NM_BUILD_3_29_3D_328228;
+            match_source = "signature-match-3.29.3d";
+        }
+    }
+
+    if (detected_build == NM_BUILD_UNKNOWN) {
+        logger_logf("INFO", "Host executable is not a recognized 3.29.3c/3.29.3d game client; leaving process stock (manual nm_initialize_for_build available)");
+        return 0;
+    }
+
+    logger_logf("INFO", "Recognized client build: %s (id=%d, match=%s)",
+                build_version_string(detected_build), static_cast<int>(detected_build), match_source);
+
+    const nm_status_t init_st = nm_initialize_for_build(
+        detected_build,
+        base,
+        image_size,
+        exe_sha256.empty() ? nullptr : exe_sha256.c_str());
+    if (init_st != NM_OK) {
+        logger_logf("ERROR", "nm_initialize_for_build failed (%d)", static_cast<int>(init_st));
+        return 0;
+    }
+
+    // Install register-preserving 15-byte prologue hook at frame.state_stack_pass_a (0x1528f40)
+    // after confirming both 0x1528f40 (15B prologue) and 0x1528fbf (weak-ref sweep) match.
+    if (pass_a_ok && pass_a_hook_ok) {
+        void* stub = build_pass_a_frame_stub();
+        if (!stub) {
+            logger_logf("ERROR", "Failed to allocate executable frame hook stub page");
+        } else {
+            void* trampoline = nullptr;
+            nm_hook_handle_t handle = NM_HOOK_INVALID;
+            const uint64_t pass_a_addr = base + 0x1528f40ull;
+            const nm_status_t hook_st = nm_install_inline_hook_at(
+                pass_a_addr,
+                "48895c241048896c24184889742420",
+                stub,
+                &trampoline,
+                &handle);
+            if (hook_st == NM_OK && trampoline != nullptr) {
+                g_frame_trampoline.store(trampoline, std::memory_order_release);
+                auto& s = state();
+                std::lock_guard<std::mutex> lock(s.init_mutex);
+                s.frame_hook_handle = handle;
+                s.frame_stub_page = stub;
+                s.flags |= NM_HOST_FLAG_FRAME_HOOK_ARMED;
+                logger_logf("INFO", "Frame hook armed at 0x%llX (RVA 0x1528f40, 15B prologue + 0x1528fbf verified; stub=%p tramp=%p handle=%llu)",
+                            static_cast<unsigned long long>(pass_a_addr),
+                            stub,
+                            trampoline,
+                            static_cast<unsigned long long>(handle));
+            } else {
+                HookEngine::free_exec_page(stub, 4096);
+                logger_logf("ERROR", "Failed to install frame hook at 0x%llX (status=%d)",
+                            static_cast<unsigned long long>(pass_a_addr),
+                            static_cast<int>(hook_st));
+            }
+        }
+    }
+
+    // Fallback: if StateStack::PassA hasn't fired within 2000ms (e.g. early splash), boot CoreCLR anyway off-thread.
+    for (int i = 0; i < 40; ++i) {
+        if (g_auto_clr_triggered.load(std::memory_order_acquire)) {
+            break;
+        }
+        Sleep(50);
+    }
+    if (!g_auto_clr_triggered.load(std::memory_order_acquire)) {
+        trigger_auto_coreclr_bootstrap("startup-timer-fallback");
+    }
+
     return 0;
 }
 
 } // namespace
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved) {
-    (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
+        logger_mark_attach_time();
         DisableThreadLibraryCalls(hinst);
-        // Never run CoreCLR or heavy init under the Windows loader lock!
+        const DWORD len = GetModuleFileNameW(hinst, g_dll_dir_w, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            for (DWORD i = len; i > 0; --i) {
+                if (g_dll_dir_w[i - 1] == L'\\' || g_dll_dir_w[i - 1] == L'/') {
+                    g_dll_dir_w[i - 1] = L'\0';
+                    break;
+                }
+            }
+        }
+        // Never run CoreCLR, SHA-256 I/O, or hook installation under the Windows loader lock!
         HANDLE th = CreateThread(nullptr, 0, DeferredInitThread, nullptr, 0, nullptr);
         if (th) CloseHandle(th);
     } else if (reason == DLL_PROCESS_DETACH) {
-        nm_shutdown();
+        logger_logf("INFO", "DLL_PROCESS_DETACH (process_exit=%d, live_frames=%llu, msvc_cxx_passthrough=%llu, coreclr_booted=%d)",
+                    reserved != nullptr ? 1 : 0,
+                    static_cast<unsigned long long>(g_live_frame_count.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(get_msvc_cxx_passthrough_count()),
+                    state().clr.is_booted() ? 1 : 0);
+        if (reserved == nullptr) {
+            nm_shutdown();
+        }
+        logger_close();
     }
     return TRUE;
 }

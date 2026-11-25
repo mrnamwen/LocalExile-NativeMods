@@ -2,6 +2,7 @@
 
 #include "nativemods_abi.h"
 
+#include <cstdint>
 #include <exception>
 #include <string>
 
@@ -21,6 +22,13 @@ private:
     uint32_t    code_;
     std::string message_;
 };
+
+// Ensures the Win64 VEH exception wall is registered (safe to call outside DllMain; idempotent).
+void ensure_exception_wall_installed() noexcept;
+
+// Returns count of unguarded first-chance MSVC C++ exceptions (0xE06D7363) observed and
+// passed straight through (EXCEPTION_CONTINUE_SEARCH) to the game / CoreCLR.
+uint64_t get_msvc_cxx_passthrough_count() noexcept;
 
 nm_status_t invoke_guarded(
     nm_guarded_fn_t      fn,
