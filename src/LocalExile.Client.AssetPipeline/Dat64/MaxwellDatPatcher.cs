@@ -7,6 +7,7 @@ namespace LocalExile.Client.AssetPipeline.Dat64;
 public sealed record PetMtxPatchSpec
 {
     public string MtxTypeId { get; init; } = "Metadata/Items/Pets/Mods/MaxwellPet";
+    public string ShortId { get; init; } = "MaxwellPet";
     public string DisplayName { get; init; } = "Maxwell the Cat Pet";
     public string Description { get; init; } = "Summons your spinning Maxwell the Cat pet";
     public string PetId { get; init; } = "Metadata/Pet/Mods/Maxwell/MaxwellPet";
@@ -43,10 +44,11 @@ public static class MaxwellDatPatcher
 {
     // Verified 3.29.3d exact row strides and column offsets:
     public const int MtxTypesRowStride = 180;
-    public const int MtxTypesIdOffset = 0;            // string (8)
+    public const int MtxTypesIdOffset = 0;            // string (8) - unique
     public const int MtxTypesHash32Offset = 8;        // u32 (4)
     public const int MtxTypesNameOffset = 12;         // string (8)
     public const int MtxTypesDesc1Offset = 28;        // string (8)
+    public const int MtxTypesShortIdOffset = 137;     // string (8) - __col18, strictly unique across all non-empty stock rows
 
     public const int MtxTypeGameSpecificRowStride = 68;
     public const int MtxGsTypeOffset = 0;             // foreignrow -> MtxTypes (16)
@@ -58,10 +60,12 @@ public static class MaxwellDatPatcher
     public const int MtxGsCol6Offset = 52;            // i32[] (16)
 
     public const int PetRowStride = 138;
-    public const int PetIdOffset = 0;                 // string (8)
+    public const int PetIdOffset = 0;                 // string (8) - unique
     public const int PetMtxGsKeyOffset = 8;           // foreignrow -> MtxTypeGameSpecific (16)
     public const int PetHash32Offset = 24;            // u32 (4)
     public const int PetHash16Offset = 28;            // u16 (2)
+    public const int PetCol7Offset = 36;              // foreignrow[] (16) - MUST NOT alias template offset (in-place resolved by 3.29!)
+    public const int PetSkillsOffset = 68;            // foreignrow[] (16) - deep-copied to prevent any aliasing
 
     public static PatchedPetMtxResult AppendPetMtx(
         ReadOnlySpan<byte> stockMtxTypes,
@@ -84,12 +88,17 @@ public static class MaxwellDatPatcher
             throw new InvalidOperationException($"MtxTypes.datc64 already contains Id '{spec.MtxTypeId}'.");
         }
 
+        if (!string.IsNullOrEmpty(spec.ShortId) && mtxTypes.FindRowByString(MtxTypesShortIdOffset, spec.ShortId) >= 0)
+        {
+            throw new InvalidOperationException($"MtxTypes.datc64 already contains ShortId (__col18) '{spec.ShortId}'.");
+        }
+
         if (pet.FindRowByString(PetIdOffset, spec.PetId) >= 0)
         {
             throw new InvalidOperationException($"Pet.datc64 already contains Id '{spec.PetId}'.");
         }
 
-        // 1. Append MtxTypes row (cloning scalar flags/ShopTag from stock Kiwi1 template row).
+        // 1. Append MtxTypes row (cloning scalar flags/ShopTag from stock Kiwi1 template row, replacing unique Id & __col18 ShortId).
         int templateMtxRow = mtxTypes.FindRowByString(MtxTypesIdOffset, spec.TemplateMtxTypeId);
         if (templateMtxRow < 0)
         {
@@ -102,6 +111,7 @@ public static class MaxwellDatPatcher
         Dat64TablePatcher.WriteUInt32(newMtxRow, MtxTypesHash32Offset, spec.MtxHash32);
         mtxPatcher.SetString(newMtxRow, MtxTypesNameOffset, spec.DisplayName);
         mtxPatcher.SetString(newMtxRow, MtxTypesDesc1Offset, spec.Description);
+        mtxPatcher.SetString(newMtxRow, MtxTypesShortIdOffset, spec.ShortId);
         int newMtxRowIndex = mtxPatcher.AppendRow(newMtxRow);
         Dat64Table patchedMtxTypes = mtxPatcher.BuildAndVerify();
 
@@ -124,12 +134,22 @@ public static class MaxwellDatPatcher
         int newGsRowIndex = gsPatcher.AppendRow(newGsRow);
         Dat64Table patchedMtxGs = gsPatcher.BuildAndVerify();
 
-        // 3. Append Pet row referencing newGsRowIndex (cloning scalar/bool columns from Kiwi row 0).
+        // 3. Append Pet row referencing newGsRowIndex (cloning scalar/bool columns from Kiwi row 0,
+        //    and deep-copying foreignrow[] columns __col7 & Skills so PoE 3.29's in-place pointer
+        //    resolution never double-resolves an aliased variable-section offset!).
         int templatePetRow = pet.FindRowByString(PetIdOffset, spec.TemplatePetId);
         if (templatePetRow < 0)
         {
             templatePetRow = 0;
         }
+
+        ulong[] templateCol7 = pet.ReadForeignRowArray(templatePetRow, PetCol7Offset);
+        if (templateCol7.Length == 0)
+        {
+            templateCol7 = [1UL];
+        }
+
+        ulong[] templateSkills = pet.ReadForeignRowArray(templatePetRow, PetSkillsOffset);
 
         var petPatcher = new Dat64TablePatcher(pet);
         byte[] newPetRow = petPatcher.CloneRow(templatePetRow);
@@ -137,6 +157,8 @@ public static class MaxwellDatPatcher
         Dat64TablePatcher.WriteForeignRow(newPetRow, PetMtxGsKeyOffset, (ulong)newGsRowIndex);
         Dat64TablePatcher.WriteUInt32(newPetRow, PetHash32Offset, spec.PetHash32);
         Dat64TablePatcher.WriteUInt16(newPetRow, PetHash16Offset, spec.PetHash16);
+        petPatcher.SetForeignRowArray(newPetRow, PetCol7Offset, templateCol7);
+        petPatcher.SetForeignRowArray(newPetRow, PetSkillsOffset, templateSkills);
         int newPetRowIndex = petPatcher.AppendRow(newPetRow);
         Dat64Table patchedPet = petPatcher.BuildAndVerify();
 
@@ -183,6 +205,22 @@ public static class MaxwellDatPatcher
             throw new InvalidDataException("Patched MtxTypes.Name verification failed.");
         }
 
+        if (!string.Equals(mtxTypes.ReadString(expectedMtxRow, MtxTypesShortIdOffset), spec.ShortId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Patched MtxTypes.ShortId (__col18) verification failed.");
+        }
+
+        // Verify ShortId uniqueness across all rows (PoE 3.29 indexes MtxTypes.__col18 as a unique key).
+        for (int r = 0; r < mtxTypes.RowCount; r++)
+        {
+            if (r != expectedMtxRow &&
+                !string.IsNullOrEmpty(spec.ShortId) &&
+                string.Equals(mtxTypes.ReadString(r, MtxTypesShortIdOffset), spec.ShortId, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Duplicate MtxTypes.ShortId (__col18) '{spec.ShortId}' found at row {r}.");
+            }
+        }
+
         if (mtxGs.ReadForeignRow(expectedGsRow, MtxGsTypeOffset) != (ulong)expectedMtxRow)
         {
             throw new InvalidDataException("Patched MtxTypeGameSpecific.Type foreign row verification failed.");
@@ -222,6 +260,23 @@ public static class MaxwellDatPatcher
             pet.ReadUInt16(expectedPetRow, PetHash16Offset) != spec.PetHash16)
         {
             throw new InvalidDataException("Patched Pet.HASH32/HASH16 verification failed.");
+        }
+
+        // Verify Pet.__col7 foreignrow[] has a non-aliased variable-section offset (PoE resolves foreignrow[] in-place).
+        ulong appendedCol7Count = pet.ReadUInt64(expectedPetRow, PetCol7Offset);
+        ulong appendedCol7Offset = pet.ReadUInt64(expectedPetRow, PetCol7Offset + 8);
+        if (appendedCol7Count > 0)
+        {
+            for (int r = 0; r < pet.RowCount; r++)
+            {
+                if (r != expectedPetRow &&
+                    pet.ReadUInt64(r, PetCol7Offset) > 0 &&
+                    pet.ReadUInt64(r, PetCol7Offset + 8) == appendedCol7Offset)
+                {
+                    throw new InvalidDataException(
+                        $"Pet[{expectedPetRow}].__col7 aliases Pet[{r}] variable offset 0x{appendedCol7Offset:X}; in-place foreignrow[] resolution would crash PoE 3.29.");
+                }
+            }
         }
     }
 
