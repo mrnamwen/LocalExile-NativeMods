@@ -175,6 +175,12 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         UiClick = 4,
     }
 
+    private sealed class UiClickSlot
+    {
+        public Action? Handler;
+        public bool NativeSubscribed;
+    }
+
     [ThreadStatic]
     private static bool s_inNativeGameFrame;
 
@@ -182,6 +188,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     private readonly int _gameThreadId;
     private readonly ConcurrentQueue<Action> _pendingWork = new();
     private readonly ConcurrentDictionary<(CallbackKind Kind, ulong Token), GCHandle> _pinnedCallbacks = new();
+    private readonly ConcurrentDictionary<nint, UiClickSlot> _uiClickSlots = new();
     private readonly ConcurrentDictionary<string, int> _localStats = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<uint, WorldObjectInfo> _clientObjects = new();
     private readonly ConcurrentDictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawReceivers = new();
@@ -843,21 +850,33 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             return NoopDisposable.Instance;
         }
 
-        GCHandle handle = GCHandle.Alloc(onClicked);
-        ulong token = 0;
-        NmStatus st = _table->UiSubscribeClick((void*)buttonControl, &OnNativeUiClick, (void*)GCHandle.ToIntPtr(handle), &token);
-        if (st != NmStatus.Ok)
+        // Reuse one host-owned UiClickSlot per native button so closing/reopening a window
+        // never pins mod delegates (preserving collectible ALC unloadability) and never
+        // appends duplicate native click entries to PoE's button+0x2a0 event list.
+        UiClickSlot slot = _uiClickSlots.GetOrAdd(buttonControl, static _ => new UiClickSlot());
+        lock (slot)
         {
-            handle.Free();
-            return NoopDisposable.Instance;
+            Volatile.Write(ref slot.Handler, onClicked);
+            if (!slot.NativeSubscribed)
+            {
+                GCHandle handle = GCHandle.Alloc(slot);
+                ulong token = 0;
+                NmStatus st = _table->UiSubscribeClick((void*)buttonControl, &OnNativeUiClick, (void*)GCHandle.ToIntPtr(handle), &token);
+                if (st != NmStatus.Ok)
+                {
+                    handle.Free();
+                    Interlocked.CompareExchange(ref slot.Handler, null, onClicked);
+                    return NoopDisposable.Instance;
+                }
+
+                slot.NativeSubscribed = true;
+                _pinnedCallbacks[(CallbackKind.UiClick, token)] = handle;
+            }
         }
 
-        var key = (CallbackKind.UiClick, token);
-        _pinnedCallbacks[key] = handle;
         return new ActionDisposable(() =>
         {
-            // Keep GCHandle pinned until bridge dispose if native button outlives managed wrapper,
-            // preventing dangling native vtable callbacks.
+            Interlocked.CompareExchange(ref slot.Handler, null, onClicked);
         });
     }
 
@@ -894,6 +913,12 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         }
 
         _disposed = true;
+        foreach (UiClickSlot slot in _uiClickSlots.Values)
+        {
+            Volatile.Write(ref slot.Handler, null);
+        }
+
+        _uiClickSlots.Clear();
         foreach (GCHandle h in _pinnedCallbacks.Values)
         {
             if (h.IsAllocated)
@@ -958,9 +983,9 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         try
         {
             GCHandle handle = GCHandle.FromIntPtr((nint)userData);
-            if (handle.Target is Action cb)
+            if (handle.Target is UiClickSlot slot)
             {
-                cb();
+                Volatile.Read(ref slot.Handler)?.Invoke();
             }
         }
         catch

@@ -195,4 +195,205 @@ public sealed class FileOverlayAndUiTests
         using IDisposable dupOverlay = host.FileOverlayService.RegisterVirtualTextFile("Metadata/UI/Mods/Dup.ui", dupUi);
         Assert.Throws<FormatException>(() => host.Ui.Load("Metadata/UI/Mods/Dup.ui"));
     }
+
+    private const string SampleSiphonPickerUi = """
+        // Recombinator-style SiphonPicker.ui test layout
+        <DEFINITIONS>
+
+        begin Frame
+            id = siphon_picker_window;
+            size = 920, 640;
+            visible = true;
+
+            begin StackLayout
+                id = body;
+
+                begin Label
+                    id = title_label;
+                    text = "Orb of Siphoning";
+                end
+
+                begin Frame
+                    id = stored_mod_box;
+                    visible = false;
+
+                    begin Label
+                        id = stored_mod_label;
+                        text = "";
+                    end
+                end
+
+                begin StackLayout
+                    id = affix_list;
+
+                    begin Frame
+                        id = affix_row_0;
+                        visible = true;
+
+                        begin Button
+                            id = affix_btn_0;
+                            text = "Select";
+                        end
+
+                        begin Label
+                            id = affix_label_0;
+                            text = "Affix 0";
+                        end
+                    end
+
+                    begin Frame
+                        id = affix_row_1;
+                        visible = true;
+
+                        begin Button
+                            id = affix_btn_1;
+                            text = "Select";
+                        end
+
+                        begin Label
+                            id = affix_label_1;
+                            text = "Affix 1";
+                        end
+                    end
+
+                    begin Frame
+                        id = affix_row_2;
+                        visible = true;
+
+                        begin Button
+                            id = affix_btn_2;
+                            text = "Select";
+                        end
+
+                        begin Label
+                            id = affix_label_2;
+                            text = "Affix 2";
+                        end
+                    end
+                end
+
+                begin Frame
+                    id = actions;
+
+                    begin Button
+                        id = confirm_button;
+                        text = "Confirm";
+                    end
+
+                    begin Button
+                        id = cancel_button;
+                        text = "Cancel";
+                    end
+                end
+            end
+        end
+        """;
+
+    [Fact]
+    public void UiService_NativeBridge_SupportsDynamicRowVisibilityButtonLabelsAndMultiCycleWindowReuse()
+    {
+        using var bridge = new SimulatedNativeBridge { EnableSimulatedNativeUi = true };
+        using var host = new ClientHostRuntime(bridge);
+
+        const string uiPath = "Metadata/UI/Mods/Siphon/SiphonPicker.ui";
+        using IDisposable overlay = host.FileOverlayService.RegisterVirtualTextFile(uiPath, SampleSiphonPickerUi);
+
+        // --- Cycle 1: Steal mode on a 2-mod Magic item (rows 0-1 visible, row 2 hidden) ---
+        IUiWindow stealWindow = host.Ui.Load(uiPath, "siphon_picker_window");
+        SimulatedNativeBridge.SimulatedNativeUiControl? nativeRoot1 = bridge.GetSimulatedNativeUiControl(uiPath);
+        Assert.NotNull(nativeRoot1);
+        Assert.True(nativeRoot1!.Visible);
+
+        IUiControl row0 = stealWindow.Require<IUiControl>("body.affix_list.affix_row_0");
+        IUiControl row1 = stealWindow.Require<IUiControl>("body.affix_list.affix_row_1");
+        IUiControl row2 = stealWindow.Require<IUiControl>("body.affix_list.affix_row_2");
+        IButton btn0 = stealWindow.Require<IButton>("body.affix_list.affix_row_0.affix_btn_0");
+        ILabel lbl0 = stealWindow.Require<ILabel>("body.affix_list.affix_row_0.affix_label_0");
+        IButton btn2 = stealWindow.Require<IButton>("body.affix_list.affix_row_2.affix_btn_2");
+        IButton confirm1 = stealWindow.Require<IButton>("body.actions.confirm_button");
+
+        // Dynamic Label + Button text updates route with exact isButton flag.
+        lbl0.Text = "[Prefix] +78 to Maximum Life";
+        btn0.Text = "Selected";
+        row2.Visible = false;
+
+        var nativeLbl0 = bridge.GetSimulatedNativeUiControl(uiPath, "affix_label_0")!;
+        var nativeBtn0 = bridge.GetSimulatedNativeUiControl(uiPath, "affix_btn_0")!;
+        var nativeRow2 = bridge.GetSimulatedNativeUiControl(uiPath, "affix_row_2")!;
+        var nativeBtn2 = bridge.GetSimulatedNativeUiControl(uiPath, "affix_btn_2")!;
+        var nativeConfirm = bridge.GetSimulatedNativeUiControl(uiPath, "confirm_button")!;
+
+        Assert.Equal("[Prefix] +78 to Maximum Life", nativeLbl0.Text);
+        Assert.False(nativeLbl0.LastSetTextIsButton);
+        Assert.Equal("Selected", nativeBtn0.Text);
+        Assert.True(nativeBtn0.LastSetTextIsButton);
+        Assert.False(nativeRow2.Visible);
+
+        // Hidden parent row MUST block clicks on child buttons in both managed & native simulation!
+        int cycle1Row0Clicks = 0;
+        int cycle1Row2Clicks = 0;
+        int cycle1ConfirmClicks = 0;
+        btn0.Clicked += () => cycle1Row0Clicks++;
+        btn2.Clicked += () => cycle1Row2Clicks++;
+        confirm1.Clicked += () => cycle1ConfirmClicks++;
+
+        btn2.Click();
+        Assert.False(bridge.SimulateNativeUiClick(nativeBtn2.Handle));
+        Assert.Equal(0, cycle1Row2Clicks);
+
+        // Visible row 0 and confirm button fire normally through native click routing.
+        Assert.True(bridge.SimulateNativeUiClick(nativeBtn0.Handle));
+        Assert.True(bridge.SimulateNativeUiClick(nativeConfirm.Handle));
+        Assert.Equal(1, cycle1Row0Clicks);
+        Assert.Equal(1, cycle1ConfirmClicks);
+
+        // Also verify SetProperty("text"/ "visible") syncs to native when bound.
+        row1.SetProperty("visible", "false");
+        Assert.False(bridge.GetSimulatedNativeUiControl(uiPath, "affix_row_1")!.Visible);
+
+        // Close cycle 1 window: hides native root AND releases native click subscriptions immediately.
+        stealWindow.Close();
+        Assert.False(nativeRoot1.Visible);
+        Assert.False(bridge.SimulateNativeUiClick(nativeConfirm.Handle));
+        Assert.Equal(1, cycle1ConfirmClicks);
+
+        // --- Cycle 2: Imbue mode reopens the exact same .ui on a 3-mod Rare item ---
+        IUiWindow imbueWindow = host.Ui.Load(uiPath, "siphon_picker_window");
+        SimulatedNativeBridge.SimulatedNativeUiControl? nativeRoot2 = bridge.GetSimulatedNativeUiControl(uiPath);
+        Assert.NotNull(nativeRoot2);
+        // Same native window handle reused (zero duplicate-ID reload crash!).
+        Assert.Equal(nativeRoot1.Handle, nativeRoot2!.Handle);
+        Assert.True(nativeRoot2.Visible);
+
+        // Previously hidden rows & mutated text MUST be reset to parsed .ui defaults on reopen!
+        Assert.True(bridge.GetSimulatedNativeUiControl(uiPath, "affix_row_1")!.Visible);
+        Assert.True(bridge.GetSimulatedNativeUiControl(uiPath, "affix_row_2")!.Visible);
+        Assert.Equal("Affix 0", nativeLbl0.Text);
+        Assert.Equal("Select", nativeBtn0.Text);
+
+        // Re-bind cycle 2 handlers: clicking Confirm or Row 2 fires ONLY cycle 2 (ZERO stale cycle 1 fires!).
+        int cycle2Row2Clicks = 0;
+        int cycle2ConfirmClicks = 0;
+        imbueWindow.Require<IButton>("body.affix_list.affix_row_2.affix_btn_2").Clicked += () => cycle2Row2Clicks++;
+        imbueWindow.Require<IButton>("body.actions.confirm_button").Clicked += () => cycle2ConfirmClicks++;
+
+        Assert.True(bridge.SimulateNativeUiClick(nativeBtn2.Handle));
+        Assert.True(bridge.SimulateNativeUiClick(nativeConfirm.Handle));
+        Assert.Equal(0, cycle1Row2Clicks);
+        Assert.Equal(1, cycle1ConfirmClicks);
+        Assert.Equal(1, cycle2Row2Clicks);
+        Assert.Equal(1, cycle2ConfirmClicks);
+
+        // Reload() while open must also cleanly replace native subscriptions without double-firing.
+        imbueWindow.Reload();
+        int postReloadConfirmClicks = 0;
+        imbueWindow.Require<IButton>("body.actions.confirm_button").Clicked += () => postReloadConfirmClicks++;
+        Assert.True(bridge.SimulateNativeUiClick(nativeConfirm.Handle));
+        Assert.Equal(1, cycle2ConfirmClicks);
+        Assert.Equal(1, postReloadConfirmClicks);
+
+        imbueWindow.Close();
+        Assert.False(bridge.SimulateNativeUiClick(nativeConfirm.Handle));
+        Assert.Equal(1, postReloadConfirmClicks);
+    }
 }

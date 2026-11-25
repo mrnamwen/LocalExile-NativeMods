@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Interactive Desktop Launcher for Path of Exile 3.29.3d + LocalExile + NativeMods + DualMod.MaxwellPet.
+# Interactive Desktop Launcher for Path of Exile 3.29.3d + LocalExile + NativeMods (Maxwell Pet / Orb of Siphoning).
 #
 # Launches the real 3.29.3d Path of Exile client and LocalExile Gateway directly on your live
 # desktop session (Hyprland/Wayland/X11) with native resolution and real audio output so you can
-# play interactively, equip Maxwell the Cat via Cosmetics (K), hear Weebl's "Stock Market", and
-# take screenshots normally.
+# play interactively, test DualMod.MaxwellPet, DualMod.SiphonOrb, or both together, and take
+# screenshots normally.
 #
 # Safety & teardown guarantees:
 #   - Stages all NativeMods host, overlay, and server-mod files under
@@ -12,7 +12,7 @@
 #     never touching LocalExile/Mods/).
 #   - Records baseline SHA-256 hashes of Client/Game.exe and Client/Game.patched.exe before launch.
 #   - Snapshots data/characters.db* by default and restores it on exit (unless --keep-save is passed)
-#     so equipping custom Pet MTX never leaves a modded pet slot ID in your vanilla LocalExile save.
+#     so custom Pet MTX slots or custom currency items never pollute your vanilla LocalExile save.
 #   - On PoE exit or Ctrl+C, automatically stops LocalExile (live.ps1 -Stop), removes staged DLLs
 #     from Client/, restores Game.patched.exe (in import-patch mode), deletes the staging directory,
 #     and verifies Game.exe, Game.patched.exe, and Mods/ match baseline 100%.
@@ -21,9 +21,10 @@
 #   ./scripts/launch-desktop.sh [options]
 #
 # Options:
+#   --mod <maxwell|siphon|all>   Mod bundle to stage & launch (default: all)
 #   --mode <proxy|import-patch>  Injection mode (default: proxy)
 #   --localexile-dir <path>      Path to LocalExile checkout (default: /home/nam/Git/LocalExile)
-#   --rebuild                    Force rebuild of Win64 extender, Maxwell assets, and DualMod.MaxwellPet
+#   --rebuild                    Force rebuild of Win64 extender and selected mod assets/assemblies
 #   --keep-save                  Keep data/characters.db* changes on exit (default: snapshot & restore)
 #   --show-logo                  Show the GGG intro video on startup (default passes --nologo for faster boot)
 #   --trace-files                Enable NATIVEMODS_TRACE_FILES=1 diagnostic tracing
@@ -36,6 +37,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+MOD_SELECTION="all"
 MODE="proxy"
 LOCALEXILE_DIR="/home/nam/Git/LocalExile"
 REBUILD=0
@@ -45,7 +47,7 @@ TRACE_FILES=0
 DRY_RUN=0
 
 usage() {
-    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_arg() {
@@ -60,6 +62,11 @@ require_arg() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --mod)
+            require_arg "$1" "${2:-}"
+            MOD_SELECTION="$2"
+            shift 2
+            ;;
         --mode)
             require_arg "$1" "${2:-}"
             MODE="$2"
@@ -102,9 +109,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "${MOD_SELECTION}" in
+    maxwell|siphon|all) ;;
+    *)
+        echo "ERROR: --mod must be 'maxwell', 'siphon', or 'all' (got '${MOD_SELECTION}')" >&2
+        exit 2
+        ;;
+esac
+
 if [[ "${MODE}" != "proxy" && "${MODE}" != "import-patch" ]]; then
     echo "ERROR: --mode must be 'proxy' or 'import-patch' (got '${MODE}')" >&2
     exit 2
+fi
+
+ENABLE_MAXWELL=0
+ENABLE_SIPHON=0
+if [[ "${MOD_SELECTION}" == "maxwell" || "${MOD_SELECTION}" == "all" ]]; then
+    ENABLE_MAXWELL=1
+fi
+if [[ "${MOD_SELECTION}" == "siphon" || "${MOD_SELECTION}" == "all" ]]; then
+    ENABLE_SIPHON=1
 fi
 
 if [[ ! -d "${LOCALEXILE_DIR}" ]]; then
@@ -119,14 +143,22 @@ GAME_PATCHED_EXE="${CLIENT_DIR}/Game.patched.exe"
 LIVE_PS1="${LOCALEXILE_DIR}/scripts/dev/live.ps1"
 
 DIST_DIR="${REPO_ROOT}/dist/win-x64"
-ASSETS_DIR="${REPO_ROOT}/dist/maxwell-assets"
 BUILD_WIN64_SCRIPT="${REPO_ROOT}/scripts/build-win64.sh"
-BUILD_ASSETS_SCRIPT="${REPO_ROOT}/scripts/build-maxwell-assets.sh"
-SERVER_CSPROJ="${REPO_ROOT}/examples/DualMod.MaxwellPet/Server/DualMod.MaxwellPet.Server.csproj"
-CLIENT_CSPROJ="${REPO_ROOT}/examples/DualMod.MaxwellPet/Client/DualMod.MaxwellPet.Client.csproj"
 PATCHER_CSPROJ="${REPO_ROOT}/src/LocalExile.Client.Patcher/LocalExile.Client.Patcher.csproj"
-SERVER_MOD_DIR="${REPO_ROOT}/examples/DualMod.MaxwellPet/Server/bin/Release/net10.0"
-CLIENT_MOD_DIR="${REPO_ROOT}/examples/DualMod.MaxwellPet/Client/bin/Release/net10.0"
+
+MAXWELL_ASSETS_DIR="${REPO_ROOT}/dist/maxwell-assets"
+BUILD_MAXWELL_ASSETS_SCRIPT="${REPO_ROOT}/scripts/build-maxwell-assets.sh"
+MAXWELL_SERVER_CSPROJ="${REPO_ROOT}/examples/DualMod.MaxwellPet/Server/DualMod.MaxwellPet.Server.csproj"
+MAXWELL_CLIENT_CSPROJ="${REPO_ROOT}/examples/DualMod.MaxwellPet/Client/DualMod.MaxwellPet.Client.csproj"
+MAXWELL_SERVER_MOD_DIR="${REPO_ROOT}/examples/DualMod.MaxwellPet/Server/bin/Release/net10.0"
+MAXWELL_CLIENT_MOD_DIR="${REPO_ROOT}/examples/DualMod.MaxwellPet/Client/bin/Release/net10.0"
+
+SIPHON_ASSETS_DIR="${REPO_ROOT}/dist/siphon-assets"
+BUILD_SIPHON_ASSETS_SCRIPT="${REPO_ROOT}/scripts/build-siphon-assets.sh"
+SIPHON_SERVER_CSPROJ="${REPO_ROOT}/examples/DualMod.SiphonOrb/Server/DualMod.SiphonOrb.Server.csproj"
+SIPHON_CLIENT_CSPROJ="${REPO_ROOT}/examples/DualMod.SiphonOrb/Client/DualMod.SiphonOrb.Client.csproj"
+SIPHON_SERVER_MOD_DIR="${REPO_ROOT}/examples/DualMod.SiphonOrb/Server/bin/Release/net10.0"
+SIPHON_CLIENT_MOD_DIR="${REPO_ROOT}/examples/DualMod.SiphonOrb/Client/bin/Release/net10.0"
 
 # 1. Validate required CLI tools & LocalExile checkout
 REQUIRED_TOOLS=(pwsh umu-run sha256sum python3 dotnet)
@@ -167,11 +199,22 @@ HOST_REQUIRED_FILES=(
     "LocalExile.Client.Host.runtimeconfig.json"
     "addresses/3.29.3d.json"
 )
-ASSET_REQUIRED_FILES=(
+MAXWELL_ASSET_REQUIRED_FILES=(
     "Data/MtxTypes.datc64"
     "Data/MtxTypeGameSpecific.datc64"
     "Data/Pet.datc64"
     "Audio/Mods/Maxwell/stock_market.ogg"
+)
+SIPHON_ASSET_REQUIRED_FILES=(
+    "Data/BaseItemTypes.datc64"
+    "Data/ItemVisualIdentity.datc64"
+    "Data/CurrencyItems.datc64"
+    "Metadata/Items/Currency/Mods/Siphon/SiphonOrbEmpty.it"
+    "Metadata/Items/Currency/Mods/Siphon/SiphonOrbCharged.it"
+    "Art/2DItems/Currency/Mods/Siphon/SiphonOrbEmpty.dds"
+    "Art/2DItems/Currency/Mods/Siphon/SiphonOrbEmpty.dds.header"
+    "Art/2DItems/Currency/Mods/Siphon/SiphonOrbCharged.dds"
+    "Art/2DItems/Currency/Mods/Siphon/SiphonOrbCharged.dds.header"
 )
 
 host_bundle_ready() {
@@ -182,50 +225,85 @@ host_bundle_ready() {
 }
 
 maxwell_assets_ready() {
-    for req in "${ASSET_REQUIRED_FILES[@]}"; do
-        [[ -f "${ASSETS_DIR}/${req}" ]] || return 1
+    for req in "${MAXWELL_ASSET_REQUIRED_FILES[@]}"; do
+        [[ -f "${MAXWELL_ASSETS_DIR}/${req}" ]] || return 1
     done
     return 0
 }
 
 maxwell_mods_ready() {
-    [[ -f "${SERVER_MOD_DIR}/maxwell.dll" ]] \
-        && [[ -f "${SERVER_MOD_DIR}/MaxwellLocalExileEntry.cs" ]] \
-        && [[ -f "${CLIENT_MOD_DIR}/maxwell.Client.dll" ]]
+    [[ -f "${MAXWELL_SERVER_MOD_DIR}/maxwell.dll" ]] \
+        && [[ -f "${MAXWELL_SERVER_MOD_DIR}/MaxwellLocalExileEntry.cs" ]] \
+        && [[ -f "${MAXWELL_CLIENT_MOD_DIR}/maxwell.Client.dll" ]]
+}
+
+siphon_assets_ready() {
+    for req in "${SIPHON_ASSET_REQUIRED_FILES[@]}"; do
+        [[ -f "${SIPHON_ASSETS_DIR}/${req}" ]] || return 1
+    done
+    return 0
+}
+
+siphon_mods_ready() {
+    [[ -f "${SIPHON_SERVER_MOD_DIR}/siphon.dll" ]] \
+        && [[ -f "${SIPHON_SERVER_MOD_DIR}/SiphonLocalExileEntry.cs" ]] \
+        && [[ -f "${SIPHON_CLIENT_MOD_DIR}/siphon.Client.dll" ]]
 }
 
 NEED_BUILD_WIN64=0
-NEED_BUILD_ASSETS=0
-NEED_BUILD_MODS=0
+NEED_BUILD_MAXWELL_ASSETS=0
+NEED_BUILD_MAXWELL_MODS=0
+NEED_BUILD_SIPHON_ASSETS=0
+NEED_BUILD_SIPHON_MODS=0
 
 if [[ "${REBUILD}" -eq 1 ]] || ! host_bundle_ready; then
     NEED_BUILD_WIN64=1
 fi
-if [[ "${REBUILD}" -eq 1 ]] || ! maxwell_assets_ready; then
-    NEED_BUILD_ASSETS=1
+if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+    if [[ "${REBUILD}" -eq 1 ]] || ! maxwell_assets_ready; then
+        NEED_BUILD_MAXWELL_ASSETS=1
+    fi
+    if [[ "${REBUILD}" -eq 1 ]] || ! maxwell_mods_ready; then
+        NEED_BUILD_MAXWELL_MODS=1
+    fi
 fi
-if [[ "${REBUILD}" -eq 1 ]] || ! maxwell_mods_ready; then
-    NEED_BUILD_MODS=1
+if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+    if [[ "${REBUILD}" -eq 1 ]] || ! siphon_assets_ready; then
+        NEED_BUILD_SIPHON_ASSETS=1
+    fi
+    if [[ "${REBUILD}" -eq 1 ]] || ! siphon_mods_ready; then
+        NEED_BUILD_SIPHON_MODS=1
+    fi
 fi
 
 if [[ "${NEED_BUILD_WIN64}" -eq 1 && ! -x "${BUILD_WIN64_SCRIPT}" ]]; then
     echo "ERROR: Missing executable build script: ${BUILD_WIN64_SCRIPT}" >&2
     exit 1
 fi
-if [[ "${NEED_BUILD_ASSETS}" -eq 1 && ! -x "${BUILD_ASSETS_SCRIPT}" ]]; then
-    echo "ERROR: Missing executable build script: ${BUILD_ASSETS_SCRIPT}" >&2
-    exit 1
-fi
-if [[ "${NEED_BUILD_MODS}" -eq 1 && ( ! -f "${SERVER_CSPROJ}" || ! -f "${CLIENT_CSPROJ}" ) ]]; then
-    echo "ERROR: Missing DualMod.MaxwellPet project files under ${REPO_ROOT}/examples/DualMod.MaxwellPet" >&2
-    exit 1
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+    if [[ "${NEED_BUILD_MAXWELL_ASSETS}" -eq 1 && ! -x "${BUILD_MAXWELL_ASSETS_SCRIPT}" ]]; then
+        echo "ERROR: Missing executable build script: ${BUILD_MAXWELL_ASSETS_SCRIPT}" >&2
+        exit 1
+    fi
+    if [[ "${NEED_BUILD_MAXWELL_MODS}" -eq 1 && ( ! -f "${MAXWELL_SERVER_CSPROJ}" || ! -f "${MAXWELL_CLIENT_CSPROJ}" ) ]]; then
+        echo "ERROR: Missing DualMod.MaxwellPet project files under ${REPO_ROOT}/examples/DualMod.MaxwellPet" >&2
+        exit 1
+    fi
+    if [[ "${NEED_BUILD_SIPHON_ASSETS}" -eq 1 && ! -x "${BUILD_SIPHON_ASSETS_SCRIPT}" ]]; then
+        echo "ERROR: Missing executable build script: ${BUILD_SIPHON_ASSETS_SCRIPT}" >&2
+        exit 1
+    fi
+    if [[ "${NEED_BUILD_SIPHON_MODS}" -eq 1 && ( ! -f "${SIPHON_SERVER_CSPROJ}" || ! -f "${SIPHON_CLIENT_CSPROJ}" ) ]]; then
+        echo "ERROR: Missing DualMod.SiphonOrb project files under ${REPO_ROOT}/examples/DualMod.SiphonOrb" >&2
+        exit 1
+    fi
 fi
 
 to_wine_path() {
     printf 'Z:%s' "${1//\//\\}"
 }
 
-RUN_ID="$(date +%Y%m%d-%H%M%S)-${MODE}-$$"
+RUN_ID="$(date +%Y%m%d-%H%M%S)-${MOD_SELECTION}-${MODE}-$$"
 STAGE_DIR="${LOCALEXILE_DIR}/data/nativemods-desktop-${RUN_ID}"
 RUNNER_SCRIPT="${STAGE_DIR}/desktop-client-runner.sh"
 SHIM_LOG_LINUX="${STAGE_DIR}/nativemods-shim.log"
@@ -235,12 +313,54 @@ RUN_LOG_DIR="${LOG_DIR}/${RUN_ID}"
 HOST_DIR_WINE="$(to_wine_path "${STAGE_DIR}/host")"
 ADDR_DIR_WINE="$(to_wine_path "${STAGE_DIR}/host/addresses")"
 MODS_DIR_WINE="$(to_wine_path "${STAGE_DIR}/host/Mods/Client")"
-OVERLAY_DIR_WINE="$(to_wine_path "${STAGE_DIR}/overlay")"
+MAXWELL_OVERLAY_WINE="$(to_wine_path "${STAGE_DIR}/overlay-maxwell")"
+SIPHON_OVERLAY_WINE="$(to_wine_path "${STAGE_DIR}/overlay-siphon")"
 LOG_PATH_WINE="$(to_wine_path "${SHIM_LOG_LINUX}")"
+
+# Build semicolon-separated NATIVEMODS_OVERLAY_DIR (Maxwell patches MtxTypes/MtxTypeGameSpecific/Pet;
+# Siphon patches BaseItemTypes/ItemVisualIdentity/CurrencyItems — zero .datc64 table overlap!).
+OVERLAY_DIRS_WINE=()
+if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+    OVERLAY_DIRS_WINE+=("${MAXWELL_OVERLAY_WINE}")
+fi
+if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+    OVERLAY_DIRS_WINE+=("${SIPHON_OVERLAY_WINE}")
+fi
+OVERLAY_DIR_WINE="$(IFS=';'; echo "${OVERLAY_DIRS_WINE[*]}")"
+
+describe_script_build() {
+    local need="$1"
+    local script="$2"
+    local ready_dir="$3"
+    local args="$4"
+    if [[ "${need}" -eq 0 ]]; then
+        echo "READY (${ready_dir})"
+    elif [[ -x "${script}" ]]; then
+        echo "WOULD BUILD (${script}${args})"
+    else
+        echo "PENDING SCRIPT (${script} not yet present on this branch)"
+    fi
+}
+
+describe_csproj_build() {
+    local need="$1"
+    local server_proj="$2"
+    local client_proj="$3"
+    local server_dir="$4"
+    local client_dir="$5"
+    if [[ "${need}" -eq 0 ]]; then
+        echo "READY (${server_dir}, ${client_dir})"
+    elif [[ -f "${server_proj}" && -f "${client_proj}" ]]; then
+        echo "WOULD BUILD (Server + Client, Release)"
+    else
+        echo "PENDING PROJECT (${server_proj} / ${client_proj} not yet present on this branch)"
+    fi
+}
 
 # 3. Dry-run mode: validate everything, display full staging & launch plan, and exit 0 with zero side effects
 if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "==> NativeMods Interactive Desktop Launcher [DRY RUN]"
+    echo "    Mod selection    : ${MOD_SELECTION} (maxwell=${ENABLE_MAXWELL}, siphon=${ENABLE_SIPHON})"
     echo "    Mode             : ${MODE}"
     echo "    Desktop session  : XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-<unset>} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<unset>} DISPLAY=${DISPLAY:-<unset>} (preserved)"
     echo "    Audio sink       : default desktop sink (PULSE_SINK=${PULSE_SINK:-<system default>}, preserved)"
@@ -258,19 +378,36 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "    File tracing     : $([[ "${TRACE_FILES}" -eq 1 ]] && echo 'ON (NATIVEMODS_TRACE_FILES=1)' || echo 'OFF')"
     echo ""
     echo "==> Build status:"
-    echo "    Win64 extender   : $([[ "${NEED_BUILD_WIN64}" -eq 1 ]] && echo "WOULD BUILD (${BUILD_WIN64_SCRIPT})" || echo "READY (${DIST_DIR})")"
-    echo "    Maxwell assets   : $([[ "${NEED_BUILD_ASSETS}" -eq 1 ]] && echo "WOULD BUILD (${BUILD_ASSETS_SCRIPT} --client ${CLIENT_DIR} --out ${ASSETS_DIR})" || echo "READY (${ASSETS_DIR})")"
-    echo "    DualMod.Maxwell  : $([[ "${NEED_BUILD_MODS}" -eq 1 ]] && echo "WOULD BUILD (Server + Client, Release)" || echo "READY (${SERVER_MOD_DIR}, ${CLIENT_MOD_DIR})")"
+    echo "    Win64 extender   : $(describe_script_build "${NEED_BUILD_WIN64}" "${BUILD_WIN64_SCRIPT}" "${DIST_DIR}" "")"
+    if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+        echo "    Maxwell assets   : $(describe_script_build "${NEED_BUILD_MAXWELL_ASSETS}" "${BUILD_MAXWELL_ASSETS_SCRIPT}" "${MAXWELL_ASSETS_DIR}" " --client ${CLIENT_DIR} --out ${MAXWELL_ASSETS_DIR}")"
+        echo "    DualMod.Maxwell  : $(describe_csproj_build "${NEED_BUILD_MAXWELL_MODS}" "${MAXWELL_SERVER_CSPROJ}" "${MAXWELL_CLIENT_CSPROJ}" "${MAXWELL_SERVER_MOD_DIR}" "${MAXWELL_CLIENT_MOD_DIR}")"
+    fi
+    if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+        echo "    Siphon assets    : $(describe_script_build "${NEED_BUILD_SIPHON_ASSETS}" "${BUILD_SIPHON_ASSETS_SCRIPT}" "${SIPHON_ASSETS_DIR}" " --client ${CLIENT_DIR} --out ${SIPHON_ASSETS_DIR}")"
+        echo "    DualMod.Siphon   : $(describe_csproj_build "${NEED_BUILD_SIPHON_MODS}" "${SIPHON_SERVER_CSPROJ}" "${SIPHON_CLIENT_CSPROJ}" "${SIPHON_SERVER_MOD_DIR}" "${SIPHON_CLIENT_MOD_DIR}")"
+    fi
     echo ""
     echo "==> Staging plan (no files written during --dry-run):"
-    echo "    1. Copy ${DIST_DIR} -> ${STAGE_DIR}/host"
-    echo "    2. Copy ${ASSETS_DIR} -> ${STAGE_DIR}/overlay"
-    echo "    3. Stage Maxwell client mod -> ${STAGE_DIR}/host/Mods/Client/maxwell"
-    echo "    4. Stage Maxwell server mod -> ${STAGE_DIR}/server-mods/maxwell"
+    step=1
+    echo "    ${step}. Copy ${DIST_DIR} -> ${STAGE_DIR}/host"
+    step=$((step + 1))
+    if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+        echo "    ${step}. Copy ${MAXWELL_ASSETS_DIR} -> ${STAGE_DIR}/overlay-maxwell (MtxTypes/MtxTypeGameSpecific/Pet + 3D/audio)"
+        step=$((step + 1))
+        echo "    ${step}. Stage Maxwell client mod -> ${STAGE_DIR}/host/Mods/Client/maxwell & server mod -> ${STAGE_DIR}/server-mods/maxwell"
+        step=$((step + 1))
+    fi
+    if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+        echo "    ${step}. Copy ${SIPHON_ASSETS_DIR} -> ${STAGE_DIR}/overlay-siphon (BaseItemTypes/ItemVisualIdentity/CurrencyItems + icons/.it)"
+        step=$((step + 1))
+        echo "    ${step}. Stage Siphon client mod -> ${STAGE_DIR}/host/Mods/Client/siphon & server mod -> ${STAGE_DIR}/server-mods/siphon"
+        step=$((step + 1))
+    fi
     if [[ "${MODE}" == "proxy" ]]; then
-        echo "    5. Copy LocalExile.ClientHost.dll + version.dll -> ${CLIENT_DIR}/ (removed on exit)"
+        echo "    ${step}. Copy LocalExile.ClientHost.dll + version.dll -> ${CLIENT_DIR}/ (removed on exit)"
     else
-        echo "    5. Copy LocalExile.ClientHost.dll -> ${CLIENT_DIR}/, back up Game.patched.exe, and apply .nmimp import patch (restored on exit)"
+        echo "    ${step}. Copy LocalExile.ClientHost.dll -> ${CLIENT_DIR}/, back up Game.patched.exe, and apply .nmimp import patch (restored on exit)"
     fi
     echo ""
     echo "==> Runner script preview (${RUNNER_SCRIPT}):"
@@ -278,7 +415,12 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "    export NATIVEMODS_ADDRESSES_DIR='${ADDR_DIR_WINE}'"
     echo "    export NATIVEMODS_MODS_DIR='${MODS_DIR_WINE}'"
     echo "    export NATIVEMODS_OVERLAY_DIR='${OVERLAY_DIR_WINE}'"
-    echo "    export NATIVEMODS_MAXWELL_ASSETS_DIR='${OVERLAY_DIR_WINE}'"
+    if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+        echo "    export NATIVEMODS_MAXWELL_ASSETS_DIR='${MAXWELL_OVERLAY_WINE}'"
+    fi
+    if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+        echo "    export NATIVEMODS_SIPHON_ASSETS_DIR='${SIPHON_OVERLAY_WINE}'"
+    fi
     echo "    export NATIVEMODS_LOG_PATH='${LOG_PATH_WINE}'"
     if [[ "${TRACE_FILES}" -eq 1 ]]; then
         echo "    export NATIVEMODS_TRACE_FILES=1"
@@ -310,14 +452,23 @@ if [[ "${NEED_BUILD_WIN64}" -eq 1 ]]; then
     echo "==> Building Win64 NativeMods extender via scripts/build-win64.sh ..."
     "${BUILD_WIN64_SCRIPT}"
 fi
-if [[ "${NEED_BUILD_ASSETS}" -eq 1 ]]; then
+if [[ "${NEED_BUILD_MAXWELL_ASSETS}" -eq 1 ]]; then
     echo "==> Building Maxwell 3.29.3d assets via scripts/build-maxwell-assets.sh ..."
-    "${BUILD_ASSETS_SCRIPT}" --client "${CLIENT_DIR}" --out "${ASSETS_DIR}"
+    "${BUILD_MAXWELL_ASSETS_SCRIPT}" --client "${CLIENT_DIR}" --out "${MAXWELL_ASSETS_DIR}"
 fi
-if [[ "${NEED_BUILD_MODS}" -eq 1 ]]; then
+if [[ "${NEED_BUILD_MAXWELL_MODS}" -eq 1 ]]; then
     echo "==> Building DualMod.MaxwellPet (Server + Client, Release)..."
-    dotnet build "${SERVER_CSPROJ}" -c Release --nologo -v minimal
-    dotnet build "${CLIENT_CSPROJ}" -c Release --nologo -v minimal
+    dotnet build "${MAXWELL_SERVER_CSPROJ}" -c Release --nologo -v minimal
+    dotnet build "${MAXWELL_CLIENT_CSPROJ}" -c Release --nologo -v minimal
+fi
+if [[ "${NEED_BUILD_SIPHON_ASSETS}" -eq 1 ]]; then
+    echo "==> Building Orb of Siphoning 3.29.3d assets via scripts/build-siphon-assets.sh ..."
+    "${BUILD_SIPHON_ASSETS_SCRIPT}" --client "${CLIENT_DIR}" --out "${SIPHON_ASSETS_DIR}"
+fi
+if [[ "${NEED_BUILD_SIPHON_MODS}" -eq 1 ]]; then
+    echo "==> Building DualMod.SiphonOrb (Server + Client, Release)..."
+    dotnet build "${SIPHON_SERVER_CSPROJ}" -c Release --nologo -v minimal
+    dotnet build "${SIPHON_CLIENT_CSPROJ}" -c Release --nologo -v minimal
 fi
 
 # Re-verify all built artifacts before touching LocalExile/
@@ -325,17 +476,30 @@ if ! host_bundle_ready; then
     echo "ERROR: Win64 host bundle under ${DIST_DIR} is still incomplete after build." >&2
     exit 1
 fi
-if ! maxwell_assets_ready; then
-    echo "ERROR: Maxwell asset overlay under ${ASSETS_DIR} is still incomplete after build." >&2
-    exit 1
+if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+    if ! maxwell_assets_ready; then
+        echo "ERROR: Maxwell asset overlay under ${MAXWELL_ASSETS_DIR} is still incomplete after build." >&2
+        exit 1
+    fi
+    if ! maxwell_mods_ready; then
+        echo "ERROR: DualMod.MaxwellPet Release binaries missing after build (${MAXWELL_SERVER_MOD_DIR}, ${MAXWELL_CLIENT_MOD_DIR})." >&2
+        exit 1
+    fi
+    MAXWELL_ASSETS_DIR="$(cd "${MAXWELL_ASSETS_DIR}" && pwd)"
 fi
-if ! maxwell_mods_ready; then
-    echo "ERROR: DualMod.MaxwellPet Release binaries missing after build (${SERVER_MOD_DIR}, ${CLIENT_MOD_DIR})." >&2
-    exit 1
+if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+    if ! siphon_assets_ready; then
+        echo "ERROR: Siphon Orb asset overlay under ${SIPHON_ASSETS_DIR} is still incomplete after build." >&2
+        exit 1
+    fi
+    if ! siphon_mods_ready; then
+        echo "ERROR: DualMod.SiphonOrb Release binaries missing after build (${SIPHON_SERVER_MOD_DIR}, ${SIPHON_CLIENT_MOD_DIR})." >&2
+        exit 1
+    fi
+    SIPHON_ASSETS_DIR="$(cd "${SIPHON_ASSETS_DIR}" && pwd)"
 fi
 
 DIST_DIR="$(cd "${DIST_DIR}" && pwd)"
-ASSETS_DIR="$(cd "${ASSETS_DIR}" && pwd)"
 
 # 5. Record baseline integrity snapshots & arm guaranteed cleanup trap
 GAME_EXE_SHA_BEFORE="$(sha256sum "${GAME_EXE}" | awk '{print $1}')"
@@ -460,21 +624,26 @@ cleanup() {
 trap on_signal INT TERM
 trap cleanup EXIT
 
-# 6. Stage host, overlay, client mod, and server mod inside LocalExile/data/ (visible in steamrt4)
-echo "==> Staging NativeMods + DualMod.MaxwellPet into ${STAGE_DIR} ..."
-mkdir -p "${STAGE_DIR}/host" "${STAGE_DIR}/overlay" "${STAGE_DIR}/server-mods/maxwell"
-cp -a "${DIST_DIR}/." "${STAGE_DIR}/host/"
-cp -a "${ASSETS_DIR}/." "${STAGE_DIR}/overlay/"
+stage_dual_mod() {
+    local mod_id="$1"
+    local example_root="$2"
+    local assets_dir="$3"
+    local client_bin_dir="$4"
+    local server_bin_dir="$5"
+    local overlay_stage="$6"
 
-MAXWELL_CLIENT_STAGE="${STAGE_DIR}/host/Mods/Client/maxwell"
-mkdir -p "${MAXWELL_CLIENT_STAGE}"
-cp -a "${CLIENT_MOD_DIR}/." "${MAXWELL_CLIENT_STAGE}/"
-if [[ -f "${REPO_ROOT}/examples/DualMod.MaxwellPet/mod.json" ]]; then
-    cp -f "${REPO_ROOT}/examples/DualMod.MaxwellPet/mod.json" "${MAXWELL_CLIENT_STAGE}/mod.json"
-fi
-if [[ -d "${REPO_ROOT}/examples/DualMod.MaxwellPet/client" ]]; then
-    mkdir -p "${MAXWELL_CLIENT_STAGE}/client"
-    python3 - "${REPO_ROOT}/examples/DualMod.MaxwellPet/client" "${MAXWELL_CLIENT_STAGE}/client" "${STAGE_DIR}/overlay" <<'PY'
+    local client_stage="${STAGE_DIR}/host/Mods/Client/${mod_id}"
+    local server_stage="${STAGE_DIR}/server-mods/${mod_id}"
+    mkdir -p "${overlay_stage}" "${client_stage}" "${server_stage}"
+
+    cp -a "${assets_dir}/." "${overlay_stage}/"
+    cp -a "${client_bin_dir}/." "${client_stage}/"
+    if [[ -f "${example_root}/mod.json" ]]; then
+        cp -f "${example_root}/mod.json" "${client_stage}/mod.json"
+    fi
+    if [[ -d "${example_root}/client" ]]; then
+        mkdir -p "${client_stage}/client"
+        python3 - "${example_root}/client" "${client_stage}/client" "${overlay_stage}" <<'PY'
 import os, shutil, sys
 src_root, mod_dst, ov_dst = sys.argv[1], sys.argv[2], sys.argv[3]
 for dirpath, _, filenames in os.walk(src_root):
@@ -492,15 +661,40 @@ for dirpath, _, filenames in os.walk(src_root):
             shutil.copy2(src, ov_path)
             shutil.copy2(src, mod_path)
 PY
+    fi
+
+    cp -a "${server_bin_dir}/." "${server_stage}/"
+    for meta in mod.json settings.json; do
+        if [[ -f "${example_root}/${meta}" && ! -f "${server_stage}/${meta}" ]]; then
+            cp -f "${example_root}/${meta}" "${server_stage}/${meta}"
+        fi
+    done
+}
+
+# 6. Stage host, overlays, client mods, and server mods inside LocalExile/data/ (visible in steamrt4)
+echo "==> Staging NativeMods (mod=${MOD_SELECTION}) into ${STAGE_DIR} ..."
+mkdir -p "${STAGE_DIR}/host" "${STAGE_DIR}/server-mods"
+cp -a "${DIST_DIR}/." "${STAGE_DIR}/host/"
+
+if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+    stage_dual_mod \
+        "maxwell" \
+        "${REPO_ROOT}/examples/DualMod.MaxwellPet" \
+        "${MAXWELL_ASSETS_DIR}" \
+        "${MAXWELL_CLIENT_MOD_DIR}" \
+        "${MAXWELL_SERVER_MOD_DIR}" \
+        "${STAGE_DIR}/overlay-maxwell"
 fi
 
-MAXWELL_SERVER_STAGE="${STAGE_DIR}/server-mods/maxwell"
-cp -a "${SERVER_MOD_DIR}/." "${MAXWELL_SERVER_STAGE}/"
-for meta in mod.json settings.json; do
-    if [[ -f "${REPO_ROOT}/examples/DualMod.MaxwellPet/${meta}" && ! -f "${MAXWELL_SERVER_STAGE}/${meta}" ]]; then
-        cp -f "${REPO_ROOT}/examples/DualMod.MaxwellPet/${meta}" "${MAXWELL_SERVER_STAGE}/${meta}"
-    fi
-done
+if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+    stage_dual_mod \
+        "siphon" \
+        "${REPO_ROOT}/examples/DualMod.SiphonOrb" \
+        "${SIPHON_ASSETS_DIR}" \
+        "${SIPHON_CLIENT_MOD_DIR}" \
+        "${SIPHON_SERVER_MOD_DIR}" \
+        "${STAGE_DIR}/overlay-siphon"
+fi
 
 : > "${SHIM_LOG_LINUX}"
 
@@ -527,14 +721,19 @@ fi
 # 7. Generate desktop-native Game_CLIENT_RUNNER (preserves Hyprland/Wayland/X11 + real audio sink)
 {
     printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' '# Auto-generated desktop-native Proton runner for LocalExile + NativeMods + DualMod.MaxwellPet'
+    printf '# Auto-generated desktop-native Proton runner for LocalExile + NativeMods (mod=%s)\n' "${MOD_SELECTION}"
     printf '%s\n' 'set -euo pipefail'
     printf '\n'
     printf 'export NATIVEMODS_HOST_DIR=%q\n' "${HOST_DIR_WINE}"
     printf 'export NATIVEMODS_ADDRESSES_DIR=%q\n' "${ADDR_DIR_WINE}"
     printf 'export NATIVEMODS_MODS_DIR=%q\n' "${MODS_DIR_WINE}"
     printf 'export NATIVEMODS_OVERLAY_DIR=%q\n' "${OVERLAY_DIR_WINE}"
-    printf 'export NATIVEMODS_MAXWELL_ASSETS_DIR=%q\n' "${OVERLAY_DIR_WINE}"
+    if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+        printf 'export NATIVEMODS_MAXWELL_ASSETS_DIR=%q\n' "${MAXWELL_OVERLAY_WINE}"
+    fi
+    if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+        printf 'export NATIVEMODS_SIPHON_ASSETS_DIR=%q\n' "${SIPHON_OVERLAY_WINE}"
+    fi
     printf 'export NATIVEMODS_LOG_PATH=%q\n' "${LOG_PATH_WINE}"
     if [[ "${TRACE_FILES}" -eq 1 ]]; then
         printf 'export NATIVEMODS_TRACE_FILES=1\n'
@@ -551,7 +750,7 @@ fi
 chmod +x "${RUNNER_SCRIPT}"
 
 # 8. Launch LocalExile + Proton client via scripts/dev/live.ps1
-echo "==> Launching LocalExile Gateway + Path of Exile 3.29.3d on your live desktop (mode=${MODE})..."
+echo "==> Launching LocalExile Gateway + Path of Exile 3.29.3d on your live desktop (mod=${MOD_SELECTION}, mode=${MODE})..."
 LIVE_STARTED=1
 (
     cd "${LOCALEXILE_DIR}"
@@ -587,7 +786,7 @@ fi
 # 9. Print interactive cheat sheet
 echo ""
 echo "============================================================================"
-echo "  LocalExile + NativeMods + DualMod.MaxwellPet is LIVE on your desktop!"
+echo "  LocalExile + NativeMods (mod=${MOD_SELECTION}) is LIVE on your desktop!"
 echo "============================================================================"
 echo "  Client PID : ${CLIENT_PID} (mode=${MODE})"
 if [[ "${KEEP_SAVE}" -eq 1 ]]; then
@@ -597,10 +796,21 @@ else
 fi
 echo ""
 echo "  In-Game Quick Controls:"
-echo "    - Cosmetics menu : Press K -> Pet Slot 1 -> Maxwell the Cat Pet"
-echo "    - Control panel  : /maxwell panel   (or /maxwell)"
-echo "    - Chat commands  : /maxwell summon | dismiss | dance | spin <0..720> | float <0..60>"
-echo "                       /maxwell music <on|off|mute|unmute|vol 0..1>"
+if [[ "${ENABLE_MAXWELL}" -eq 1 ]]; then
+    echo "    [Maxwell Pet]"
+    echo "      - Cosmetics menu : Press K -> Pet Slot 1 -> Maxwell the Cat Pet"
+    echo "      - Control panel  : /maxwell panel   (or /maxwell)"
+    echo "      - Chat commands  : /maxwell summon | dismiss | dance | spin <0..720> | float <0..60>"
+    echo "                         /maxwell music <on|off|mute|unmute|vol 0..1>"
+fi
+if [[ "${ENABLE_SIPHON}" -eq 1 ]]; then
+    echo "    [Orb of Siphoning]"
+    echo "      - Grant orbs     : /siphon give [count]  (or /siphon help)"
+    echo "      - Steal a mod    : Right-click Empty Orb of Siphoning -> Left-click Magic/Rare gear"
+    echo "                         -> choose mod in SiphonPicker.ui -> Confirm (creates Charged Orb)"
+    echo "      - Imbue a mod    : Hover Charged Orb to see stored mod -> Right-click Charged Orb"
+    echo "                         -> Left-click 2nd Magic/Rare gear -> choose affix to replace -> Confirm"
+fi
 echo ""
 echo "  Live Diagnostics:"
 echo "    tail -f ${SHIM_LOG_LINUX}"

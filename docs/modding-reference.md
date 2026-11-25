@@ -8,9 +8,10 @@ A complete, copy-paste-ready guide to building, testing, packaging, and verifyin
 > - **Reference implementations in this repo:**
 >   - `examples/DualMod.HarvestGarden/` — Dual-side mod with custom UI control (`GrowthGauge`), GEAL built-in (`GardenRipen`), custom ruleset (`0xA1`), and graceful vanilla chat fallback.
 >   - `examples/DualMod.MaxwellPet/` — Brand-new Pet MTX mod (appended `.datc64` rows, native Cosmetics `K` menu integration, `.ui` panel, looping `.ogg` audio, `.glb`/`.dds`/`.ast` pipeline via `scripts/build-maxwell-assets.sh`).
+>   - `examples/DualMod.SiphonOrb/` — Brand-new dual-stage Custom Currency mod (**Orb of Siphoning** + **Charged Orb of Siphoning**): appended `BaseItemTypes`/`ItemVisualIdentity`/`CurrencyItems` `.datc64` rows, flood-fill alpha-cutout `78x78` RGBA8 currency icons, Recombinator-style `SiphonPicker.ui`, persistent `ModSection.Enchant` stored affix on the Charged Orb, and `C->S 0x0071`/`0x0072` currency routing via `scripts/build-siphon-assets.sh`.
 > - **Key libraries:**
 >   - Client mods compile against **`LocalExile.Client.Sdk`** *only* (never `LocalExile.Client.Host`).
->   - Server mods use **`LocalExile.Client.ServerBridge`** (networking, server-driven UI, reusable Pet MTX registration).
+>   - Server mods use **`LocalExile.Client.ServerBridge`** (networking, server-driven UI, reusable Pet MTX registration, custom currency registration, and item affix inspection/manipulation).
 >   - Asset conversion & `.datc64` row appending use **`LocalExile.Client.AssetPipeline`**.
 >   - Validation, `.ui` linting, `NMB1` bundling, and installation use **`LocalExile.Client.Waypoint`**.
 > - **Build & test gate:** `dotnet build NativeMods.slnx -c Release` and `dotnet test NativeMods.slnx -c Release --no-build` (`TreatWarningsAsErrors=true`, `net10.0`).
@@ -460,6 +461,11 @@ amountBox.Submitted += text => statusLabel.Text = $"Submitted: {text}";
 autoCheck.CheckedChanged += isChecked => statusLabel.SetProperty("auto_enabled", isChecked.ToString());
 ```
 
+> **Verified 3.29.3d Dynamic UI Rules (`Button.Text`, `Label.Text`, Row Visibility & Reuse):**
+> - **Mixed-case vs. SmallCaps:** `Button::SetText` (`+0x3f8` slot 2) updates the button's internal child `Label` (`+0x408`) and lowercases ASCII for PoE's centered SmallCaps button font. For mixed-case, left-aligned dynamic rows (such as Recombinator-style affix pickers), pair a `Button` (`Select` / `Selected`) with an explicit child `Label` (`Fonts.Normal`, `text_align = MiddleLeft`) inside a named row `Frame`.
+> - **Dynamic row visibility:** Setting `rowFrame.Visible = false` invokes `Control::SetVisible` (`0x1418b0a30`), which hides the entire row, clears hover/focus/capture on descendants, collapses the row inside `StackLayout`, and blocks clicks on hidden child buttons.
+> - **Explicit container IDs & clean reopen:** Give every ancestor `Frame`/`StackLayout` an explicit unique `id`. Closing and reopening a `.ui` window reuses the native window handle cleanly (resyncing initial visibility/text and replacing per-button click slots with zero duplicate-ID crashes and zero leaked handlers).
+
 #### Registering a Custom UI Control (`ICustomUiControl`)
 Declare the control name in `mod.json` (`"customControls": ["GrowthGauge"]`), then register it before calling `Ui.Load(...)`:
 
@@ -866,6 +872,94 @@ DdsTextureConverter.WritePair(Path.Combine(outDir, "Art/2DItems/Pets/Mods/MyMod/
 OggVorbisInfo oggInfo = AudioTranscoder.TranscodeToOggVorbis("theme.opus", Path.Combine(outDir, "Audio/Mods/MyMod/theme.ogg"));
 ```
 
+#### Step 5: Brand-New Custom Currencies & Item Affix Manipulation (`CurrencyDatPatcher`, `LocalExileCurrencyRegistrar`, `LocalExileItemAffixService`)
+
+A brand-new Currency item appends rows across three 3.29.3d `.datc64` tables (zero overlap with Pet MTX tables — both overlays can be passed semicolon-separated via `NATIVEMODS_OVERLAY_DIR`):
+
+| Table (3.29.3d) | Row Stride | Stock Rows | Example Appended Rows (`DualMod.SiphonOrb`) | Critical Columns & Invariants |
+|---|---|---|---|---|
+| `Data/BaseItemTypes.datc64` | `374 B` | `5461` (`0..5460`) | **`5461`** (`SiphonOrbEmpty`), **`5462`** (`SiphonOrbCharged`) | Unique `Id` (`@0`), `HASH32` (`@140`, MurmurHash2 seed `0`), `ItemClassesKey` (`@8` = `30` `StackableCurrency`), `ItemVisualIdentity` (`@124`). Deep-copy/clear all 11 `foreignrow[]` array columns (zero aliasing!). |
+| `Data/ItemVisualIdentity.datc64` | `604 B` | `15516` (`0..15515`) | **`15516`** (`0xD501`), **`15517`** (`0xD502`) | Unique `Id` (`@0`), **`HASH16` (`@40`)** indexed directly by `Base::Read` (`0x1421ed3ea`), `DDSFile` (`@8`), `AOFile` (`@16`), `InventorySoundEffect` (`@24` = `33`). Clear all 16 array columns. |
+| `Data/CurrencyItems.datc64` | `205 B` | `1962` (`0..1961`) | **`1962`** (stack `20`), **`1963`** (stack `1`) | Unique `BaseItemTypesKey` (`@0`), `StackSize` (`@16`), `CurrencyUseType` (`@20` = `2` right-click → left-click item), `Action` (`@24` = `"remove_random_mod"` for native cursor-apply onto Magic/Rare gear emitting `C→S 0x0071`/`0x0072`). |
+
+**1. Asset & `.datc64` Pipeline (`LocalExile.Client.AssetPipeline.Dat64.CurrencyDatPatcher`):**
+```csharp
+using LocalExile.Client.AssetPipeline.Dat64;
+using LocalExile.Client.AssetPipeline.Dds;
+
+// Append one or more custom currencies (deep-copies/clears all foreignrow[] arrays & verifies uniqueness):
+var specs = CurrencyDatPatcher.CreateSiphonOrbSpecs(); // or construct your own CurrencyItemPatchSpec[]
+PatchedCurrencyResult patched = CurrencyDatPatcher.AppendCurrencies(
+    stockBaseItemTypes, stockItemVisualIdentity, stockCurrencyItems, specs);
+
+// Generate UTF-16LE BOM .it metadata (SupportsStoredMods=true adds LocalStats {} + Mods {} like Charged Compass):
+byte[] itBytes = CurrencyDatPatcher.BuildItemMetadataItBytes(specs[0]);
+
+// Convert 512x512 black-background PNG -> 78x78 flood-fill alpha-cutout RGBA8 DX10 .dds + .dds.header:
+DdsOutput icon = DdsTextureConverter.ConvertCurrencyIconFile("siphon_orb_empty.png", targetWidth: 78, targetHeight: 78);
+DdsTextureConverter.WritePair(Path.Combine(outDir, "Art/2DItems/Currency/Mods/Siphon/SiphonOrbEmpty.dds"), icon);
+```
+```bash
+# Turnkey Orb of Siphoning asset build & verification (outputs dist/siphon-assets/):
+./scripts/build-siphon-assets.sh
+
+# General-purpose JSON spec CLI (supports --base-overlay to layer multiple currency mods):
+dotnet run --project src/LocalExile.Client.AssetPipeline -c Release -- \
+  build-currency --spec my-currencies.json --client /home/nam/Git/LocalExile/Client --out dist/my-currency-assets
+```
+
+**2. Server Registration & Right-Click Currency Routing (`LocalExileCurrencyRegistrar` in `LocalExile.Client.ServerBridge`):**
+```csharp
+using LocalExile.Client.ServerBridge;
+
+var emptyOrb = new CustomCurrencyItemDefinition
+{
+    BaseItemTypesRowIndex       = CustomCurrencyItemDefinition.Stock3293dBaseItemTypesCount,       // 5461
+    ItemVisualIdentityRowIndex  = CustomCurrencyItemDefinition.Stock3293dItemVisualIdentityCount,  // 15516
+    CurrencyItemsRowIndex       = CustomCurrencyItemDefinition.Stock3293dCurrencyItemsCount,       // 1962
+    BaseItemTypeId              = "Metadata/Items/Currency/Mods/Siphon/SiphonOrbEmpty",
+    DisplayName                 = "Orb of Siphoning",
+    VisualIdentityId            = "SiphonOrbEmpty",
+    VisualIdentityHash16        = 0xD501,
+    IconDdsPath                 = "Art/2DItems/Currency/Mods/Siphon/SiphonOrbEmpty.dds",
+    MaxStackSize                = 20,
+    CurrencyUseType             = CustomCurrencyItemDefinition.CurrencyUseTypeApplyToItem,         // 2
+    CurrencyAction              = CustomCurrencyItemDefinition.DefaultMagicOrRareTargetAction,     // "remove_random_mod"
+    SupportsStoredMods          = false, // true on Charged Orb -> ["Base","Usable","Stack","LocalStats","Mods"]
+};
+
+using var currencyRegistrar = new LocalExileCurrencyRegistrar();
+currencyRegistrar.Register(emptyOrb, async (CurrencyUseContext ctx) =>
+{
+    // Invoked on C->S 0x0071 (UseItemOn) / 0x0072 (UseItemTypeOn) ONLY for registered custom TypeHashes!
+    // Stock currencies return false and pass straight through to stock LocalExile crafting.
+    return await HandleSiphonUseAsync(ctx);
+});
+
+// Inside Gateway IMod.Load (before listener.Start(), cleanly removed on Dispose()):
+currencyRegistrar.ApplyToLiveCatalog(Program.Items, mod.Log);
+```
+
+**3. Inspecting, Stealing, Storing & Imbuing Item Affixes (`LocalExileItemAffixService`):**
+```csharp
+using LocalExile.Client.ServerBridge;
+
+var affixService = new LocalExileItemAffixService();
+
+// Inspect explicit affixes on a live Gateway Item (formats exact PoE stat_descriptions.txt text):
+ItemAffixView view = affixService.InspectGatewayItem(inventoryId, itemId, liveItem, itemCatalog, statDescriptions);
+// Or inspect/test deterministically using PortableItem:
+ItemAffixView portableView = LocalExileItemAffixService.Inspect(portableItem);
+
+// 1. Steal a chosen affix (validates corrupted/mirrored/unidentified/fractured/0-mod guards):
+AffixStealResult steal = LocalExileItemAffixService.StealAffix(sourceItem, affixIndex: 0);
+// 2. Embed the stolen affix persistently on a Charged Currency item (ModSection.Enchant, Rarity=Normal, Stack=1):
+PortableItem chargedOrb = LocalExileItemAffixService.CreateChargedCurrencyItem(chargedOrbDef, steal.StoredAffix!);
+// 3. Later, read the stored affix back and replace a chosen affix on a target item (enforces Prefix/Suffix caps & mod groups):
+StoredAffixPayload? stored = LocalExileItemAffixService.ReadStoredAffix(chargedOrb);
+AffixReplaceResult imbue = LocalExileItemAffixService.ReplaceAffix(targetItem, targetAffixIndex: 1, stored!);
+```
+
 ---
 
 ### 3.7 Using `Raw` Memory & Native Hooks Safely
@@ -989,8 +1083,18 @@ All live client runners enforce strict safety guarantees:
 ./scripts/run-r1-proton.sh --mode import-patch --soak-seconds 35
 ```
 
-#### 2. Full End-to-End Dual-Side Mod Verification (Cosmetics `K` Menu, `.ui`, Audio)
-For end-to-end live verification of a content + UI + audio dual-side mod (such as `examples/DualMod.MaxwellPet/` via `scripts/run-maxwell-proton.sh`):
+#### 2. Full End-to-End Dual-Side Mod Verification (Cosmetics `K` Menu, `.ui`, Audio, Currencies)
+For interactive desktop testing on Hyprland/Wayland/X11 (preserving native display and audio, with automatic `characters.db` snapshot & clean teardown):
+```bash
+# Launch both Maxwell Pet + Orb of Siphoning together (semicolon-separated NATIVEMODS_OVERLAY_DIR, zero table overlap):
+./scripts/launch-desktop.sh --mod all
+
+# Or test a single mod in isolation (pass --dry-run to validate paths/plan without launching):
+./scripts/launch-desktop.sh --mod siphon
+./scripts/launch-desktop.sh --mod maxwell
+```
+
+For headless automated verification of a content + UI + audio dual-side mod (such as `examples/DualMod.MaxwellPet/` via `scripts/run-maxwell-proton.sh`):
 1. Build Win64 shim + host (`./scripts/build-win64.sh`) and generate your local asset overlay (`./scripts/build-maxwell-assets.sh` → `dist/maxwell-assets/`).
 2. Stage the server mod in a temporary `Game_MODS_FOLDER` directory under `<LocalExileRoot>/data/` (zero edits to `<LocalExileRoot>/Mods/`) and pass `NATIVEMODS_OVERLAY_DIR=<staged-assets>` + `NATIVEMODS_MODS_DIR=<staged-client-mods>`.
 3. Launch inside isolated `Xvfb` (`1280x720x24`) + a PipeWire `module-null-sink` (`PULSE_SINK=<null>`), verify `nativemods-shim.log` markers, open the native **Cosmetics (`K`) menu** to confirm the brand-new Pet MTX appears alongside stock pets and spawns when equipped, exercise `/maxwell` + `MaxwellPanel.ui`, capture screenshots via `import -window root`, and verify non-silent PCM energy on the null-sink monitor via `parec`.
@@ -1027,4 +1131,6 @@ When verifying a live Proton run, check `nativemods-shim.log` for:
 | Client crashes opening Cosmetics (`K`) tab | Owned `MtxTypes.HASH32` missing or mismatched in `MtxTypeGameSpecific.datc64` | Ensure `MtxTypeGameSpecific.HASH32 == MtxTypes.HASH32 == MurmurHash2(MtxTypes.Id, 0)` and both tables are overlaid before startup via `NATIVEMODS_OVERLAY_DIR` |
 | Pet missing from Cosmetics (`K`) tab on server | `Pet.Id` used plural `Metadata/Pets/...` or included `.ot` | Use singular `Metadata/Pet/Mods/<Name>/<Pet>` (no `.ot` suffix) so `CosmeticEffects.PetTypes()` recognizes it |
 | `Game.patched.exe` fails `LocalExile.Client.Patcher check` | Expected only stock `Game.exe` SHA-256 | Update to current `ClientPatcher` which recognizes `LocalExileKeyPatched329` via 6 verified code anchors (or pass `--allow-synthetic` for synthetic test binaries) |
+| Client crashes loading appended `.datc64` row (`+0x129838`) | Cloned `.datc64` row aliased a stock `foreignrow[]` variable-section offset | Deep-copy or clear every `foreignrow[]` array column to a fresh variable-section offset (handled automatically by `MaxwellDatPatcher` / `CurrencyDatPatcher`) |
+| Custom currency icon invisible or wrong texture in inventory | `ItemVisualIdentity.HASH16` collided or didn't match server `BaseType` | Assign a unique non-zero `HASH16` (indexed directly by `Base::Read` at `0x1421ed3ea`, not recomputed from `Id`) and pair `78x78` RGBA8 `.dds` + `.dds.header` |
 | Proton cannot see `/tmp/...` staged files | `umu-run`'s `steamrt4` (`pressure-vessel`) container does not mount host `/tmp` | Stage temporary test artifacts under `<LocalExileRoot>/data/` (cleaned up in `trap EXIT`) |
