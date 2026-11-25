@@ -4,6 +4,7 @@ using LocalExile.Client.Host.Native;
 using LocalExile.Client.Host.Services;
 using LocalExile.Client.Sdk;
 using LocalExile.Client.Sdk.Addresses;
+using LocalExile.Client.ServerBridge;
 using LocalExile.Client.Waypoint;
 using Xunit;
 
@@ -55,18 +56,21 @@ public sealed class MaxwellPetManifestAndProtocolTests
     public void ProtocolHashes_MatchVerifiedPoE329MurmurHash2AndFoldedHash16()
     {
         // Regression proof against stock 3.29.3d Kiwi1 row (client.db MtxTypes row 5730)
-        Assert.Equal(649897822u, MaxwellProtocol.ComputeObjectTypeHash("Metadata/Items/Pets/Kiwi1"));
+        Assert.Equal(649897822u, PoeContentHash.MurmurHash2("Metadata/Items/Pets/Kiwi1"));
 
-        // Brand-new Maxwell Pet MTX hashes
-        Assert.Equal(MaxwellProtocol.MtxTypeHash, MaxwellProtocol.ComputeObjectTypeHash(MaxwellProtocol.MtxTypeId));
-        Assert.Equal(MaxwellProtocol.PetObjectTypeHash, MaxwellProtocol.ComputeObjectTypeHash(MaxwellProtocol.PetMetadataPath));
-        Assert.Equal(MaxwellProtocol.PetHash16, MaxwellProtocol.FoldHash16(MaxwellProtocol.PetObjectTypeHash));
+        // Brand-new Maxwell Pet MTX hashes via ServerBridge PoeContentHash & CustomPetMtxDefinition
+        var def = MaxwellServerMod.MaxwellPetDefinition;
+        def.Validate();
+
+        Assert.Equal(MaxwellProtocol.MtxTypeHash, def.MtxTypeHash);
+        Assert.Equal(MaxwellProtocol.PetObjectTypeHash, def.PetObjectTypeHash);
+        Assert.Equal(MaxwellProtocol.PetHash16, def.PetHash16);
 
         // Verify appended row indices are strictly past 3.29.3d stock counts (never replacing stock rows)
-        Assert.Equal(8557, MaxwellServerMod.DefaultRegistration.MtxTypesRowIndex);
-        Assert.Equal(8558u, MaxwellServerMod.DefaultRegistration.RecordId);
-        Assert.Equal(7849, MaxwellServerMod.DefaultRegistration.MtxTypeGameSpecificRowIndex);
-        Assert.Equal(516, MaxwellServerMod.DefaultRegistration.PetRowIndex);
+        Assert.Equal(8557, def.MtxTypesRowIndex);
+        Assert.Equal(8558u, def.RecordId);
+        Assert.Equal(7849, def.MtxTypeGameSpecificRowIndex);
+        Assert.Equal(516, def.PetRowIndex);
     }
 
     [Fact]
@@ -130,9 +134,11 @@ public sealed class MaxwellPetManifestAndProtocolTests
 
         string source = File.ReadAllText(entryPath);
         Assert.Contains("class MaxwellLocalExileEntry : IMod", source, StringComparison.Ordinal);
+        Assert.Contains("LocalExilePetMtxRegistrar", source, StringComparison.Ordinal);
+        Assert.Contains("ObserveLiveGatewayPlayer", source, StringComparison.Ordinal);
+        Assert.Contains("GameEvents.AreaTick", source, StringComparison.Ordinal);
         Assert.Contains("GameEvents.Command", source, StringComparison.Ordinal);
         Assert.Contains("new PetObject(", source, StringComparison.Ordinal);
-        Assert.Contains("InstanceMicrotransactions.RecordUpsert", source, StringComparison.Ordinal);
         Assert.Contains("Game.SendWorldCreate", source, StringComparison.Ordinal);
         Assert.Contains("Game.SendWorldRemoval", source, StringComparison.Ordinal);
     }

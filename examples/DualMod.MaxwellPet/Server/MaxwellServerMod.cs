@@ -6,32 +6,16 @@ using LocalExile.Client.ServerBridge;
 namespace DualMod.MaxwellPet.Server;
 
 /// <summary>
-/// Describes the brand-new appended Pet MTX registration added to the server catalog (never replacing a stock pet).
-/// </summary>
-public sealed record MaxwellMtxRegistration(
-    int MtxTypesRowIndex,
-    int MtxTypeGameSpecificRowIndex,
-    int PetRowIndex,
-    uint RecordId,
-    uint MtxTypeHash,
-    string MtxTypeId,
-    string DisplayName,
-    string PetMetadataPath,
-    uint PetObjectTypeHash,
-    ushort PetHash16,
-    IReadOnlyList<byte> AllowedSlots);
-
-/// <summary>
 /// Abstraction bridging <see cref="MaxwellServerMod"/> to either a live LocalExile Gateway
-/// (<see cref="MaxwellLocalExileEntry"/>) or an in-memory test harness (<see cref="SimulatedMaxwellWorldBackend"/>).
+/// (<c>MaxwellLocalExileEntry</c>) or an in-memory test harness (<see cref="SimulatedMaxwellWorldBackend"/>).
 /// </summary>
 public interface IMaxwellWorldBackend
 {
     /// <summary>Registers Maxwell as an appended Pet MTX entry in the server's MTX/Cosmetics catalogs.</summary>
-    IDisposable RegisterPetMtx(MaxwellMtxRegistration registration);
+    IDisposable RegisterPetMtx(CustomPetMtxDefinition pet);
 
     /// <summary>Grants the appended Maxwell MTX record to the connected client (S-&gt;C <c>0x0204</c>).</summary>
-    Task GrantMtxRecordAsync(string connectionId, MaxwellMtxRegistration registration, CancellationToken cancellationToken = default);
+    Task GrantMtxRecordAsync(string connectionId, CustomPetMtxDefinition pet, CancellationToken cancellationToken = default);
 
     /// <summary>Spawns the authoritative pet entity (S-&gt;C <c>0x02bb</c> <c>PetObject</c> + <c>0x01a9</c> wake zone).</summary>
     Task<uint> SpawnPetEntityAsync(string connectionId, string characterName, string petMetadataPath, byte petSlot, CancellationToken cancellationToken = default);
@@ -48,13 +32,13 @@ public sealed class SimulatedMaxwellWorldBackend : IMaxwellWorldBackend
     private readonly ConcurrentDictionary<uint, SpawnedPetRecord> _spawned = new();
     private readonly ConcurrentDictionary<string, List<uint>> _grantedRecords = new(StringComparer.Ordinal);
     private int _nextEntityId = 0x5000;
-    private MaxwellMtxRegistration? _registeredMtx;
+    private CustomPetMtxDefinition? _registeredMtx;
 
     /// <summary>Snapshot of a spawned authoritative pet entity.</summary>
     public sealed record SpawnedPetRecord(uint EntityId, string ConnectionId, string CharacterName, string PetMetadataPath, byte PetSlot);
 
     /// <summary>Currently registered Maxwell Pet MTX catalog entry, or <c>null</c> after dispose.</summary>
-    public MaxwellMtxRegistration? RegisteredMtx => _registeredMtx;
+    public CustomPetMtxDefinition? RegisteredMtx => _registeredMtx;
 
     /// <summary>All currently active spawned Maxwell pet entities.</summary>
     public IReadOnlyDictionary<uint, SpawnedPetRecord> SpawnedPets => _spawned;
@@ -63,22 +47,23 @@ public sealed class SimulatedMaxwellWorldBackend : IMaxwellWorldBackend
     public IReadOnlyList<uint> GetGrantedRecords(string connectionId) =>
         _grantedRecords.TryGetValue(connectionId, out var list) ? [.. list] : [];
 
-    public IDisposable RegisterPetMtx(MaxwellMtxRegistration registration)
+    public IDisposable RegisterPetMtx(CustomPetMtxDefinition pet)
     {
-        ArgumentNullException.ThrowIfNull(registration);
-        _registeredMtx = registration;
-        return new ActionDisposable(() => Interlocked.CompareExchange(ref _registeredMtx, null, registration));
+        ArgumentNullException.ThrowIfNull(pet);
+        pet.Validate();
+        _registeredMtx = pet;
+        return new ActionDisposable(() => Interlocked.CompareExchange(ref _registeredMtx, null, pet));
     }
 
-    public Task GrantMtxRecordAsync(string connectionId, MaxwellMtxRegistration registration, CancellationToken cancellationToken = default)
+    public Task GrantMtxRecordAsync(string connectionId, CustomPetMtxDefinition pet, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
-        ArgumentNullException.ThrowIfNull(registration);
+        ArgumentNullException.ThrowIfNull(pet);
         var list = _grantedRecords.GetOrAdd(connectionId, _ => []);
         lock (list)
         {
-            if (!list.Contains(registration.RecordId))
-                list.Add(registration.RecordId);
+            if (!list.Contains(pet.RecordId))
+                list.Add(pet.RecordId);
         }
         return Task.CompletedTask;
     }
@@ -108,50 +93,62 @@ public sealed class SimulatedMaxwellWorldBackend : IMaxwellWorldBackend
 
 /// <summary>
 /// Server half of the Maxwell the Cat Pet MTX dual-side mod.
-/// Registers Maxwell as a brand-new appended Pet MTX (row 8557 / 7849 / 516, never replacing stock pets),
-/// spawns/despawns the authoritative <c>PetObject</c> entity, handles <c>/maxwell</c> and Cosmetics tab picks
-/// (Pet slots 18 &amp; 19), synchronizes typed state and looping audio control over <see cref="ClientBridgeHost"/>,
-/// and degrades gracefully for vanilla 3.29 clients without NativeMods.
+/// Uses <see cref="CustomPetMtxDefinition"/> and <see cref="LocalExilePetMtxRegistrar"/> from
+/// <c>LocalExile.Client.ServerBridge</c> so Maxwell works seamlessly both via the in-game
+/// Cosmetics (<c>K</c>) menu (Pet Slots 18 &amp; 19) and via <c>/maxwell</c> / <c>MaxwellPanel.ui</c>,
+/// with graceful chat fallback for vanilla 3.29 clients.
 /// </summary>
 public sealed class MaxwellServerMod : IDisposable
 {
-    public static readonly MaxwellMtxRegistration DefaultRegistration = new(
-        MtxTypesRowIndex: MaxwellProtocol.MtxTypesAppendedRow,
-        MtxTypeGameSpecificRowIndex: MaxwellProtocol.MtxTypeGameSpecificAppendedRow,
-        PetRowIndex: MaxwellProtocol.PetAppendedRow,
-        RecordId: MaxwellProtocol.MtxRecordId,
-        MtxTypeHash: MaxwellProtocol.MtxTypeHash,
-        MtxTypeId: MaxwellProtocol.MtxTypeId,
-        DisplayName: MaxwellProtocol.MtxDisplayName,
-        PetMetadataPath: MaxwellProtocol.PetMetadataPath,
-        PetObjectTypeHash: MaxwellProtocol.PetObjectTypeHash,
-        PetHash16: MaxwellProtocol.PetHash16,
-        AllowedSlots: [MaxwellProtocol.PetSlot1, MaxwellProtocol.PetSlot2]);
+    public static readonly CustomPetMtxDefinition MaxwellPetDefinition = new()
+    {
+        MtxTypesRowIndex = MaxwellProtocol.MtxTypesAppendedRow,
+        MtxTypeGameSpecificRowIndex = MaxwellProtocol.MtxTypeGameSpecificAppendedRow,
+        PetRowIndex = MaxwellProtocol.PetAppendedRow,
+        MtxTypeId = MaxwellProtocol.MtxTypeId,
+        DisplayName = MaxwellProtocol.MtxDisplayName,
+        Description = MaxwellProtocol.MtxDescription,
+        PetMetadataPath = MaxwellProtocol.PetMetadataPath,
+        IconDdsPath = MaxwellProtocol.PetIconPath,
+        AllowedSlots = [CustomPetMtxDefinition.PetSlot1, CustomPetMtxDefinition.PetSlot2]
+    };
 
     private readonly ClientBridgeHost _bridge;
     private readonly IMaxwellWorldBackend _backend;
+    private readonly LocalExilePetMtxRegistrar _registrar;
+    private readonly bool _ownsRegistrar;
     private readonly ConcurrentDictionary<string, CharacterMaxwellState> _states = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _connectionCharacters = new(StringComparer.Ordinal);
     private readonly List<IDisposable> _subscriptions = [];
     private IDisposable? _mtxRegistrationHandle;
+    private IDisposable? _registrarDefHandle;
 
     public IMaxwellWorldBackend Backend => _backend;
+    public LocalExilePetMtxRegistrar PetMtxRegistrar => _registrar;
 
-    public MaxwellServerMod(ClientBridgeHost bridge, IMaxwellWorldBackend? backend = null)
+    public MaxwellServerMod(
+        ClientBridgeHost bridge,
+        IMaxwellWorldBackend? backend = null,
+        LocalExilePetMtxRegistrar? registrar = null)
     {
         _bridge = bridge ?? throw new ArgumentNullException(nameof(bridge));
         _backend = backend ?? new SimulatedMaxwellWorldBackend();
+        _registrar = registrar ?? new LocalExilePetMtxRegistrar();
+        _ownsRegistrar = registrar is null;
     }
 
     /// <summary>
-    /// Registers the brand-new Maxwell Pet MTX entry and attaches typed <see cref="ClientBridgeHost"/> handlers.
+    /// Registers Maxwell as a brand-new Pet MTX and attaches typed <see cref="ClientBridgeHost"/>
+    /// and <see cref="LocalExilePetMtxRegistrar"/> Cosmetics (<c>K</c>) equip handlers.
     /// </summary>
     public void Attach()
     {
         if (_subscriptions.Count > 0)
             return;
 
-        _mtxRegistrationHandle = _backend.RegisterPetMtx(DefaultRegistration);
+        _registrarDefHandle = _registrar.Register(MaxwellPetDefinition);
+        _mtxRegistrationHandle = _backend.RegisterPetMtx(MaxwellPetDefinition);
+        _registrar.PetEquipChanged += OnCosmeticEquipObserved;
 
         _subscriptions.Add(_bridge.On<ToggleMaxwellRequest>(MaxwellProtocol.ChannelName, (session, req) =>
         {
@@ -174,19 +171,27 @@ public sealed class MaxwellServerMod : IDisposable
 
     public void Detach()
     {
+        _registrar.PetEquipChanged -= OnCosmeticEquipObserved;
+
         foreach (var sub in _subscriptions)
             sub.Dispose();
         _subscriptions.Clear();
 
         _mtxRegistrationHandle?.Dispose();
         _mtxRegistrationHandle = null;
+
+        _registrarDefHandle?.Dispose();
+        _registrarDefHandle = null;
+
+        if (_ownsRegistrar)
+            _registrar.Dispose();
     }
 
     public void Dispose() => Detach();
 
     /// <summary>
     /// Called when a player enters an area: grants Maxwell Pet MTX ownership (<c>0x0204</c>),
-    /// respawns Maxwell if currently active for this character, and syncs rich clients.
+    /// respawns Maxwell if currently active via <c>/maxwell</c>, and syncs rich clients.
     /// </summary>
     public async Task OnPlayerEnteredAsync(string connectionId, string characterName, CancellationToken cancellationToken = default)
     {
@@ -194,14 +199,16 @@ public sealed class MaxwellServerMod : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(characterName);
 
         _connectionCharacters[connectionId] = characterName;
-        await _backend.GrantMtxRecordAsync(connectionId, DefaultRegistration, cancellationToken).ConfigureAwait(false);
+        await _backend.GrantMtxRecordAsync(connectionId, MaxwellPetDefinition, cancellationToken).ConfigureAwait(false);
 
         var state = _states.GetOrAdd(characterName, _ => new CharacterMaxwellState());
         bool shouldRespawn;
         byte slot;
         lock (state)
         {
-            shouldRespawn = state.IsSummoned;
+            // When summoned via native Cosmetics (K), LocalExile's CosmeticsModule already spawns the pet on PlayerEntered
+            // and LocalExilePetMtxRegistrar.ObserveLiveGatewayPlayer notifies OnCosmeticEquipObservedAsync with its entity ID.
+            shouldRespawn = state.IsSummoned && !state.EquippedViaCosmeticsMenu;
             slot = state.PetSlot;
         }
 
@@ -226,7 +233,50 @@ public sealed class MaxwellServerMod : IDisposable
     }
 
     /// <summary>
-    /// Handles a Cosmetics tab pick (<c>C-&gt;S 0x01f9</c>) in Pet Slot 18 or 19 for Maxwell (<c>recordId == 8558</c> or <c>0</c> to unequip).
+    /// Handles a Cosmetics (<c>K</c>) menu equip/unequip transition observed by <see cref="LocalExilePetMtxRegistrar"/>.
+    /// Does NOT double-spawn the pet entity (LocalExile's <c>CosmeticsFeature.SpawnPets</c> owns the entity);
+    /// updates authoritative state and pushes <see cref="MaxwellStateSync"/> so NativeMods clients start/stop
+    /// looping Stock Market audio and update <c>MaxwellPanel.ui</c> immediately.
+    /// </summary>
+    public async Task<MaxwellStateSync> OnCosmeticEquipObservedAsync(
+        PetMtxEquipChangedEvent evt,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(evt);
+        _connectionCharacters[evt.ConnectionId] = evt.CharacterName;
+
+        var state = _states.GetOrAdd(evt.CharacterName, _ => new CharacterMaxwellState());
+        MaxwellStateSync sync;
+        lock (state)
+        {
+            if (evt.IsEquipped)
+            {
+                state.IsSummoned = true;
+                state.EquippedViaCosmeticsMenu = true;
+                state.PetEntityId = evt.PetEntityId;
+                state.PetSlot = evt.PetSlot;
+                state.MusicPlaying = true;
+                sync = BuildSyncLocked(evt.CharacterName, state,
+                    $"Equipped Maxwell the Cat from Cosmetics Pet Slot {(evt.PetSlot == CustomPetMtxDefinition.PetSlot1 ? 1 : 2)} (entity 0x{evt.PetEntityId:X}).");
+            }
+            else
+            {
+                state.IsSummoned = false;
+                state.EquippedViaCosmeticsMenu = false;
+                state.PetEntityId = 0;
+                state.MusicPlaying = false;
+                sync = BuildSyncLocked(evt.CharacterName, state,
+                    "Unequipped Maxwell the Cat from Cosmetics. Stock Market music stopped.");
+            }
+        }
+
+        await PushSyncIfRichClientAsync(evt.ConnectionId, sync, cancellationToken).ConfigureAwait(false);
+        return sync;
+    }
+
+    /// <summary>
+    /// Handles a direct Cosmetics tab pick (<c>C-&gt;S 0x01f9</c>) in standalone/simulated environments
+    /// where LocalExile's <c>CosmeticsModule</c> is not driving <c>SpawnPets</c>.
     /// </summary>
     public async Task<MaxwellStateSync?> HandleCosmeticSlotPickedAsync(
         string connectionId,
@@ -238,11 +288,11 @@ public sealed class MaxwellServerMod : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(characterName);
 
-        if (slot is not (MaxwellProtocol.PetSlot1 or MaxwellProtocol.PetSlot2))
+        if (slot is not (CustomPetMtxDefinition.PetSlot1 or CustomPetMtxDefinition.PetSlot2))
             return null;
 
         _connectionCharacters[connectionId] = characterName;
-        if (recordId == DefaultRegistration.RecordId)
+        if (recordId == MaxwellPetDefinition.RecordId)
         {
             return await SummonAsync(connectionId, characterName, slot, cancellationToken).ConfigureAwait(false);
         }
@@ -254,12 +304,9 @@ public sealed class MaxwellServerMod : IDisposable
             ownsSlot = state.IsSummoned && state.PetSlot == slot;
         }
 
-        if (ownsSlot)
-        {
-            return await DismissAsync(connectionId, characterName, cancellationToken).ConfigureAwait(false);
-        }
-
-        return null;
+        return ownsSlot
+            ? await DismissAsync(connectionId, characterName, cancellationToken).ConfigureAwait(false)
+            : null;
     }
 
     /// <summary>
@@ -302,7 +349,7 @@ public sealed class MaxwellServerMod : IDisposable
             case "summon":
             case "on":
             {
-                byte slot = args.Length > 1 && args[1] == "2" ? MaxwellProtocol.PetSlot2 : MaxwellProtocol.PetSlot1;
+                byte slot = args.Length > 1 && args[1] == "2" ? CustomPetMtxDefinition.PetSlot2 : CustomPetMtxDefinition.PetSlot1;
                 var sync = await SummonAsync(connectionId, characterName, slot, cancellationToken).ConfigureAwait(false);
                 return hasRichClient ? sync.StatusMessage : $"{sync.StatusMessage} [Chat Fallback]";
             }
@@ -325,11 +372,7 @@ public sealed class MaxwellServerMod : IDisposable
                 if (args.Length < 2 || !float.TryParse(args[1], CultureInfo.InvariantCulture, out float speed))
                     return "[Maxwell Pet] Usage: /maxwell spin <0..720>";
 
-                var sync = await ApplyToggleRequestAsync(
-                    connectionId,
-                    characterName,
-                    new ToggleMaxwellRequest(SpinSpeedDegPerSec: speed),
-                    cancellationToken).ConfigureAwait(false);
+                var sync = await ApplyToggleRequestAsync(connectionId, characterName, new ToggleMaxwellRequest(SpinSpeedDegPerSec: speed), cancellationToken).ConfigureAwait(false);
                 return sync.StatusMessage;
             }
 
@@ -338,11 +381,7 @@ public sealed class MaxwellServerMod : IDisposable
                 if (args.Length < 2 || !float.TryParse(args[1], CultureInfo.InvariantCulture, out float height))
                     return "[Maxwell Pet] Usage: /maxwell float <0..60>";
 
-                var sync = await ApplyToggleRequestAsync(
-                    connectionId,
-                    characterName,
-                    new ToggleMaxwellRequest(FloatHeight: height),
-                    cancellationToken).ConfigureAwait(false);
+                var sync = await ApplyToggleRequestAsync(connectionId, characterName, new ToggleMaxwellRequest(FloatHeight: height), cancellationToken).ConfigureAwait(false);
                 return sync.StatusMessage;
             }
 
@@ -385,10 +424,7 @@ public sealed class MaxwellServerMod : IDisposable
             }
 
             case "status":
-            {
-                var current = BuildSync(characterName, "Maxwell status snapshot.");
-                return BuildChatFallbackSummary(current);
-            }
+                return BuildChatFallbackSummary(BuildSync(characterName, "Maxwell status snapshot."));
 
             default:
                 return "[Maxwell Pet] Commands: /maxwell [panel|summon [1|2]|dismiss|toggle|spin <0..720>|float <0..60>|music <on|off|mute|unmute|vol 0..1>|dance|status]";
@@ -398,10 +434,10 @@ public sealed class MaxwellServerMod : IDisposable
     public async Task<MaxwellStateSync> SummonAsync(
         string connectionId,
         string characterName,
-        byte petSlot = MaxwellProtocol.PetSlot1,
+        byte petSlot = CustomPetMtxDefinition.PetSlot1,
         CancellationToken cancellationToken = default)
     {
-        byte normalizedSlot = petSlot == MaxwellProtocol.PetSlot2 ? MaxwellProtocol.PetSlot2 : MaxwellProtocol.PetSlot1;
+        byte normalizedSlot = petSlot == CustomPetMtxDefinition.PetSlot2 ? CustomPetMtxDefinition.PetSlot2 : CustomPetMtxDefinition.PetSlot1;
         var state = _states.GetOrAdd(characterName, _ => new CharacterMaxwellState());
 
         uint previousEntityId;
@@ -426,11 +462,12 @@ public sealed class MaxwellServerMod : IDisposable
         lock (state)
         {
             state.IsSummoned = true;
+            state.EquippedViaCosmeticsMenu = false;
             state.PetEntityId = entityId;
             state.PetSlot = normalizedSlot;
             state.MusicPlaying = true;
             sync = BuildSyncLocked(characterName, state,
-                $"Summoned Maxwell the Cat in Pet Slot {(normalizedSlot == MaxwellProtocol.PetSlot1 ? 1 : 2)} (entity 0x{entityId:X}).");
+                $"Summoned Maxwell the Cat in Pet Slot {(normalizedSlot == CustomPetMtxDefinition.PetSlot1 ? 1 : 2)} (entity 0x{entityId:X}).");
         }
 
         await PushSyncIfRichClientAsync(connectionId, sync, cancellationToken).ConfigureAwait(false);
@@ -449,6 +486,7 @@ public sealed class MaxwellServerMod : IDisposable
         {
             entityToRemove = state.PetEntityId;
             state.IsSummoned = false;
+            state.EquippedViaCosmeticsMenu = false;
             state.PetEntityId = 0;
             state.MusicPlaying = false;
         }
@@ -490,25 +528,15 @@ public sealed class MaxwellServerMod : IDisposable
         lock (state)
         {
             if (request.SpinSpeedDegPerSec is float spin)
-            {
                 state.SpinSpeedDegPerSec = Math.Clamp(spin, MaxwellProtocol.MinSpinSpeedDegPerSec, MaxwellProtocol.MaxSpinSpeedDegPerSec);
-            }
-
             if (request.FloatHeight is float height)
-            {
                 state.FloatHeight = Math.Clamp(height, MaxwellProtocol.MinFloatHeight, MaxwellProtocol.MaxFloatHeight);
-            }
         }
 
         if (targetSummon == true)
-        {
             return await SummonAsync(connectionId, characterName, request.PetSlot, cancellationToken).ConfigureAwait(false);
-        }
-
         if (targetSummon == false)
-        {
             return await DismissAsync(connectionId, characterName, cancellationToken).ConfigureAwait(false);
-        }
 
         MaxwellStateSync sync;
         lock (state)
@@ -558,6 +586,14 @@ public sealed class MaxwellServerMod : IDisposable
         }
     }
 
+    private void OnCosmeticEquipObserved(PetMtxEquipChangedEvent evt)
+    {
+        if (evt.Pet.MtxTypeHash != MaxwellPetDefinition.MtxTypeHash)
+            return;
+
+        OnCosmeticEquipObservedAsync(evt).GetAwaiter().GetResult();
+    }
+
     private async Task PushSyncIfRichClientAsync(string connectionId, MaxwellStateSync sync, CancellationToken cancellationToken)
     {
         var session = _bridge.For(connectionId);
@@ -582,16 +618,17 @@ public sealed class MaxwellServerMod : IDisposable
             StatusMessage: status);
 
     private static string BuildChatFallbackSummary(MaxwellStateSync state) =>
-        $"[Maxwell Pet — Chat Fallback] Summoned: {(state.IsSummoned ? $"Yes (0x{state.PetEntityId:X}, Slot {(state.PetSlot == MaxwellProtocol.PetSlot1 ? 1 : 2)})" : "No")} | " +
+        $"[Maxwell Pet — Chat Fallback] Summoned: {(state.IsSummoned ? $"Yes (0x{state.PetEntityId:X}, Slot {(state.PetSlot == CustomPetMtxDefinition.PetSlot1 ? 1 : 2)})" : "No")} | " +
         $"Spin: {state.SpinSpeedDegPerSec:0} deg/s | Float: {state.FloatHeight:0.#} | " +
         $"Music: {(state.MusicPlaying && !state.MusicMuted ? $"On ({(int)MathF.Round(state.MusicVolume * 100f)}%)" : "Off")} | " +
-        "Use '/maxwell summon|dismiss|spin|float|music'. Install NativeMods via Waypoint for the native Maxwell panel & looping audio.";
+        "Use '/maxwell summon|dismiss|spin|float|music' or equip Maxwell the Cat Pet in Cosmetics (K). Install NativeMods via Waypoint for the native panel & looping audio.";
 
     private sealed class CharacterMaxwellState
     {
         public bool IsSummoned { get; set; }
+        public bool EquippedViaCosmeticsMenu { get; set; }
         public uint PetEntityId { get; set; }
-        public byte PetSlot { get; set; } = MaxwellProtocol.PetSlot1;
+        public byte PetSlot { get; set; } = CustomPetMtxDefinition.PetSlot1;
         public float SpinSpeedDegPerSec { get; set; } = MaxwellProtocol.DefaultSpinSpeedDegPerSec;
         public float FloatHeight { get; set; } = MaxwellProtocol.DefaultFloatHeight;
         public bool MusicPlaying { get; set; }

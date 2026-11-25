@@ -18,11 +18,10 @@ Stock 3.29.3d table row counts (`LocalExile/data/client.db`):
 
 ## Components
 
-- **Shared (`Shared/MaxwellMessages.cs`)**: Typed message contracts (`ToggleMaxwellRequest`, `MaxwellStateSync`, `MaxwellAudioControl`, `OpenMaxwellPanel`), MurmurHash2 object-type hash helper, and shared protocol/table constants.
+- **Shared (`Shared/MaxwellMessages.cs`)**: Typed message contracts (`ToggleMaxwellRequest`, `MaxwellStateSync`, `MaxwellAudioControl`, `OpenMaxwellPanel`) and shared protocol/table constants.
 - **Server (`Server/MaxwellServerMod.cs` + `Server/MaxwellLocalExileEntry.cs`)**:
-  - Registers the brand-new Maxwell Pet MTX entry (`Record.Id = 8558`, `HASH32 = 0xA1EB592E`) into `Game.Mtx` & `Game.MtxEffects` with zero changes to LocalExile core.
-  - Handles `/maxwell` chat commands AND Cosmetics tab Pet Slot 18 / 19 picks.
-  - Spawns/despawns the authoritative `PetObject` (`0x02bb` + `0x01a9` wake zone + `player.Pets` follow registration).
+  - Uses `PoeContentHash`, `CustomPetMtxDefinition`, and `LocalExilePetMtxRegistrar` from `LocalExile.Client.ServerBridge` to register the brand-new Maxwell Pet MTX entry (`Record.Id = 8558`, `HASH32 = 0xA1EB592E`) into `Game.Mtx` & `Game.MtxEffects`, send `S->C 0x0204` ownership grants, and detect real-time **in-game Cosmetics (`K`) menu** Pet Slot 1/2 (`18`/`19`) equip/unequip transitions with zero changes to LocalExile core.
+  - Handles `/maxwell` chat commands AND native Cosmetics (`K`) equip/unequip (which automatically spawns/despawns Maxwell AND starts/stops looping Stock Market audio + updates `MaxwellPanel.ui`!).
   - Syncs typed state & audio control over `LocalExile.Client.ServerBridge` (`HostRuleset 0x02c9/0x02ca` or `ChatFallback ##NM / /nm`), with graceful chat-only fallback for vanilla clients.
 - **Client (`Client/MaxwellClientMod.cs`)**:
   - Implements `IClientMod` (loaded in a collectible `AssemblyLoadContext` with clean unload).

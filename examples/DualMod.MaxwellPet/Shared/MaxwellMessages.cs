@@ -1,5 +1,3 @@
-using System.Buffers.Binary;
-
 namespace DualMod.MaxwellPet.Shared;
 
 /// <summary>
@@ -34,14 +32,14 @@ public static class MaxwellProtocol
 
     public const int MtxTypesAppendedRow = 8557;
     public const uint MtxRecordId = 8558u; // MtxTypes row index + 1 (LocalExile MtxCatalog convention)
-    public const uint MtxTypeHash = 0xA1EB592Eu; // MurmurHash2(MtxTypeId, seed=0) == 2716555566
+    public const uint MtxTypeHash = 0xA1EB592Eu; // PoeContentHash.MurmurHash2(MtxTypeId) == 2716555566
 
     public const int MtxTypeGameSpecificAppendedRow = 7849;
     public const int MtxPetCategory = 14; // 516/516 stock pets use Category=14, __col4=[15], __col6=[18,19]
 
     public const int PetAppendedRow = 516;
-    public const uint PetObjectTypeHash = 0x1F3AB11Au; // MurmurHash2(PetMetadataPath, seed=0) == 523940122
-    public const ushort PetHash16 = 0xAE20; // ((PetObjectTypeHash >> 16) ^ (PetObjectTypeHash & 0xFFFF)) == 44576
+    public const uint PetObjectTypeHash = 0x1F3AB11Au; // PoeContentHash.MurmurHash2(PetMetadataPath) == 523940122
+    public const ushort PetHash16 = 0xAE20; // PoeContentHash.FoldHash16(PetObjectTypeHash) == 44576
 
     /// <summary>MicrotransactionSlot IDs for Pet Slot 1 and Pet Slot 2.</summary>
     public const byte PetSlot1 = 18;
@@ -73,50 +71,6 @@ public static class MaxwellProtocol
     public const float MaxFloatHeight = 60f;
 
     public const float DefaultMusicVolume = 0.75f;
-
-    /// <summary>
-    /// Computes Path of Exile 3.29's 32-bit MurmurHash2 (seed 0) over narrow ASCII/UTF-16-low-byte metadata paths,
-    /// matching <c>GameServer.Core.Protocol.Instance.InstanceEntities.ObjectTypeHash</c> (<c>0x140df6e10</c>).
-    /// </summary>
-    public static uint ComputeObjectTypeHash(string metadataPath)
-    {
-        ArgumentNullException.ThrowIfNull(metadataPath);
-        byte[] bytes = new byte[metadataPath.Length];
-        for (int i = 0; i < metadataPath.Length; i++)
-        {
-            bytes[i] = (byte)metadataPath[i];
-        }
-
-        const uint m = 0x5BD1E995u;
-        uint h = (uint)bytes.Length;
-        int offset = 0;
-        while (bytes.Length - offset >= 4)
-        {
-            uint k = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(offset, 4)) * m;
-            k ^= k >> 24;
-            h = (h * m) ^ (k * m);
-            offset += 4;
-        }
-
-        switch (bytes.Length - offset)
-        {
-            case 3:
-                h ^= (uint)bytes[offset + 2] << 16;
-                goto case 2;
-            case 2:
-                h ^= (uint)bytes[offset + 1] << 8;
-                goto case 1;
-            case 1:
-                h = (h ^ bytes[offset]) * m;
-                break;
-        }
-
-        h = (h ^ (h >> 13)) * m;
-        return h ^ (h >> 15);
-    }
-
-    /// <summary>Folds a 32-bit dat HASH32 into PoE's 16-bit HASH16 (<c>(h &gt;&gt; 16) ^ (h &amp; 0xFFFF)</c>).</summary>
-    public static ushort FoldHash16(uint hash32) => (ushort)(((hash32 >> 16) ^ (hash32 & 0xFFFFu)) & 0xFFFFu);
 }
 
 /// <summary>
