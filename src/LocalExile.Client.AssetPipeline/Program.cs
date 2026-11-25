@@ -27,6 +27,9 @@ public static class Program
             {
                 "build-maxwell" => RunBuildMaxwell(opts),
                 "verify-maxwell" => RunVerifyMaxwell(opts),
+                "build-siphon" => RunBuildSiphon(opts),
+                "verify-siphon" => RunVerifySiphon(opts),
+                "build-currency" => RunBuildCurrency(opts),
                 "convert-dds" => RunConvertDds(opts),
                 "convert-glb" => RunConvertGlb(opts),
                 "convert-audio" => RunConvertAudio(opts),
@@ -228,6 +231,212 @@ public static class Program
         }
     }
 
+    private static int RunBuildSiphon(Dictionary<string, string> opts)
+    {
+        string emptyIconPath = RequireOption(opts, "--empty-icon");
+        string chargedIconPath = RequireOption(opts, "--charged-icon");
+        string clientDir = RequireOption(opts, "--client");
+        string outDir = RequireOption(opts, "--out");
+        string? baseOverlayDir = opts.GetValueOrDefault("--base-overlay");
+        int iconSize = opts.TryGetValue("--icon-size", out string? sizeStr)
+            ? int.Parse(sizeStr, System.Globalization.CultureInfo.InvariantCulture)
+            : 78;
+
+        if (!File.Exists(emptyIconPath)) throw new FileNotFoundException($"Empty Siphon Orb icon not found: '{emptyIconPath}'.", emptyIconPath);
+        if (!File.Exists(chargedIconPath)) throw new FileNotFoundException($"Charged Siphon Orb icon not found: '{chargedIconPath}'.", chargedIconPath);
+
+        IReadOnlyList<CurrencyItemPatchSpec> specs = CurrencyDatPatcher.CreateSiphonOrbSpecs(emptyIconPath, chargedIconPath);
+        PatchedCurrencyResult result = BuildCurrencyOverlay(specs, clientDir, outDir, baseOverlayDir, iconSize);
+        VerifyCurrencyDirectory(outDir, specs);
+
+        Console.WriteLine($"Built & verified Orb of Siphoning 3.29.3d asset overlay at '{outDir}':");
+        foreach (PatchedCurrencyEntry e in result.Entries)
+        {
+            Console.WriteLine(
+                $"  {e.Spec.DisplayName}: BIT[{e.BaseItemTypesRowIndex}] HASH32=0x{e.BaseItemHash32:X8}, IVI[{e.ItemVisualIdentityRowIndex}] HASH16=0x{e.VisualIdentityHash16:X4}, CUR[{e.CurrencyItemsRowIndex}] Stack={e.Spec.StackSize}, It={e.ItVirtualPath}, Icon={e.Spec.IconDdsPath} ({iconSize}x{iconSize} RGBA8)");
+        }
+
+        return 0;
+    }
+
+    private static int RunVerifySiphon(Dictionary<string, string> opts)
+    {
+        string dir = RequireOption(opts, "--dir");
+        IReadOnlyList<CurrencyItemPatchSpec> specs = CurrencyDatPatcher.CreateSiphonOrbSpecs();
+        VerifyCurrencyDirectory(dir, specs);
+        Console.WriteLine($"Verified all Orb of Siphoning 3.29.3d assets in '{dir}' cleanly.");
+        return 0;
+    }
+
+    private static int RunBuildCurrency(Dictionary<string, string> opts)
+    {
+        string specPath = RequireOption(opts, "--spec");
+        string clientDir = RequireOption(opts, "--client");
+        string outDir = RequireOption(opts, "--out");
+        string? baseOverlayDir = opts.GetValueOrDefault("--base-overlay");
+        int iconSize = opts.TryGetValue("--icon-size", out string? sizeStr)
+            ? int.Parse(sizeStr, System.Globalization.CultureInfo.InvariantCulture)
+            : 78;
+
+        if (!File.Exists(specPath)) throw new FileNotFoundException($"Currency spec JSON not found: '{specPath}'.", specPath);
+
+        string json = File.ReadAllText(specPath);
+        var jsonOpts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        IReadOnlyList<CurrencyItemPatchSpec> specs;
+        using (JsonDocument doc = JsonDocument.Parse(json))
+        {
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                specs = JsonSerializer.Deserialize<List<CurrencyItemPatchSpec>>(json, jsonOpts)
+                    ?? throw new InvalidDataException("Currency spec array deserialized to null.");
+            }
+            else
+            {
+                CurrencyItemPatchSpec single = JsonSerializer.Deserialize<CurrencyItemPatchSpec>(json, jsonOpts)
+                    ?? throw new InvalidDataException("Currency spec object deserialized to null.");
+                specs = [single];
+            }
+        }
+
+        string specDir = Path.GetDirectoryName(Path.GetFullPath(specPath)) ?? Environment.CurrentDirectory;
+        var resolvedSpecs = specs.Select(s =>
+            string.IsNullOrWhiteSpace(s.SourceIconPath) || Path.IsPathRooted(s.SourceIconPath)
+                ? s
+                : s with { SourceIconPath = Path.GetFullPath(Path.Combine(specDir, s.SourceIconPath)) }).ToList();
+
+        PatchedCurrencyResult result = BuildCurrencyOverlay(resolvedSpecs, clientDir, outDir, baseOverlayDir, iconSize);
+        VerifyCurrencyDirectory(outDir, resolvedSpecs, requireIcons: resolvedSpecs.All(s => !string.IsNullOrWhiteSpace(s.SourceIconPath)));
+
+        Console.WriteLine($"Built & verified {result.Entries.Count} custom currency item(s) into '{outDir}':");
+        foreach (PatchedCurrencyEntry e in result.Entries)
+        {
+            Console.WriteLine($"  {e.Spec.DisplayName}: BIT[{e.BaseItemTypesRowIndex}] HASH32=0x{e.BaseItemHash32:X8}, IVI[{e.ItemVisualIdentityRowIndex}] HASH16=0x{e.VisualIdentityHash16:X4}, CUR[{e.CurrencyItemsRowIndex}]");
+        }
+
+        return 0;
+    }
+
+    public static PatchedCurrencyResult BuildCurrencyOverlay(
+        IReadOnlyList<CurrencyItemPatchSpec> specs,
+        string clientDir,
+        string outDir,
+        string? baseOverlayDir = null,
+        int iconSize = 78)
+    {
+        ArgumentNullException.ThrowIfNull(specs);
+        Directory.CreateDirectory(outDir);
+
+        (byte[] stockBit, byte[] stockIvi, byte[] stockCur) = LoadCurrencyDatTables(clientDir, baseOverlayDir);
+        PatchedCurrencyResult result = CurrencyDatPatcher.AppendCurrencies(stockBit, stockIvi, stockCur, specs);
+
+        WriteVirtualFile(outDir, "Data/BaseItemTypes.datc64", result.BaseItemTypesBytes);
+        WriteVirtualFile(outDir, "Data/ItemVisualIdentity.datc64", result.ItemVisualIdentityBytes);
+        WriteVirtualFile(outDir, "Data/CurrencyItems.datc64", result.CurrencyItemsBytes);
+
+        foreach (PatchedCurrencyEntry entry in result.Entries)
+        {
+            WriteVirtualFile(outDir, entry.ItVirtualPath, entry.ItFileBytes);
+
+            if (!string.IsNullOrWhiteSpace(entry.Spec.SourceIconPath))
+            {
+                DdsOutput iconDds = DdsTextureConverter.ConvertCurrencyIconFile(
+                    entry.Spec.SourceIconPath,
+                    targetWidth: iconSize,
+                    targetHeight: iconSize,
+                    format: PoeDdsFormat.Rgba8,
+                    removeBlackBackground: true);
+                DdsTextureConverter.Validate(iconDds.DdsBytes, iconDds.HeaderBytes);
+                DdsTextureConverter.WritePair(ResolveVirtualPath(outDir, entry.Spec.IconDdsPath), iconDds);
+            }
+        }
+
+        return result;
+    }
+
+    public static void VerifyCurrencyDirectory(
+        string rootDir,
+        IReadOnlyList<CurrencyItemPatchSpec> specs,
+        bool requireIcons = true)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rootDir);
+        ArgumentNullException.ThrowIfNull(specs);
+
+        Dat64Table bit = Dat64Table.Load(ResolveVirtualPath(rootDir, "Data/BaseItemTypes.datc64"));
+        Dat64Table ivi = Dat64Table.Load(ResolveVirtualPath(rootDir, "Data/ItemVisualIdentity.datc64"));
+        Dat64Table cur = Dat64Table.Load(ResolveVirtualPath(rootDir, "Data/CurrencyItems.datc64"));
+
+        var entries = new List<PatchedCurrencyEntry>(specs.Count);
+        foreach (CurrencyItemPatchSpec spec in specs)
+        {
+            int bitRow = bit.FindRowByString(CurrencyDatPatcher.BitIdOffset, spec.BaseItemTypeId);
+            int iviRow = ivi.FindRowByString(CurrencyDatPatcher.IviIdOffset, spec.VisualIdentityId);
+            if (bitRow < 0 || iviRow < 0)
+            {
+                throw new InvalidDataException(
+                    $"Appended currency rows missing for '{spec.BaseItemTypeId}' (BIT row={bitRow}, IVI row={iviRow}).");
+            }
+
+            int curRow = -1;
+            for (int r = 0; r < cur.RowCount; r++)
+            {
+                if (cur.ReadForeignRow(r, CurrencyDatPatcher.CurBaseItemTypesKeyOffset) == (ulong)bitRow)
+                {
+                    curRow = r;
+                    break;
+                }
+            }
+
+            if (curRow < 0)
+            {
+                throw new InvalidDataException($"Appended CurrencyItems row missing for '{spec.BaseItemTypeId}' (BIT row={bitRow}).");
+            }
+
+            ushort hash16 = ivi.ReadUInt16(iviRow, CurrencyDatPatcher.IviHash16Offset);
+            if (spec.VisualIdentityHash16.HasValue && hash16 != spec.VisualIdentityHash16.Value)
+            {
+                throw new InvalidDataException(
+                    $"ItemVisualIdentity[{iviRow}].HASH16 mismatch for '{spec.VisualIdentityId}': expected 0x{spec.VisualIdentityHash16.Value:X4}, got 0x{hash16:X4}.");
+            }
+
+            string itFullPath = ResolveVirtualPath(rootDir, spec.ItVirtualPath);
+            VerifyUtf16TextFile(itFullPath, expectBom: true, mustContain: $"extends \"{spec.InheritsFrom}\"");
+            if (spec.SupportsStoredMods)
+            {
+                VerifyUtf16TextFile(itFullPath, expectBom: true, mustContain: "LocalStats");
+                VerifyUtf16TextFile(itFullPath, expectBom: true, mustContain: spec.StatDescriptionList);
+            }
+
+            if (requireIcons)
+            {
+                string ddsFullPath = ResolveVirtualPath(rootDir, spec.IconDdsPath);
+                string hdrFullPath = ddsFullPath + ".header";
+                if (!File.Exists(ddsFullPath) || !File.Exists(hdrFullPath))
+                {
+                    throw new FileNotFoundException($"Missing currency icon DDS or .header for '{spec.BaseItemTypeId}' at '{ddsFullPath}'.", ddsFullPath);
+                }
+
+                DdsValidationInfo info = DdsTextureConverter.Validate(File.ReadAllBytes(ddsFullPath), File.ReadAllBytes(hdrFullPath));
+                if (info.DxgiFormat != 28u || info.PoeHeaderFormat != 21u)
+                {
+                    throw new InvalidDataException(
+                        $"Currency icon '{spec.IconDdsPath}' expected RGBA8 (DXGI 28 / PoE 21), got DXGI {info.DxgiFormat} / PoE {info.PoeHeaderFormat}.");
+                }
+            }
+
+            entries.Add(new PatchedCurrencyEntry(
+                spec,
+                bitRow,
+                iviRow,
+                curRow,
+                spec.BaseItemHash32,
+                hash16,
+                spec.ItVirtualPath,
+                File.ReadAllBytes(itFullPath)));
+        }
+
+        CurrencyDatPatcher.VerifyAppendedCurrencies(bit, ivi, cur, entries);
+    }
+
     private static int RunConvertDds(Dictionary<string, string> opts)
     {
         string input = RequireOption(opts, "--in");
@@ -309,6 +518,49 @@ public static class Program
             bundles.ReadFile("Data/MtxTypes.datc64"),
             bundles.ReadFile("Data/MtxTypeGameSpecific.datc64"),
             bundles.ReadFile("Data/Pet.datc64"));
+    }
+
+    private static (byte[] BaseItemTypes, byte[] ItemVisualIdentity, byte[] CurrencyItems) LoadCurrencyDatTables(
+        string clientOrDatDir,
+        string? baseOverlayDir = null)
+    {
+        // Prefer layering onto an existing patched overlay when provided (and when all 3 currency tables are present there).
+        if (!string.IsNullOrWhiteSpace(baseOverlayDir) && TryLoadLooseCurrencyDatTables(baseOverlayDir, out var layered))
+        {
+            return layered;
+        }
+
+        if (TryLoadLooseCurrencyDatTables(clientOrDatDir, out var loose))
+        {
+            return loose;
+        }
+
+        using Bundles2Reader bundles = Bundles2Reader.Open(clientOrDatDir);
+        return (
+            bundles.ReadFile("Data/BaseItemTypes.datc64"),
+            bundles.ReadFile("Data/ItemVisualIdentity.datc64"),
+            bundles.ReadFile("Data/CurrencyItems.datc64"));
+    }
+
+    private static bool TryLoadLooseCurrencyDatTables(
+        string dir,
+        out (byte[] BaseItemTypes, byte[] ItemVisualIdentity, byte[] CurrencyItems) tables)
+    {
+        string[] subdirs = [Path.Combine(dir, "Data"), dir];
+        foreach (string sub in subdirs)
+        {
+            string bit = Path.Combine(sub, "BaseItemTypes.datc64");
+            string ivi = Path.Combine(sub, "ItemVisualIdentity.datc64");
+            string cur = Path.Combine(sub, "CurrencyItems.datc64");
+            if (File.Exists(bit) && File.Exists(ivi) && File.Exists(cur))
+            {
+                tables = (File.ReadAllBytes(bit), File.ReadAllBytes(ivi), File.ReadAllBytes(cur));
+                return true;
+            }
+        }
+
+        tables = default;
+        return false;
     }
 
     private static void VerifyUtf16TextFile(string path, bool expectBom, string mustContain)
@@ -420,6 +672,9 @@ public static class Program
         Console.WriteLine("Commands:");
         Console.WriteLine("  build-maxwell  --zip <maxwell.zip> --audio <stock_market.opus> --client <PoE Client or Dat dir> --out <outDir>");
         Console.WriteLine("  verify-maxwell --dir <outDir>");
+        Console.WriteLine("  build-siphon   --empty-icon <empty.png> --charged-icon <charged.png> --client <PoE Client or Dat dir> --out <outDir> [--base-overlay <dir>] [--icon-size 78]");
+        Console.WriteLine("  verify-siphon  --dir <outDir>");
+        Console.WriteLine("  build-currency --spec <currency-specs.json> --client <PoE Client or Dat dir> --out <outDir> [--base-overlay <dir>] [--icon-size 78]");
         Console.WriteLine("  patch-dat      --client <PoE Client or Dat dir> --out <outDir>");
         Console.WriteLine("  convert-glb    --in <model.glb> --out <outDir>");
         Console.WriteLine("  convert-dds    --in <image> --out <file.dds> [--format bc1|bc3|rgba8]");

@@ -66,6 +66,55 @@ public static class DdsTextureConverter
         return ConvertFromRgba(img, format, generateMipmaps: true);
     }
 
+    /// <summary>
+    /// Converts a square source image (e.g. 512x512 black-background Nano Banana currency art) into a PoE 3.29.3d
+    /// 1x1 currency icon <c>.dds</c> + <c>.dds.header</c> pair using exterior flood-fill alpha cutout,
+    /// smooth silhouette edge feathering, and premultiplied-alpha area-averaged downsampling.
+    /// Defaults to <c>78x78</c> <see cref="PoeDdsFormat.Rgba8"/> (matching stock 3.29.3d DXGI 28 / PoE format 21 currency icons).
+    /// </summary>
+    public static DdsOutput ConvertCurrencyIcon(
+        RgbaImage source,
+        int targetWidth = 78,
+        int targetHeight = 78,
+        PoeDdsFormat format = PoeDdsFormat.Rgba8,
+        bool removeBlackBackground = true,
+        byte hardThreshold = 18,
+        byte softThreshold = 52,
+        int featherRadius = 2)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        RgbaImage processed = removeBlackBackground
+            ? source.CutoutBlackBackgroundFloodFill(hardThreshold, softThreshold, featherRadius)
+            : source;
+        RgbaImage resized = processed.ResizePremultipliedArea(targetWidth, targetHeight);
+        return ConvertFromRgba(resized, format, generateMipmaps: true);
+    }
+
+    /// <summary>
+    /// Decodes an image file via ImageMagick and converts it to a PoE 3.29.3d 1x1 currency icon <c>.dds</c> + <c>.dds.header</c>.
+    /// </summary>
+    public static DdsOutput ConvertCurrencyIconFile(
+        string inputPath,
+        int targetWidth = 78,
+        int targetHeight = 78,
+        PoeDdsFormat format = PoeDdsFormat.Rgba8,
+        bool removeBlackBackground = true,
+        byte hardThreshold = 18,
+        byte softThreshold = 52,
+        int featherRadius = 2)
+    {
+        RgbaImage decoded = RgbaImage.DecodeWithImageMagick(inputPath);
+        return ConvertCurrencyIcon(
+            decoded,
+            targetWidth,
+            targetHeight,
+            format,
+            removeBlackBackground,
+            hardThreshold,
+            softThreshold,
+            featherRadius);
+    }
+
     public static void WritePair(string ddsPath, DdsOutput output)
     {
         ArgumentException.ThrowIfNullOrEmpty(ddsPath);
@@ -239,11 +288,12 @@ public static class DdsTextureConverter
 
     private static byte[] BuildPoeDdsHeader(IReadOnlyList<RgbaImage> mips, PoeDdsFormat format, int fullDdsLength)
     {
-        // Stock 3.29.3d embeds the mip-tail starting at the largest mip with max(w, h) <= 19 (e.g. 16x16 for PoT, 19x19 for 156x156).
+        // Stock 3.29.3d embeds the mip-tail starting at the largest mip with max(w, h) <= 20
+        // (e.g. 16x16 for 64x64, 19x19 for 78x78 & 156x156, 20x20 for stock 80x80 currency icons).
         int startMip = 0;
         for (int i = 0; i < mips.Count; i++)
         {
-            if (Math.Max(mips[i].Width, mips[i].Height) <= 19)
+            if (Math.Max(mips[i].Width, mips[i].Height) <= 20)
             {
                 startMip = i;
                 break;

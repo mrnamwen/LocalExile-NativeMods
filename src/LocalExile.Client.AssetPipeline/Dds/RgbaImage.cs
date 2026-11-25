@@ -84,16 +84,291 @@ public sealed class RgbaImage
                 int p01 = ((sy1 * Width) + sx0) * 4;
                 int p11 = ((sy1 * Width) + sx1) * 4;
 
+                int a00 = Pixels[p00 + 3];
+                int a10 = Pixels[p10 + 3];
+                int a01 = Pixels[p01 + 3];
+                int a11 = Pixels[p11 + 3];
+                int sumA = a00 + a10 + a01 + a11;
+
                 int di = ((y * nextW) + x) * 4;
-                for (int c = 0; c < 4; c++)
+                if (sumA == 0)
                 {
-                    int sum = Pixels[p00 + c] + Pixels[p10 + c] + Pixels[p01 + c] + Pixels[p11 + c];
-                    dst[di + c] = (byte)((sum + 2) >> 2);
+                    dst[di] = 0;
+                    dst[di + 1] = 0;
+                    dst[di + 2] = 0;
+                    dst[di + 3] = 0;
+                }
+                else if (a00 == 255 && a10 == 255 && a01 == 255 && a11 == 255)
+                {
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = Pixels[p00 + c] + Pixels[p10 + c] + Pixels[p01 + c] + Pixels[p11 + c];
+                        dst[di + c] = (byte)((sum + 2) >> 2);
+                    }
+
+                    dst[di + 3] = 255;
+                }
+                else
+                {
+                    // Alpha-weighted RGB averaging prevents transparent black background pixels from bleeding dark fringes into mipmaps.
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int wSum = (Pixels[p00 + c] * a00) + (Pixels[p10 + c] * a10) + (Pixels[p01 + c] * a01) + (Pixels[p11 + c] * a11);
+                        dst[di + c] = (byte)Math.Clamp((wSum + (sumA >> 1)) / sumA, 0, 255);
+                    }
+
+                    dst[di + 3] = (byte)((sumA + 2) >> 2);
                 }
             }
         }
 
         return new RgbaImage(nextW, nextH, dst);
+    }
+
+    /// <summary>
+    /// Removes a dark/black exterior background via 4-connected flood-fill from all four image edges inward,
+    /// followed by smooth anti-aliased edge feathering along the exterior silhouette boundary.
+    /// Interior dark regions (such as iron filigree or smoky crystal cores) are untouched and stay 100% opaque.
+    /// </summary>
+    public RgbaImage CutoutBlackBackgroundFloodFill(
+        byte hardThreshold = 18,
+        byte softThreshold = 52,
+        int featherRadius = 2)
+    {
+        if (softThreshold < hardThreshold)
+        {
+            throw new ArgumentException("softThreshold must be >= hardThreshold.", nameof(softThreshold));
+        }
+
+        if (featherRadius < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(featherRadius), "featherRadius cannot be negative.");
+        }
+
+        int total = Width * Height;
+        byte[] output = (byte[])Pixels.Clone();
+        bool[] exterior = new bool[total];
+        var queue = new Queue<int>(Math.Max(64, (Width + Height) * 2));
+
+        void TrySeedExterior(int x, int y)
+        {
+            int idx = (y * Width) + x;
+            if (exterior[idx]) return;
+            int p = idx * 4;
+            byte a = output[p + 3];
+            byte maxRgb = Math.Max(output[p], Math.Max(output[p + 1], output[p + 2]));
+            if (a == 0 || maxRgb <= hardThreshold)
+            {
+                exterior[idx] = true;
+                queue.Enqueue(idx);
+            }
+        }
+
+        for (int x = 0; x < Width; x++)
+        {
+            TrySeedExterior(x, 0);
+            TrySeedExterior(x, Height - 1);
+        }
+
+        for (int y = 0; y < Height; y++)
+        {
+            TrySeedExterior(0, y);
+            TrySeedExterior(Width - 1, y);
+        }
+
+        while (queue.Count > 0)
+        {
+            int idx = queue.Dequeue();
+            int x = idx % Width;
+            int y = idx / Width;
+
+            if (x > 0) TrySeedExterior(x - 1, y);
+            if (x + 1 < Width) TrySeedExterior(x + 1, y);
+            if (y > 0) TrySeedExterior(x, y - 1);
+            if (y + 1 < Height) TrySeedExterior(x, y + 1);
+        }
+
+        // Clear exterior pixels to fully transparent black.
+        for (int idx = 0; idx < total; idx++)
+        {
+            if (exterior[idx])
+            {
+                int p = idx * 4;
+                output[p] = 0;
+                output[p + 1] = 0;
+                output[p + 2] = 0;
+                output[p + 3] = 0;
+            }
+        }
+
+        // Smoothly feather only a thin band (<= featherRadius pixels) immediately adjacent to the exterior silhouette.
+        if (featherRadius > 0 && softThreshold > hardThreshold)
+        {
+            int[] dist = new int[total];
+            Array.Fill(dist, -1);
+            var edgeQueue = new Queue<int>();
+
+            for (int y = 0; y < Height; y++)
+            {
+                for (int x = 0; x < Width; x++)
+                {
+                    int idx = (y * Width) + x;
+                    if (exterior[idx]) continue;
+
+                    bool touchesExterior =
+                        (x > 0 && exterior[idx - 1]) ||
+                        (x + 1 < Width && exterior[idx + 1]) ||
+                        (y > 0 && exterior[idx - Width]) ||
+                        (y + 1 < Height && exterior[idx + Width]);
+
+                    if (touchesExterior)
+                    {
+                        dist[idx] = 1;
+                        edgeQueue.Enqueue(idx);
+                    }
+                }
+            }
+
+            while (edgeQueue.Count > 0)
+            {
+                int idx = edgeQueue.Dequeue();
+                int d = dist[idx];
+                if (d >= featherRadius) continue;
+
+                int x = idx % Width;
+                int y = idx / Width;
+                void TryNext(int nx, int ny)
+                {
+                    int nIdx = (ny * Width) + nx;
+                    if (!exterior[nIdx] && dist[nIdx] < 0)
+                    {
+                        dist[nIdx] = d + 1;
+                        edgeQueue.Enqueue(nIdx);
+                    }
+                }
+
+                if (x > 0) TryNext(x - 1, y);
+                if (x + 1 < Width) TryNext(x + 1, y);
+                if (y > 0) TryNext(x, y - 1);
+                if (y + 1 < Height) TryNext(x, y + 1);
+            }
+
+            float range = softThreshold - hardThreshold;
+            for (int idx = 0; idx < total; idx++)
+            {
+                int d = dist[idx];
+                if (d <= 0) continue;
+
+                int p = idx * 4;
+                byte origA = output[p + 3];
+                if (origA == 0) continue;
+
+                byte maxRgb = Math.Max(output[p], Math.Max(output[p + 1], output[p + 2]));
+                if (maxRgb >= softThreshold) continue;
+
+                // Blend distance-weighted luminance ramp so the outermost silhouette pixel anti-aliases cleanly
+                // without eating into dark metallic interior edges.
+                float lumAlpha = Math.Clamp((maxRgb - hardThreshold) / range, 0f, 1f);
+                float distBias = (d - 1f) / Math.Max(1f, featherRadius);
+                float newAlphaNorm = Math.Clamp(lumAlpha + (distBias * (1f - lumAlpha)), 0f, 1f);
+
+                // De-fringe RGB slightly to cancel dark halo from black-matte anti-aliasing.
+                if (newAlphaNorm > 0.05f && newAlphaNorm < 0.99f)
+                {
+                    float unpremul = 1f / Math.Max(newAlphaNorm, 0.35f);
+                    output[p] = (byte)Math.Clamp((int)MathF.Round(output[p] * unpremul), 0, 255);
+                    output[p + 1] = (byte)Math.Clamp((int)MathF.Round(output[p + 1] * unpremul), 0, 255);
+                    output[p + 2] = (byte)Math.Clamp((int)MathF.Round(output[p + 2] * unpremul), 0, 255);
+                }
+
+                output[p + 3] = (byte)Math.Clamp((int)MathF.Round(origA * newAlphaNorm), 0, 255);
+            }
+        }
+
+        return new RgbaImage(Width, Height, output);
+    }
+
+    /// <summary>
+    /// High-quality premultiplied-alpha area-averaged resize (ideal for downsampling 512x512 icons to 78x78
+    /// without shimmer or dark transparent-background fringe bleeding).
+    /// </summary>
+    public RgbaImage ResizePremultipliedArea(int targetWidth, int targetHeight)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(targetWidth);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(targetHeight);
+
+        if (targetWidth == Width && targetHeight == Height)
+        {
+            return new RgbaImage(Width, Height, (byte[])Pixels.Clone());
+        }
+
+        if (targetWidth > Width || targetHeight > Height)
+        {
+            return ResizeBilinear(targetWidth, targetHeight);
+        }
+
+        byte[] dst = new byte[checked(targetWidth * targetHeight * 4)];
+        double scaleX = (double)Width / targetWidth;
+        double scaleY = (double)Height / targetHeight;
+
+        for (int ty = 0; ty < targetHeight; ty++)
+        {
+            double sy0 = ty * scaleY;
+            double sy1 = (ty + 1) * scaleY;
+            int iy0 = Math.Clamp((int)Math.Floor(sy0), 0, Height - 1);
+            int iy1 = Math.Clamp((int)Math.Ceiling(sy1) - 1, iy0, Height - 1);
+
+            for (int tx = 0; tx < targetWidth; tx++)
+            {
+                double sx0 = tx * scaleX;
+                double sx1 = (tx + 1) * scaleX;
+                int ix0 = Math.Clamp((int)Math.Floor(sx0), 0, Width - 1);
+                int ix1 = Math.Clamp((int)Math.Ceiling(sx1) - 1, ix0, Width - 1);
+
+                double sumR = 0, sumG = 0, sumB = 0, sumA = 0, sumArea = 0;
+
+                for (int sy = iy0; sy <= iy1; sy++)
+                {
+                    double wy = Math.Min(sy + 1.0, sy1) - Math.Max(sy, sy0);
+                    if (wy <= 0) continue;
+
+                    for (int sx = ix0; sx <= ix1; sx++)
+                    {
+                        double wx = Math.Min(sx + 1.0, sx1) - Math.Max(sx, sx0);
+                        if (wx <= 0) continue;
+
+                        double area = wx * wy;
+                        int p = ((sy * Width) + sx) * 4;
+                        double a = Pixels[p + 3] / 255.0;
+                        double wa = area * a;
+
+                        sumR += Pixels[p] * wa;
+                        sumG += Pixels[p + 1] * wa;
+                        sumB += Pixels[p + 2] * wa;
+                        sumA += a * area;
+                        sumArea += area;
+                    }
+                }
+
+                int di = ((ty * targetWidth) + tx) * 4;
+                if (sumA <= 1e-6 || sumArea <= 0)
+                {
+                    dst[di] = 0;
+                    dst[di + 1] = 0;
+                    dst[di + 2] = 0;
+                    dst[di + 3] = 0;
+                }
+                else
+                {
+                    dst[di] = (byte)Math.Clamp((int)Math.Round(sumR / sumA), 0, 255);
+                    dst[di + 1] = (byte)Math.Clamp((int)Math.Round(sumG / sumA), 0, 255);
+                    dst[di + 2] = (byte)Math.Clamp((int)Math.Round(sumB / sumA), 0, 255);
+                    dst[di + 3] = (byte)Math.Clamp((int)Math.Round((sumA / sumArea) * 255.0), 0, 255);
+                }
+            }
+        }
+
+        return new RgbaImage(targetWidth, targetHeight, dst);
     }
 
     public RgbaImage ResizeBilinear(int targetWidth, int targetHeight)
