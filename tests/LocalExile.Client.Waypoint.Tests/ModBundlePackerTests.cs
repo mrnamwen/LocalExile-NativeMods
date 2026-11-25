@@ -42,12 +42,12 @@ public sealed class ModBundlePackerTests
             Assert.Equal(0x06, rawBundleBytes[21]);
 
             // Multi-block count check
-            var binEntry = Assert.Single(packedA.Manifest.Files, f => f.VirtualPath.EndsWith("atlas.dds"));
+            var binEntry = Assert.Single(packedA.Manifest.Files, f => f.VirtualPath.EndsWith("atlas.dds", StringComparison.Ordinal));
             Assert.Equal(2, binEntry.BlockCount);
             Assert.Equal("binary", binEntry.Encoding);
 
             // Text file encoded to UTF-16LE BOM CRLF
-            var uiEntry = Assert.Single(packedA.Manifest.Files, f => f.VirtualPath.EndsWith("panel.ui"));
+            var uiEntry = Assert.Single(packedA.Manifest.Files, f => f.VirtualPath.EndsWith("panel.ui", StringComparison.Ordinal));
             Assert.Equal("utf-16le-bom-crlf", uiEntry.Encoding);
             byte[] readUi = ModBundlePacker.ReadEntry(packedA.BundlePath, packedA.ManifestPath, "Metadata/UI/Mods/Demo/Panel.ui");
             Assert.Equal(0xFF, readUi[0]);

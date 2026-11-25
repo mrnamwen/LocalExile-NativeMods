@@ -1,3 +1,4 @@
+using System.Globalization;
 using DualMod.HarvestGarden.Shared;
 using LocalExile.Client.Sdk;
 using LocalExile.Client.Sdk.Engine;
@@ -12,32 +13,59 @@ namespace DualMod.HarvestGarden.Client;
 /// </summary>
 public sealed class GrowthGauge : ICustomUiControl
 {
-    public string TypeName => GardenProtocol.GrowthGaugeControlType;
+    private IUiControl? _hostControl;
+
+    public string ControlTypeName => GardenProtocol.GrowthGaugeControlType;
     public float CurrentProgress { get; private set; }
     public float TargetProgress { get; private set; }
     public int RipenPulses { get; private set; }
 
-    public void SetTarget(float progress)
+    public void OnInitialize(IUiControl hostControl)
     {
-        TargetProgress = Math.Clamp(progress, 0f, 1f);
+        _hostControl = hostControl;
+        if (float.TryParse(hostControl.GetProperty("progress"), CultureInfo.InvariantCulture, out float initial))
+        {
+            TargetProgress = Math.Clamp(initial, 0f, 1f);
+            CurrentProgress = TargetProgress;
+        }
     }
 
-    public void PulseRipen(int stage)
+    public void OnPropertyChanged(string propertyName, string value)
     {
-        RipenPulses++;
-        TargetProgress = Math.Clamp(stage / 3f, 0f, 1f);
+        if (propertyName.Equals("progress", StringComparison.OrdinalIgnoreCase) &&
+            float.TryParse(value, CultureInfo.InvariantCulture, out float parsed))
+        {
+            TargetProgress = Math.Clamp(parsed, 0f, 1f);
+        }
+        else if (propertyName.Equals("ripen_stage", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, CultureInfo.InvariantCulture, out int stage))
+        {
+            RipenPulses++;
+            TargetProgress = Math.Clamp(stage / 3f, 0f, 1f);
+        }
     }
 
-    public void Advance(float deltaSeconds)
+    public void OnFrame(float deltaSeconds)
     {
-        if (deltaSeconds <= 0f) return;
+        if (deltaSeconds <= 0f)
+            return;
+
         float diff = TargetProgress - CurrentProgress;
         if (MathF.Abs(diff) < 0.001f)
         {
             CurrentProgress = TargetProgress;
-            return;
         }
-        CurrentProgress += diff * MathF.Min(1f, deltaSeconds * 6f);
+        else
+        {
+            CurrentProgress += diff * MathF.Min(1f, deltaSeconds * 6f);
+        }
+
+        _hostControl?.SetProperty("rendered_progress", CurrentProgress.ToString("0.000", CultureInfo.InvariantCulture));
+    }
+
+    public void OnDestroy()
+    {
+        _hostControl = null;
     }
 }
 
@@ -46,14 +74,18 @@ public sealed class GrowthGauge : ICustomUiControl
 /// </summary>
 public sealed class GardenRuleset : IClientRuleset
 {
-    public uint RulesetId => GardenProtocol.GardenRulesetId;
+    public byte RulesetId => GardenProtocol.GardenRulesetId;
     public string Name => "HarvestGardenRuleset";
     public int UpdatesReceived { get; private set; }
+    public int AreaEntries { get; private set; }
 
-    public void OnRulesetUpdate(ReadOnlySpan<byte> payload)
-    {
-        UpdatesReceived++;
-    }
+    public void OnAreaEntered(AreaEventArgs area) => AreaEntries++;
+
+    public void OnRulesetUpdate(ReadOnlySpan<byte> payload) => UpdatesReceived++;
+
+    public void OnFrame(float deltaSeconds) { }
+
+    public void OnAreaLeft() { }
 }
 
 /// <summary>
@@ -61,26 +93,27 @@ public sealed class GardenRuleset : IClientRuleset
 /// Demonstrates:
 /// - Custom UI control registration (<see cref="GrowthGauge"/>)
 /// - Custom GEAL built-in registration (<c>GardenRipen</c>)
-/// - Custom ruleset &amp; opcode registration
+/// - Custom ruleset (<see cref="GardenRuleset"/>) &amp; opcode handler registration
+/// - Append-only content registry declarations (<c>WildSeed</c> + <c>Plot.ot</c>)
 /// - Loading custom <c>.ui</c> layout and binding <c>Button</c>, <c>TextBox</c>, <c>CheckBox</c>, <c>Label</c>
-/// - Typed network messaging over <c>mod.Net</c>
+/// - Typed network messaging over <c>context.Net</c>
 /// - Per-frame animation ticking via <c>game.Frame</c>
 /// </summary>
 public sealed class GardenClientMod : IClientMod
 {
     private IClientContext? _context;
     private IUiWindow? _window;
-    private readonly GrowthGauge _gauge = new();
     private int _frameCount;
+    private int _ripenCalls;
 
     public IUiWindow? Window => _window;
-    public GrowthGauge Gauge => _gauge;
     public int FrameCount => _frameCount;
+    public int RipenCalls => _ripenCalls;
     public GardenStateSnapshot? LastSnapshot { get; private set; }
-    public int RipenCalls { get; private set; }
 
     public void Load(IClientContext context)
     {
+        ArgumentNullException.ThrowIfNull(context);
         _context = context;
         var game = context.Game;
 
@@ -91,31 +124,35 @@ public sealed class GardenClientMod : IClientMod
         context.TrackDisposable(game.GealBuiltins.Register(GardenProtocol.GealRipenBuiltin, (objectId, args) =>
         {
             int stage = args.Count > 0 ? args.Int(0) : 1;
-            RipenCalls++;
-            _gauge.PulseRipen(stage);
+            _ripenCalls++;
+            if (_window?.Find("growth_gauge") is { } gauge)
+            {
+                gauge.SetProperty("ripen_stage", stage.ToString(CultureInfo.InvariantCulture));
+            }
             context.Logger.Info($"GEAL GardenRipen triggered on object 0x{objectId:X} (stage={stage}).");
             return GealValue.FromInt(stage);
         }));
 
-        // 3. Register per-area client ruleset and custom opcodes
-        context.TrackDisposable(game.Rulesets.Register(new GardenRuleset()));
-        context.TrackDisposable(game.Opcodes.Register(GardenProtocol.OpcodeSyncState, payload =>
-        {
-            context.Logger.Debug($"Received raw GardenSyncState opcode ({payload.Length} bytes).");
-        }));
+        // 3. Register per-area client ruleset and custom opcode handler
+        context.TrackDisposable(game.Rulesets.Register<GardenRuleset>());
+        context.TrackDisposable(game.Opcodes.RegisterHandler(
+            GardenProtocol.OpcodeSyncState,
+            payload => context.Logger.Debug($"Received raw GardenSyncState opcode ({payload.Length} bytes)."),
+            GardenProtocol.ModId));
 
-        // 4. Register content declarations (ItemBase + MiscObject Plot)
-        game.Content.RegisterItemBase(new ItemBaseDeclaration(
-            "Metadata/Items/Mods/Garden/WildSeed",
-            "Metadata/Items/Currency/StackableCurrency",
-            "StackableCurrency",
-            "Wild Seed",
-            "Art/2DItems/Mods/Garden/WildSeed.dds"));
+        // 4. Register append-only content declarations (ItemBase + MiscObject Plot)
+        context.TrackDisposable(game.Content.DeclareItemBase(new ItemBaseDeclaration(
+            MetadataPath: "Metadata/Items/Mods/Garden/WildSeed",
+            Name: "Wild Seed",
+            InheritsFrom: "Metadata/Items/Currency/StackableCurrency",
+            ItemClass: "StackableCurrency",
+            ArtPath: "Art/2DItems/Mods/Garden/WildSeed.dds",
+            StackSize: 20)));
 
-        game.Content.RegisterWorldObject(new WorldObjectDeclaration(
-            GardenProtocol.PlotObjectPath,
-            "MiscObjects",
-            "Harvest Garden Plot"));
+        context.TrackDisposable(game.Content.DeclareWorldObject(new WorldObjectDeclaration(
+            MetadataPath: GardenProtocol.PlotObjectPath,
+            CarrierTable: "MiscObjects",
+            ScriptPath: GardenProtocol.PlotObjectPath)));
 
         // 5. Subscribe to server-pushed garden messages
         context.TrackDisposable(context.Net.On<GardenOpenWindowCommand>(cmd =>
@@ -144,7 +181,10 @@ public sealed class GardenClientMod : IClientMod
     private void OnFrame(float dt)
     {
         _frameCount++;
-        _gauge.Advance(dt);
+        if (_window?.Find("growth_gauge") is { } gauge)
+        {
+            gauge.SetProperty("frame_ticks", _frameCount.ToString(CultureInfo.InvariantCulture));
+        }
     }
 
     private void EnsureWindowLoaded()
@@ -177,14 +217,18 @@ public sealed class GardenClientMod : IClientMod
     private void ApplySnapshot(GardenStateSnapshot snapshot)
     {
         LastSnapshot = snapshot;
-        _gauge.SetTarget(snapshot.AverageGrowthProgress);
-
         EnsureWindowLoaded();
-        if (_window is null) return;
+        if (_window is null)
+            return;
 
         _window.Visible = true;
         _window.Require<ILabel>("lifeforce_label").Text =
             $"Condensed Lifeforce: {snapshot.Lifeforce} (Harvested: {snapshot.TotalHarvested})";
         _window.Require<ILabel>("status_label").Text = snapshot.StatusMessage;
+
+        if (_window.Find("growth_gauge") is { } gauge)
+        {
+            gauge.SetProperty("progress", snapshot.AverageGrowthProgress.ToString("0.000", CultureInfo.InvariantCulture));
+        }
     }
 }

@@ -123,8 +123,7 @@ public sealed class WaypointExtenderManager
         bool hostPresent = Directory.Exists(hostDir) && Directory.EnumerateFiles(hostDir, "*", SearchOption.AllDirectories).Any();
 
         var state = ReadState(localExileRoot);
-        var installer = new WaypointModInstaller();
-        int clientModCount = installer.ReadLedger(localExileRoot).Mods.Count(m => m.ClientDir is not null);
+        int clientModCount = WaypointModInstaller.ReadLedger(localExileRoot).Mods.Count(m => m.ClientDir is not null);
 
         string? actualShimHash = shimPresent ? DualModPackageValidator.ComputeFileSha256(shimPath) : null;
         if (state is not null && actualShimHash is not null &&
@@ -373,7 +372,7 @@ public sealed class WaypointExtenderManager
         return new(true, "Removed NativeMods extender cleanly.", finalStatus);
     }
 
-    public ExtenderStateRecord? ReadState(string localExileRoot)
+    public static ExtenderStateRecord? ReadState(string localExileRoot)
     {
         string path = GetStateFilePath(localExileRoot);
         if (!File.Exists(path)) return null;

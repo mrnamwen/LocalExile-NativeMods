@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.HarvestGarden.Client</RootNamespace>
+    <AssemblyName>harvest-garden.Client</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Per 11-client-sdk.md §1, Shared/ message records compile directly into harvest-garden.Client.dll
+         so ClientModLoader can load it as a single self-contained DLL in a collectible AssemblyLoadContext. -->
+    <Compile Include="..\Shared\*.cs" Link="Shared\%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+  </ItemGroup>
+</Project>

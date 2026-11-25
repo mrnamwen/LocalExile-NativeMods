@@ -205,23 +205,49 @@ public static class DualModPackageValidator
         if (manifest.NativeClient is not { } nc)
             return new ValidationReport(diagnostics);
 
-        // Check client assembly & SHA-256 if present
-        if (!string.IsNullOrWhiteSpace(nc.Assembly))
+        // Check client assembly & SHA-256 if declared
+        if (!string.IsNullOrWhiteSpace(nc.AssemblySha256))
         {
-            string asmPath = Path.Combine(packageDir, nc.Assembly);
-            if (File.Exists(asmPath) && !string.IsNullOrWhiteSpace(nc.AssemblySha256))
+            if (string.IsNullOrWhiteSpace(nc.Assembly))
             {
-                VerifyFileHash(asmPath, nc.AssemblySha256, nc.Assembly, "INT001", diagnostics);
+                diagnostics.Add(new(DiagnosticSeverity.Error, "INT001",
+                    "nativeClient.assemblySha256 is declared, but nativeClient.assembly is not specified."));
+            }
+            else
+            {
+                string asmPath = Path.Combine(packageDir, nc.Assembly);
+                if (!File.Exists(asmPath))
+                {
+                    diagnostics.Add(new(DiagnosticSeverity.Error, "INT001",
+                        $"Declared client assembly '{nc.Assembly}' (with assemblySha256) is missing from package.", nc.Assembly));
+                }
+                else
+                {
+                    VerifyFileHash(asmPath, nc.AssemblySha256, nc.Assembly, "INT001", diagnostics);
+                }
             }
         }
 
-        // Check bundle SHA-256 if present
-        if (!string.IsNullOrWhiteSpace(nc.BundleFile))
+        // Check bundle SHA-256 if declared
+        if (!string.IsNullOrWhiteSpace(nc.BundleSha256))
         {
-            string bundlePath = Path.Combine(packageDir, nc.BundleFile);
-            if (File.Exists(bundlePath) && !string.IsNullOrWhiteSpace(nc.BundleSha256))
+            if (string.IsNullOrWhiteSpace(nc.BundleFile))
             {
-                VerifyFileHash(bundlePath, nc.BundleSha256, nc.BundleFile, "INT002", diagnostics);
+                diagnostics.Add(new(DiagnosticSeverity.Error, "INT002",
+                    "nativeClient.bundleSha256 is declared, but nativeClient.bundleFile is not specified."));
+            }
+            else
+            {
+                string bundlePath = Path.Combine(packageDir, nc.BundleFile);
+                if (!File.Exists(bundlePath))
+                {
+                    diagnostics.Add(new(DiagnosticSeverity.Error, "INT002",
+                        $"Declared client bundle '{nc.BundleFile}' (with bundleSha256) is missing from package.", nc.BundleFile));
+                }
+                else
+                {
+                    VerifyFileHash(bundlePath, nc.BundleSha256, nc.BundleFile, "INT002", diagnostics);
+                }
             }
         }
 

@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
@@ -22,8 +24,8 @@ public sealed record InstallOptions
     /// <summary>When false, cross-mod conflicts abort installation rather than warning.</summary>
     public bool AllowConflicts { get; init; }
 
-    /// <summary>When false, mods requesting <c>rawAccess: true</c> are blocked until explicitly approved by the player.</summary>
-    public bool AllowRawAccess { get; init; } = true;
+    /// <summary>When false (the safe default), mods requesting <c>rawAccess: true</c> are blocked until explicitly approved by the player.</summary>
+    public bool AllowRawAccess { get; init; }
 
     /// <summary>Whether to enable the mod in <c>Mods/Binaries/mod-state.txt</c> upon install (null uses manifest default).</summary>
     public bool? EnableOnInstall { get; init; }
@@ -92,17 +94,18 @@ public sealed record InstallAuditReport(
 {
     public string ToHumanReadableSummary()
     {
+        var inv = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
-        sb.AppendLine($"=== NativeMods Install Audit: {ModName} ({ModId} v{Version}) ===");
-        sb.AppendLine($"Outcome: {(Succeeded ? (IsUpgrade ? $"UPGRADED (from v{PreviousVersion})" : "INSTALLED") : $"BLOCKED - {FailureReason}")}");
-        sb.AppendLine($"Native Client Half: {(HasNativeClient ? "Yes" : "No (server-only)")}");
-        sb.AppendLine($"Raw Memory/Hook Access: {(RawAccessRequested ? $"YES — {RawAccessJustification}" : "No")}");
+        sb.AppendLine(inv, $"=== NativeMods Install Audit: {ModName} ({ModId} v{Version}) ===");
+        sb.AppendLine(inv, $"Outcome: {(Succeeded ? (IsUpgrade ? $"UPGRADED (from v{PreviousVersion})" : "INSTALLED") : $"BLOCKED - {FailureReason}")}");
+        sb.AppendLine(inv, $"Native Client Half: {(HasNativeClient ? "Yes" : "No (server-only)")}");
+        sb.AppendLine(inv, $"Raw Memory/Hook Access: {(RawAccessRequested ? $"YES — {RawAccessJustification}" : "No")}");
 
         if (ReplacedStockPaths.Count > 0)
         {
-            sb.AppendLine($"Replaced Stock Client Paths ({ReplacedStockPaths.Count}):");
+            sb.AppendLine(inv, $"Replaced Stock Client Paths ({ReplacedStockPaths.Count}):");
             foreach (string path in ReplacedStockPaths)
-                sb.AppendLine($"  [OVERRIDE] {path}");
+                sb.AppendLine(inv, $"  [OVERRIDE] {path}");
         }
         else
         {
@@ -110,21 +113,21 @@ public sealed record InstallAuditReport(
         }
 
         if (AddedOverlayPaths.Count > 0)
-            sb.AppendLine($"Added Namespaced Overlays: {AddedOverlayPaths.Count}");
+            sb.AppendLine(inv, $"Added Namespaced Overlays: {AddedOverlayPaths.Count}");
         if (CustomOpcodes.Count > 0)
-            sb.AppendLine($"Custom Opcodes: {string.Join(", ", CustomOpcodes.Select(o => $"{o.Name} (0x{o.Id:X4}, {o.Direction})"))}");
+            sb.AppendLine(inv, $"Custom Opcodes: {string.Join(", ", CustomOpcodes.Select(o => $"{o.Name} (0x{o.Id:X4}, {o.Direction})"))}");
         if (GealBuiltins.Count > 0)
-            sb.AppendLine($"GEAL Built-ins: {string.Join(", ", GealBuiltins)}");
+            sb.AppendLine(inv, $"GEAL Built-ins: {string.Join(", ", GealBuiltins)}");
         if (CustomControls.Count > 0)
-            sb.AppendLine($"Custom UI Controls: {string.Join(", ", CustomControls)}");
+            sb.AppendLine(inv, $"Custom UI Controls: {string.Join(", ", CustomControls)}");
         if (ContentRegistries.Count > 0)
-            sb.AppendLine($"Content Registries: {string.Join(", ", ContentRegistries.Select(r => $"{r.Table}:{r.EntryId} ({r.Mode})"))}");
+            sb.AppendLine(inv, $"Content Registries: {string.Join(", ", ContentRegistries.Select(r => $"{r.Table}:{r.EntryId} ({r.Mode})"))}");
 
         if (Conflicts.Count > 0)
         {
-            sb.AppendLine($"Cross-Mod Conflicts ({Conflicts.Count}):");
+            sb.AppendLine(inv, $"Cross-Mod Conflicts ({Conflicts.Count}):");
             foreach (var c in Conflicts)
-                sb.AppendLine($"  [{c.Code}] {c.Message}");
+                sb.AppendLine(inv, $"  [{c.Code}] {c.Message}");
         }
         else
         {
@@ -133,19 +136,19 @@ public sealed record InstallAuditReport(
 
         int errors = Validation.Errors.Count();
         int warnings = Validation.Warnings.Count();
-        sb.AppendLine($"Validation: {errors} error(s), {warnings} warning(s)");
+        sb.AppendLine(inv, $"Validation: {errors} error(s), {warnings} warning(s)");
         foreach (var diag in Validation.Diagnostics.Where(d => d.Severity != DiagnosticSeverity.Info))
         {
             string loc = diag.FilePath is not null ? $" ({diag.FilePath}{(diag.Line is not null ? $":{diag.Line}" : "")})" : "";
-            sb.AppendLine($"  [{diag.Severity}] {diag.Code}{loc}: {diag.Message}");
+            sb.AppendLine(inv, $"  [{diag.Severity}] {diag.Code}{loc}: {diag.Message}");
         }
 
         if (Succeeded)
         {
-            sb.AppendLine($"Deployed Files: {DeployedFiles.Count}");
-            if (ServerTargetDir is not null) sb.AppendLine($"  Server Dir: {ServerTargetDir}");
-            if (ClientTargetDir is not null) sb.AppendLine($"  Client Dir: {ClientTargetDir}");
-            if (BundleFile is not null) sb.AppendLine($"  Packed Bundle: {BundleFile}");
+            sb.AppendLine(inv, $"Deployed Files: {DeployedFiles.Count}");
+            if (ServerTargetDir is not null) sb.AppendLine(inv, $"  Server Dir: {ServerTargetDir}");
+            if (ClientTargetDir is not null) sb.AppendLine(inv, $"  Client Dir: {ClientTargetDir}");
+            if (BundleFile is not null) sb.AppendLine(inv, $"  Packed Bundle: {BundleFile}");
         }
 
         return sb.ToString();
@@ -180,7 +183,7 @@ public sealed class WaypointModInstaller
         Path.Combine(GetClientModsRoot(localExileRoot), LedgerFileName);
 
     /// <summary>Reads the deployment ledger, returning an empty ledger when none exists yet.</summary>
-    public DeploymentLedger ReadLedger(string localExileRoot)
+    public static DeploymentLedger ReadLedger(string localExileRoot)
     {
         string path = GetLedgerPath(localExileRoot);
         if (!File.Exists(path))
@@ -194,6 +197,7 @@ public sealed class WaypointModInstaller
     /// <summary>
     /// Audits a candidate dual-side mod package directory against the target LocalExile checkout without modifying disk.
     /// </summary>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Uniform instance service API for Waypoint DI/composition.")]
     public InstallAuditReport AuditPackage(
         string packageDir,
         string localExileRoot,
@@ -471,6 +475,7 @@ public sealed class WaypointModInstaller
     /// Cleanly uninstalls a dual-side mod from both <c>Mods/Binaries/&lt;id&gt;/</c> and <c>Mods/Client/&lt;id&gt;/</c>,
     /// removes it from <c>mod-state.txt</c> and the deployment ledger, and never touches stock client files.
     /// </summary>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Uniform instance service API for Waypoint DI/composition.")]
     public UninstallResult Uninstall(string modId, string localExileRoot)
     {
         if (!DualModManifest.IsValidId(modId))

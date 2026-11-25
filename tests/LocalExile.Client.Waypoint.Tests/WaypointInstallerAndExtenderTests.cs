@@ -115,7 +115,7 @@ public sealed class WaypointInstallerAndExtenderTests
             Assert.True(ModBundlePacker.Verify(deployedBundle, deployedManifest).IsValid);
 
             // Verify ledger recorded the mod
-            var ledgerAfterV1 = installer.ReadLedger(serverRoot);
+            var ledgerAfterV1 = WaypointModInstaller.ReadLedger(serverRoot);
             Assert.Single(ledgerAfterV1.Mods);
             Assert.Equal("1.0.0", ledgerAfterV1.Mods[0].Version);
 
@@ -162,7 +162,7 @@ public sealed class WaypointInstallerAndExtenderTests
             Assert.True(uninstall.RemovedClientDir);
             Assert.False(Directory.Exists(serverModDir));
             Assert.False(Directory.Exists(clientModDir));
-            Assert.Empty(installer.ReadLedger(serverRoot).Mods);
+            Assert.Empty(WaypointModInstaller.ReadLedger(serverRoot).Mods);
             Assert.False(WaypointModInstaller.ReadModStateChoices(Path.Combine(serverRoot, "Mods", "Binaries")).ContainsKey("harvest-garden"));
 
             // Stock client files MUST remain byte-for-byte untouched!
@@ -206,12 +206,13 @@ public sealed class WaypointInstallerAndExtenderTests
 
             var installer = new WaypointModInstaller();
 
-            // Blocked when AllowRawAccess = false
-            var blocked = installer.InstallFromZip(zipPath, serverRoot, new InstallOptions
+            // Blocked by default safe posture (InstallOptions.AllowRawAccess defaults to false)
+            var defaultOptions = new InstallOptions
             {
-                CurrentSdkVersion = SemVer.Parse("0.1.0-poc"),
-                AllowRawAccess = false
-            });
+                CurrentSdkVersion = SemVer.Parse("0.1.0-poc")
+            };
+            Assert.False(defaultOptions.AllowRawAccess);
+            var blocked = installer.InstallFromZip(zipPath, serverRoot, defaultOptions);
             Assert.False(blocked.Succeeded);
             Assert.True(blocked.RawAccessRequested);
             Assert.Contains("Raw Memory/Hook Access: YES", blocked.ToHumanReadableSummary());

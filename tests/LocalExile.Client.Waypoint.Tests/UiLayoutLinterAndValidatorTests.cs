@@ -203,6 +203,42 @@ begin Frame
         }
     }
 
+    [Fact]
+    public void ValidatePackageDirectory_EmitsInt001AndInt002WhenHashedAssemblyOrBundleIsMissing()
+    {
+        string temp = Path.Combine(Path.GetTempPath(), "nm-missing-hash-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+        try
+        {
+            var manifest = new DualModManifest
+            {
+                Id = "missing-bins",
+                Name = "Missing Binaries",
+                Version = "1.0.0",
+                CompatibleClientVersions = ["0.5.2-beta"],
+                NativeClient = new NativeClientManifest
+                {
+                    SdkVersionRange = ">=0.1.0-poc <2.0.0",
+                    Assembly = "missing-bins.Client.dll",
+                    AssemblySha256 = new string('b', 64),
+                    BundleFile = "missing-bins-1234567890ab.bundle.bin",
+                    BundleSha256 = new string('c', 64)
+                }
+            };
+            File.WriteAllText(Path.Combine(temp, "mod.json"), manifest.ToJson());
+
+            var report = DualModPackageValidator.ValidatePackageDirectory(temp, SemVer.Parse("0.1.0-poc"));
+
+            Assert.False(report.IsValid);
+            Assert.Contains(report.Errors, d => d.Code == "INT001");
+            Assert.Contains(report.Errors, d => d.Code == "INT002");
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
     private static string FindRepoRoot()
     {
         string? dir = AppContext.BaseDirectory;
