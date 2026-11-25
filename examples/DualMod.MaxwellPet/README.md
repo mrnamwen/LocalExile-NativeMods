@@ -33,6 +33,18 @@ Stock 3.29.3d table row counts (`LocalExile/data/client.db`):
   - `Metadata/UI/Mods/Maxwell/MaxwellPanel.ui` (linted 3.29.3d `.ui` layout using 100% stock registered controls).
   - `Metadata/Pet/Mods/Maxwell/MaxwellPet.ot` (pet object type definition).
 
+## One-Command Live Desktop Launch
+
+Launch the real 3.29.3d Path of Exile client + LocalExile Gateway with NativeMods and Maxwell right on your live desktop (full resolution, real audio, automatic build if missing, and automatic clean teardown when PoE closes or on `Ctrl+C`):
+
+```bash
+./scripts/launch-desktop.sh
+```
+
+- Opens on your native Hyprland/Wayland/X11 session and default audio sink so you can equip **Maxwell the Cat Pet** via Cosmetics (`K` -> Pet Slot 1), open `/maxwell panel`, and hear Weebl's *Stock Market*.
+- By default, `LocalExile/data/characters.db*` is snapshotted and restored on exit so custom Pet MTX slots never leak into vanilla LocalExile saves (pass `--keep-save` to persist changes).
+- Useful flags: `--mode import-patch`, `--rebuild`, `--trace-files`, `--localexile-dir <path>`, `--dry-run`.
+
 ## Building Maxwell Assets & Installing via Waypoint
 
 1. **Build the native Win64 shim & managed projects:**
