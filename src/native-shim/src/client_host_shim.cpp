@@ -6,6 +6,8 @@
 #include "frame_queue.hpp"
 #include "game_allocator.hpp"
 #include "hook_engine.hpp"
+#include "live_audio.hpp"
+#include "live_engine_hooks.hpp"
 #include "overlay_and_channels.hpp"
 #include "shim_logger.hpp"
 
@@ -37,6 +39,8 @@ struct ShimState {
     GameAllocator       allocator;
     FrameQueue          frame_queue;
     OverlayAndChannels  channels;
+    LiveAudioManager    audio;
+    LiveEngineHooks     live_hooks;
     CoreClrBootstrapper clr;
 
     nm_hook_handle_t    frame_hook_handle = NM_HOOK_INVALID;
@@ -75,6 +79,21 @@ const nm_abi_table_t kAbiTable = {
     &nm_register_chat_channel_handler,
     &nm_unregister_chat_channel_handler,
     &nm_send_chat_line,
+    &nm_register_file_overlay_dir,
+    &nm_unregister_file_overlay_dir,
+    &nm_has_file_overlay,
+    &nm_free_file_overlay_buffer,
+    &nm_audio_play_ogg,
+    &nm_audio_play_event,
+    &nm_audio_stop,
+    &nm_audio_set_volume,
+    &nm_audio_is_playing,
+    &nm_ui_get_root,
+    &nm_ui_create_window,
+    &nm_ui_find_child,
+    &nm_ui_set_visible,
+    &nm_ui_set_text,
+    &nm_ui_subscribe_click,
 };
 
 #if defined(_WIN32)
@@ -194,6 +213,7 @@ extern "C" void* NM_CALL on_live_game_frame_tick() {
     }
 
     (void)nm_drain_main_thread_queue(dt, 64);
+    state().audio.tick_update();
 
     void* tramp = g_frame_trampoline.load(std::memory_order_acquire);
     while (!tramp) {
@@ -284,6 +304,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
 
+    s.live_hooks.reset(&s.hooks);
     s.hooks.remove_all();
     s.frame_hook_handle = NM_HOOK_INVALID;
     if (s.frame_stub_page) {
@@ -296,6 +317,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     g_auto_clr_triggered.store(false, std::memory_order_release);
 #endif
     s.frame_queue.clear();
+    s.audio.reset();
     s.channels.clear();
     s.allocator.reset();
     s.clr.reset();
@@ -316,9 +338,12 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     // Wire game allocator function pointers ONLY on real Win64 game builds (not synthetic tests).
 #if defined(_WIN32)
     ensure_exception_wall_installed();
+    const std::string dll_dir = wide_to_utf8(g_dll_dir_w);
+    s.audio.configure(dll_dir, image_base, build_id, &s.channels);
     if (build_id != NM_BUILD_SYNTHETIC) {
         const EmbeddedSymbol* alloc_sym = find_symbol(build_id, "allocator.alloc");
         const EmbeddedSymbol* free_sym  = find_symbol(build_id, "allocator.free");
+        const EmbeddedSymbol* ctr_sym   = find_symbol(build_id, "allocator.global_byte_counter");
         if (alloc_sym && free_sym && alloc_sym->rva != 0 && free_sym->rva != 0) {
             const uint64_t alloc_addr = image_base + alloc_sym->rva;
             const uint64_t free_addr  = image_base + free_sym->rva;
@@ -328,13 +353,20 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
                 const bool free_ok  = !free_sym->expected_bytes_hex ||
                                       verify_memory_bytes(free_addr, free_sym->expected_bytes_hex) == NM_OK;
                 if (alloc_ok && free_ok) {
+                    volatile int64_t* byte_ctr = nullptr;
+                    if (ctr_sym && ctr_sym->rva != 0 && is_memory_readable(image_base + ctr_sym->rva, 8)) {
+                        byte_ctr = reinterpret_cast<volatile int64_t*>(static_cast<uintptr_t>(image_base + ctr_sym->rva));
+                    }
                     s.allocator.configure(
                         reinterpret_cast<GameAllocator::RawAllocFn>(static_cast<uintptr_t>(alloc_addr)),
-                        reinterpret_cast<GameAllocator::RawFreeFn>(static_cast<uintptr_t>(free_addr)));
+                        reinterpret_cast<GameAllocator::RawFreeFn>(static_cast<uintptr_t>(free_addr)),
+                        byte_ctr);
                 }
             }
         }
     }
+#else
+    s.audio.configure(std::string{}, image_base, build_id, &s.channels);
 #endif
 
     s.initialized = true;
@@ -350,6 +382,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
 NM_API nm_status_t NM_CALL nm_shutdown(void) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
+    s.live_hooks.reset(&s.hooks);
     s.hooks.remove_all();
     s.frame_hook_handle = NM_HOOK_INVALID;
     if (s.frame_stub_page) {
@@ -360,6 +393,7 @@ NM_API nm_status_t NM_CALL nm_shutdown(void) {
     g_frame_trampoline.store(nullptr, std::memory_order_release);
 #endif
     s.frame_queue.clear();
+    s.audio.reset();
     s.channels.clear();
     s.allocator.reset();
     s.clr.reset();
@@ -549,6 +583,92 @@ NM_API nm_status_t NM_CALL nm_resolve_file_overlay(
     return state().channels.resolve_file_overlay(virtual_path_utf8, out_data, out_size);
 }
 
+NM_API nm_status_t NM_CALL nm_register_file_overlay_dir(const char* root_dir_utf8, uint64_t* out_token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.register_file_overlay_dir(root_dir_utf8, out_token);
+}
+
+NM_API nm_status_t NM_CALL nm_unregister_file_overlay_dir(uint64_t token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.unregister_file_overlay_dir(token);
+}
+
+NM_API nm_status_t NM_CALL nm_has_file_overlay(const char* virtual_path_utf8, size_t* out_size) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.has_file_overlay(virtual_path_utf8, out_size);
+}
+
+NM_API nm_status_t NM_CALL nm_free_file_overlay_buffer(uint8_t* data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.free_file_overlay_buffer(data);
+}
+
+NM_API nm_status_t NM_CALL nm_audio_play_ogg(
+    const char* virtual_or_disk_path_utf8,
+    float       volume,
+    int32_t     loop,
+    int32_t*    out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().audio.play_ogg(virtual_or_disk_path_utf8, volume, loop, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_audio_play_event(
+    const char* fmod_event_utf8,
+    float       volume,
+    int32_t*    out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().audio.play_event(fmod_event_utf8, volume, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_audio_stop(int32_t channel_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().audio.stop(channel_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_audio_set_volume(int32_t channel_handle, float volume) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().audio.set_volume(channel_handle, volume);
+}
+
+NM_API nm_status_t NM_CALL nm_audio_is_playing(int32_t channel_handle, int32_t* out_playing) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().audio.is_playing(channel_handle, out_playing);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_root(void** out_root) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_get_root(out_root);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_create_window(const char* virtual_path_utf8, void** out_control) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_create_window(virtual_path_utf8, out_control);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_find_child(void* parent_control, const char* dot_path_utf8, void** out_child) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_find_child(parent_control, dot_path_utf8, out_child);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_visible(void* control, int32_t visible) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_set_visible(control, visible);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_text(void* control, const char* text_utf8, int32_t is_button) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_set_text(control, text_utf8, is_button);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_subscribe_click(
+    void*                  button_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_subscribe_click(button_control, cb, user_data, out_token);
+}
+
 NM_API nm_status_t NM_CALL nm_register_ruleset_handler(
     uint32_t                 ruleset_id,
     nm_ruleset_rx_callback_t cb,
@@ -568,7 +688,11 @@ NM_API nm_status_t NM_CALL nm_send_ruleset_packet(
     const uint8_t* payload,
     uint32_t       length) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
-    return state().channels.send_ruleset_packet(ruleset_id, payload, length);
+    const nm_status_t st = state().channels.send_ruleset_packet(ruleset_id, payload, length);
+    if (st == NM_ERR_NOT_SUPPORTED_ON_PLATFORM) {
+        return state().live_hooks.send_live_ruleset_packet(ruleset_id, payload, length);
+    }
+    return st;
 }
 
 NM_API nm_status_t NM_CALL nm_register_chat_channel_handler(
@@ -586,7 +710,11 @@ NM_API nm_status_t NM_CALL nm_unregister_chat_channel_handler(uint64_t token) {
 
 NM_API nm_status_t NM_CALL nm_send_chat_line(const char* text_utf8) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
-    return state().channels.send_chat_line(text_utf8);
+    const nm_status_t st = state().channels.send_chat_line(text_utf8);
+    if (st == NM_ERR_NOT_SUPPORTED_ON_PLATFORM) {
+        return state().live_hooks.send_live_chat_line(text_utf8);
+    }
+    return st;
 }
 
 NM_API nm_status_t NM_CALL nm_dispatch_ruleset_rx(
@@ -723,6 +851,15 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
     if (init_st != NM_OK) {
         logger_logf("ERROR", "nm_initialize_for_build failed (%d)", static_cast<int>(init_st));
         return 0;
+    }
+
+    // Register startup disk overlay directories (NATIVEMODS_OVERLAY_DIR + Mods/Client/*/{client,files})
+    // and immediately arm all live FileSystem, UI-root, Chat, and Ruleset 0x2c9 hooks BEFORE CoreCLR
+    // boots so early .datc64/.ot/.ao/.ui reads are intercepted from millisecond 0!
+    {
+        auto& s = state();
+        s.live_hooks.register_startup_disk_overlays(dll_dir, s.channels);
+        s.live_hooks.install_live_hooks(detected_build, base, s.hooks, s.allocator, s.channels);
     }
 
     // Install register-preserving 15-byte prologue hook at frame.state_stack_pass_a (0x1528f40)

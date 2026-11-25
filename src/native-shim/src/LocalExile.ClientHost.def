@@ -20,6 +20,21 @@ EXPORTS
     nm_register_file_overlay
     nm_unregister_file_overlay
     nm_resolve_file_overlay
+    nm_register_file_overlay_dir
+    nm_unregister_file_overlay_dir
+    nm_has_file_overlay
+    nm_free_file_overlay_buffer
+    nm_audio_play_ogg
+    nm_audio_play_event
+    nm_audio_stop
+    nm_audio_set_volume
+    nm_audio_is_playing
+    nm_ui_get_root
+    nm_ui_create_window
+    nm_ui_find_child
+    nm_ui_set_visible
+    nm_ui_set_text
+    nm_ui_subscribe_click
     nm_register_ruleset_handler
     nm_unregister_ruleset_handler
     nm_send_ruleset_packet

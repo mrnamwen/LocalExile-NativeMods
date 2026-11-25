@@ -2,6 +2,7 @@
 #include "address_table.hpp"
 #include "exception_wall.hpp"
 #include "hook_engine.hpp"
+#include "live_engine_hooks.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -9,6 +10,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -431,15 +434,63 @@ int test_file_overlay_and_channels() {
 }
 
 int test_prologue_length_and_sha256() {
-    // Real 3.29.3d StateStack::PassA (0x1528f40) prologue: 5 + 5 + 5 = 15 bytes before push rdi (0x57).
-    const uint8_t pass_a_prologue[] = {
-        0x48, 0x89, 0x5C, 0x24, 0x10, // mov [rsp+0x10], rbx (5B)
-        0x48, 0x89, 0x6C, 0x24, 0x18, // mov [rsp+0x18], rbp (5B)
-        0x48, 0x89, 0x74, 0x24, 0x20, // mov [rsp+0x20], rsi (5B)
-        0x57,                         // push rdi            (1B)
-        0x48, 0x83, 0xEC, 0x50,       // sub rsp, 0x50       (4B)
+    // Verify whole-instruction stolen lengths (>= 14B, zero split instructions) on ALL 9 real 3.29.3d hook prologues!
+    // 1. frame.state_stack_pass_a (0x1528f40): 5 + 5 + 5 = 15 bytes
+    const uint8_t pass_a[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18,
+        0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xEC, 0x50,
     };
-    CHECK(nativemods::HookEngine::compute_stolen_length(pass_a_prologue, 14) == 15);
+    CHECK(nativemods::HookEngine::compute_stolen_length(pass_a, 14) == 15);
+
+    // 2. files.exists_query (0x0e55340): 5 + 1 + 7 + 3 = 16 bytes
+    const uint8_t fs_exists[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00,
+        0x48, 0x8B, 0xF9, 0x0F, 0x57, 0xC0,
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(fs_exists, 14) == 16);
+
+    // 3. files.size_query (0x0e557f0): 5 + 5 + 1 + 1 + 2 = 14 bytes
+    const uint8_t fs_size[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
+        0x55, 0x57, 0x41, 0x56, 0x48, 0x8D, 0x6C, 0x24, 0xB9,
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(fs_size, 14) == 14);
+
+    // 4. files.read_variant_2 (0x0e55aa0): 5 + 5 + 1 + 1 + 2 = 14 bytes
+    const uint8_t fs_range[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
+        0x55, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57,
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(fs_range, 14) == 14);
+
+    // 5. files.read_whole_file (0x0e564d0) & read_variant_5 (0x0e56af0): 5 + 5 + 1 + 1 + 1 + 2 = 15 bytes
+    const uint8_t fs_whole[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10,
+        0x55, 0x56, 0x57, 0x41, 0x56, 0x41, 0x57,
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(fs_whole, 14) == 15);
+
+    // 6. ui.control_load (0x18b08d0): 5 + 5 + 1 + 8 = 19 bytes
+    const uint8_t ui_load[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x7C, 0x24, 0x10,
+        0x55, 0x48, 0x8D, 0xAC, 0x24, 0xB0, 0xFE, 0xFF, 0xFF, 0x48, 0x81, 0xEC, 0x50, 0x02, 0x00, 0x00,
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(ui_load, 14) == 19);
+
+    // 7. network.chat_panel_listener (0x017a270): 5 + 5 + 1 + 1 + 2 = 14 bytes
+    const uint8_t chat_rx[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18,
+        0x55, 0x57, 0x41, 0x56, 0x48, 0x8D, 0x6C, 0x24, 0xB0,
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(chat_rx, 14) == 14);
+
+    // 8. rulesets.s2c_0x2c9_filter (0x15a6b50): 5 + 1 + 1 + 1 + 2 + 2 + 2 = 14 bytes (stops cleanly before 41 57 push r15)
+    const uint8_t rs_filter[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x55, 0x56, 0x57,
+        0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+        0x48, 0x8D, 0x6C, 0x24, 0xD9,
+    };
+    CHECK(nativemods::HookEngine::compute_stolen_length(rs_filter, 14) == 14);
 
     // Self-contained SHA-256 test vectors (NIST FIPS 180-4)
     CHECK(nativemods::sha256_hex_bytes(nullptr, 0) ==
@@ -448,6 +499,97 @@ int test_prologue_length_and_sha256() {
     CHECK(nativemods::sha256_hex_bytes(abc, 3) ==
           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_disk_overlays_audio_and_wire_encoders() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // Create temp overlay directory with binary (.datc64) and text (.ot) files
+    namespace fs = std::filesystem;
+    const fs::path tmp_root = fs::temp_directory_path() / "nativemods_shim_overlay_test";
+    std::error_code ec;
+    fs::remove_all(tmp_root, ec);
+    fs::create_directories(tmp_root / "Data", ec);
+    fs::create_directories(tmp_root / "Metadata" / "Pet" / "Mods" / "Maxwell", ec);
+
+    const std::vector<uint8_t> dat_bytes = {0x04, 0x02, 0x00, 0x00, 0xBB, 0xBB, 0xBB, 0xBB};
+    {
+        std::ofstream ofs(tmp_root / "Data" / "Pet.datc64", std::ios::binary);
+        ofs.write(reinterpret_cast<const char*>(dat_bytes.data()), static_cast<std::streamsize>(dat_bytes.size()));
+    }
+    const std::string ot_text = "version 2\r\nextends \"Metadata/Pet/Pet\"\r\n";
+    {
+        std::ofstream ofs(tmp_root / "Metadata" / "Pet" / "Mods" / "Maxwell" / "MaxwellPet.ot", std::ios::binary);
+        ofs.write(ot_text.data(), static_cast<std::streamsize>(ot_text.size()));
+    }
+
+    uint64_t dir_tok = 0;
+    CHECK(nm_register_file_overlay_dir(tmp_root.string().c_str(), &dir_tok) == NM_OK);
+    CHECK(dir_tok != 0);
+
+    size_t sz = 0;
+    CHECK(nm_has_file_overlay("data\\pet.datc64", &sz) == NM_OK);
+    CHECK(sz == dat_bytes.size());
+    CHECK(nm_has_file_overlay("Metadata/Pet/Mods/Maxwell/MaxwellPet.ot", &sz) == NM_OK);
+    CHECK(sz == ot_text.size());
+    CHECK(nm_has_file_overlay("Data/DoesNotExist.datc64", &sz) == NM_ERR_SYMBOL_NOT_FOUND);
+    // Reject path traversal
+    CHECK(nm_has_file_overlay("../etc/passwd", &sz) == NM_ERR_SYMBOL_NOT_FOUND);
+
+    uint8_t* resolved = nullptr;
+    size_t resolved_sz = 0;
+    CHECK(nm_resolve_file_overlay("DATA/PET.DATC64", &resolved, &resolved_sz) == NM_OK);
+    CHECK(resolved != nullptr && resolved_sz == dat_bytes.size());
+    CHECK(std::memcmp(resolved, dat_bytes.data(), dat_bytes.size()) == 0);
+    CHECK(nm_free_file_overlay_buffer(resolved) == NM_OK);
+
+    CHECK(nm_unregister_file_overlay_dir(dir_tok) == NM_OK);
+    CHECK(nm_has_file_overlay("Data/Pet.datc64", &sz) == NM_ERR_SYMBOL_NOT_FOUND);
+    fs::remove_all(tmp_root, ec);
+
+    // Live audio C ABI lifecycle (looping OGG + volume + is_playing + stop + event)
+    int32_t handle = 0;
+    CHECK(nm_audio_play_ogg("Audio/Mods/Maxwell/stock_market.ogg", 0.75f, 1, &handle) == NM_OK);
+    CHECK(handle > 0);
+    int32_t playing = 0;
+    CHECK(nm_audio_is_playing(handle, &playing) == NM_OK);
+    CHECK(playing == 1);
+    CHECK(nm_audio_set_volume(handle, 0.4f) == NM_OK);
+    CHECK(nm_audio_stop(handle) == NM_OK);
+    CHECK(nm_audio_is_playing(handle, &playing) == NM_OK);
+    CHECK(playing == 0);
+
+    int32_t evt_handle = 0;
+    CHECK(nm_audio_play_event("event:/Mods/Maxwell/Summon", 0.9f, &evt_handle) == NM_OK);
+    CHECK(evt_handle > 0);
+    CHECK(nm_audio_stop(evt_handle) == NM_OK);
+
+    // Verify exact PoE 3.29 C->S wire encoders (0x0015 chat & 0x02CA ruleset compact-int)
+    const auto chat_wire = nativemods::LiveEngineHooks::encode_c2s_chat_packet("/maxwell");
+    CHECK(chat_wire.size() == 4 + 8 + 1);
+    CHECK(chat_wire[0] == 0x00 && chat_wire[1] == 0x15);
+    CHECK(chat_wire[2] == 0x00 && chat_wire[3] == 0x08);
+    CHECK(chat_wire[4] == '/' && chat_wire[12] == 0x00);
+
+    const std::vector<uint8_t> small_payload = {0x01, 0x02, 0x03};
+    const auto rs_small = nativemods::LiveEngineHooks::encode_c2s_ruleset_packet(0x9E, small_payload.data(), 3);
+    CHECK(rs_small.size() == 7);
+    CHECK(rs_small[0] == 0x02 && rs_small[1] == 0xCA && rs_small[2] == 0x9E && rs_small[3] == 0x03);
+
+    const std::vector<uint8_t> med_payload(200, 0xAA);
+    const auto rs_med = nativemods::LiveEngineHooks::encode_c2s_ruleset_packet(0xA2, med_payload.data(), 200);
+    CHECK(rs_med.size() == 5 + 200);
+    CHECK(rs_med[0] == 0x02 && rs_med[1] == 0xCA && rs_med[2] == 0xA2);
+    CHECK(rs_med[3] == 0x80 && rs_med[4] == 200);
+
+    const std::vector<uint8_t> big_payload(0x4005, 0x55);
+    const auto rs_big = nativemods::LiveEngineHooks::encode_c2s_ruleset_packet(0xA2, big_payload.data(), 0x4005);
+    CHECK(rs_big.size() == 6 + 0x4005);
+    CHECK(rs_big[3] == 0xC0 && rs_big[4] == 0x40 && rs_big[5] == 0x05);
+
+    CHECK(nm_shutdown() == NM_OK);
     ++g_tests_passed;
     return 0;
 }
@@ -464,6 +606,7 @@ int main() {
     if (test_frame_queue_concurrency_and_isolation() != 0) return 1;
     if (test_file_overlay_and_channels() != 0) return 1;
     if (test_prologue_length_and_sha256() != 0) return 1;
+    if (test_disk_overlays_audio_and_wire_encoders() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

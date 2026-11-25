@@ -85,6 +85,9 @@ SHIM_PE="$(x86_64-w64-mingw32-objdump -p "${STAGE_DIR}/LocalExile.ClientHost.dll
 VER_PE="$(x86_64-w64-mingw32-objdump -p "${STAGE_DIR}/version.dll")"
 grep -q "LocalExileClientHost_ImportAnchor" <<< "${SHIM_PE}"
 grep -q "nm_get_abi_table" <<< "${SHIM_PE}"
+grep -q "nm_register_file_overlay_dir" <<< "${SHIM_PE}"
+grep -q "nm_audio_play_ogg" <<< "${SHIM_PE}"
+grep -q "nm_ui_create_window" <<< "${SHIM_PE}"
 grep -q "GetFileVersionInfoSizeW" <<< "${VER_PE}"
 
 echo "==> Win64 build & staging complete: ${STAGE_DIR}"

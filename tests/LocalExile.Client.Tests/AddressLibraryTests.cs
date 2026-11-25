@@ -181,7 +181,7 @@ public sealed class AddressLibraryTests
         Assert.Equal(48, sizeof(NmSymbolInfo));
         Assert.Equal(16, sizeof(NmGameAllocHeader));
         Assert.Equal(528, sizeof(NmExceptionInfo));
-        Assert.Equal(200, sizeof(NmAbiTable));
+        Assert.Equal(320, sizeof(NmAbiTable));
         Assert.Equal("LocalExile.Client.Host.NativeEntryPoint", typeof(NativeEntryPoint).FullName);
 
         NmAbiTable table = default;
@@ -203,10 +203,27 @@ public sealed class AddressLibraryTests
         table.UnregisterChatChannelHandler = &MockUnregisterChatHandler;
         table.SendRulesetPacket = &MockSendRulesetPacket;
         table.SendChatLine = &MockSendChatLine;
+        table.AudioPlayOgg = &MockAudioPlayOgg;
+        table.AudioSetVolume = &MockAudioSetVolume;
+        table.AudioIsPlaying = &MockAudioIsPlaying;
+        table.AudioStop = &MockAudioStop;
+        table.UiCreateWindow = &MockUiCreateWindow;
+        table.UiFindChild = &MockUiFindChild;
+        table.UiSetVisible = &MockUiSetVisible;
+        table.UiSetText = &MockUiSetText;
+        table.UiSubscribeClick = &MockUiSubscribeClick;
 
         _lastSentRulesetLen = 0;
         _lastSentChat = null;
         _unregisteredCount = 0;
+        _lastAudioPath = null;
+        _lastAudioLoop = 0;
+        _lastAudioVolume = 0f;
+        _mockAudioActive = false;
+        _lastNativeUiText = null;
+        _lastNativeUiVisible = -1;
+        _mockClickCb = null;
+        _mockClickUd = null;
 
         int status = NativeEntryPoint.InitializeManaged((nint)(&table));
         try
@@ -237,6 +254,51 @@ public sealed class AddressLibraryTests
 
             rt.Bridge.SendChatLine("/nm ping");
             Assert.Equal("/nm ping", _lastSentChat);
+
+            // Live looping OGG audio through NmAbiTable
+            int audioHandle = rt.Audio.PlaySoundFile("Audio/Mods/Maxwell/stock_market.ogg", 0.65f, loop: true);
+            Assert.Equal(77, audioHandle);
+            Assert.Equal("Audio/Mods/Maxwell/stock_market.ogg", _lastAudioPath);
+            Assert.Equal(1, _lastAudioLoop);
+            Assert.True(rt.Audio.IsChannelPlaying(audioHandle));
+            rt.Audio.SetChannelVolume(audioHandle, 0.35f);
+            Assert.Equal(0.35f, _lastAudioVolume, precision: 3);
+            rt.Audio.StopChannel(audioHandle);
+            Assert.False(rt.Audio.IsChannelPlaying(audioHandle));
+
+            // Live native UI window creation, child binding, SetText/SetVisible sync, and native click callback
+            using var uiOverlay = rt.FileOverlayService.RegisterVirtualTextFile(
+                "Metadata/UI/Mods/Test/Panel.ui",
+                """
+                begin Frame
+                    id = "panel"
+                    begin Label
+                        id = "status"
+                        text = "Initial"
+                    end
+                    begin Button
+                        id = "btn"
+                        text = "Press"
+                    end
+                end
+                """);
+            using var win = rt.Ui.Load("Metadata/UI/Mods/Test/Panel.ui");
+            var label = win.Require<LocalExile.Client.Sdk.Engine.ILabel>("status");
+            var btn = win.Require<LocalExile.Client.Sdk.Engine.IButton>("btn");
+            bool clicked = false;
+            btn.Clicked += () => clicked = true;
+
+            label.Text = "Maxwell Spinning!";
+            Assert.Equal("Maxwell Spinning!", _lastNativeUiText);
+            win.Visible = false;
+            Assert.Equal(0, _lastNativeUiVisible);
+            win.Visible = true;
+            Assert.Equal(1, _lastNativeUiVisible);
+
+            // Invoke native click callback -> triggers managed IButton.Clicked!
+            Assert.True(_mockClickCb is not null);
+            _mockClickCb((void*)0x2002, _mockClickUd);
+            Assert.True(clicked);
         }
         finally
         {
@@ -252,6 +314,14 @@ public sealed class AddressLibraryTests
     private static int _lastSentRulesetLen;
     private static string? _lastSentChat;
     private static int _unregisteredCount;
+    private static string? _lastAudioPath;
+    private static int _lastAudioLoop;
+    private static float _lastAudioVolume;
+    private static bool _mockAudioActive;
+    private static string? _lastNativeUiText;
+    private static int _lastNativeUiVisible;
+    private static unsafe delegate* unmanaged[Cdecl]<void*, void*, void> _mockClickCb;
+    private static unsafe void* _mockClickUd;
 
     private static byte[] AllocatePinnedUtf8(string text)
     {
@@ -377,6 +447,89 @@ public sealed class AddressLibraryTests
     private static unsafe NmStatus MockSendChatLine(byte* textUtf8)
     {
         _lastSentChat = Marshal.PtrToStringUTF8((nint)textUtf8);
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockAudioPlayOgg(byte* pathUtf8, float volume, int loop, int* outHandle)
+    {
+        _lastAudioPath = Marshal.PtrToStringUTF8((nint)pathUtf8);
+        _lastAudioVolume = volume;
+        _lastAudioLoop = loop;
+        _mockAudioActive = true;
+        *outHandle = 77;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static NmStatus MockAudioSetVolume(int handle, float volume)
+    {
+        _lastAudioVolume = volume;
+        return handle == 77 ? NmStatus.Ok : NmStatus.ErrInvalidArg;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockAudioIsPlaying(int handle, int* outPlaying)
+    {
+        *outPlaying = (handle == 77 && _mockAudioActive) ? 1 : 0;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static NmStatus MockAudioStop(int handle)
+    {
+        if (handle == 77)
+        {
+            _mockAudioActive = false;
+        }
+
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiCreateWindow(byte* pathUtf8, void** outControl)
+    {
+        *outControl = (void*)0x1000;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiFindChild(void* parent, byte* dotPathUtf8, void** outChild)
+    {
+        string? id = Marshal.PtrToStringUTF8((nint)dotPathUtf8);
+        *outChild = id switch
+        {
+            "status" => (void*)0x2001,
+            "btn" => (void*)0x2002,
+            _ => null,
+        };
+        return *outChild is not null ? NmStatus.Ok : NmStatus.ErrSymbolNotFound;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiSetVisible(void* control, int visible)
+    {
+        _lastNativeUiVisible = visible;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiSetText(void* control, byte* textUtf8, int isButton)
+    {
+        _lastNativeUiText = Marshal.PtrToStringUTF8((nint)textUtf8);
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiSubscribeClick(
+        void* button,
+        delegate* unmanaged[Cdecl]<void*, void*, void> cb,
+        void* ud,
+        ulong* outToken)
+    {
+        _mockClickCb = cb;
+        _mockClickUd = ud;
+        *outToken = 1;
         return NmStatus.Ok;
     }
 }

@@ -144,6 +144,13 @@ int main() {
     SMOKE_CHECK(abi != nullptr);
     SMOKE_CHECK(abi->struct_size == sizeof(nm_abi_table_t));
     SMOKE_CHECK(abi->abi_version == NM_ABI_VERSION);
+    SMOKE_CHECK(abi->register_file_overlay_dir != nullptr);
+    SMOKE_CHECK(abi->has_file_overlay != nullptr);
+    SMOKE_CHECK(abi->free_file_overlay_buffer != nullptr);
+    SMOKE_CHECK(abi->audio_play_ogg != nullptr);
+    SMOKE_CHECK(abi->audio_stop != nullptr);
+    SMOKE_CHECK(abi->ui_create_window != nullptr);
+    SMOKE_CHECK(abi->ui_subscribe_click != nullptr);
 
     constexpr const char* kSha3293d = "e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d";
     SMOKE_CHECK(p_init(NM_BUILD_3_29_3D_328228, NM_NOMINAL_IMAGE_BASE, 0x4d9a000u, kSha3293d) == NM_OK);
@@ -288,6 +295,30 @@ int main() {
     }
     SMOKE_CHECK(native_frame_ticks == 5);
     SMOKE_CHECK(abi->unregister_frame_callback(frame_token) == NM_OK);
+
+    // 6b. Verify live file overlay dir + looping audio C ABI calls under Wine!
+    uint64_t ov_dir_tok = 0;
+    const std::string garden_files_dir = dir_u8 + "\\Mods\\Client\\harvest-garden\\client";
+    SMOKE_CHECK(abi->register_file_overlay_dir(garden_files_dir.c_str(), &ov_dir_tok) == NM_OK);
+    size_t ui_size = 0;
+    SMOKE_CHECK(abi->has_file_overlay("Metadata/UI/Mods/Garden/Stockpile.ui", &ui_size) == NM_OK);
+    SMOKE_CHECK(ui_size > 0);
+    uint8_t* ui_buf = nullptr;
+    size_t ui_read_sz = 0;
+    SMOKE_CHECK(abi->resolve_file_overlay("Metadata\\UI\\Mods\\Garden\\Stockpile.ui", &ui_buf, &ui_read_sz) == NM_OK);
+    SMOKE_CHECK(ui_buf != nullptr && ui_read_sz == ui_size);
+    SMOKE_CHECK(abi->free_file_overlay_buffer(ui_buf) == NM_OK);
+    SMOKE_CHECK(abi->unregister_file_overlay_dir(ov_dir_tok) == NM_OK);
+
+    int32_t audio_handle = 0;
+    int32_t audio_playing = 0;
+    SMOKE_CHECK(abi->audio_play_ogg("Audio/Mods/Maxwell/stock_market.ogg", 0.5f, 1, &audio_handle) == NM_OK);
+    SMOKE_CHECK(audio_handle > 0);
+    SMOKE_CHECK(abi->audio_is_playing(audio_handle, &audio_playing) == NM_OK);
+    SMOKE_CHECK(audio_playing == 1);
+    SMOKE_CHECK(abi->audio_set_volume(audio_handle, 0.25f) == NM_OK);
+    SMOKE_CHECK(abi->audio_stop(audio_handle) == NM_OK);
+    std::printf("[r1_wine_smoke] Live file overlay dir (%zu bytes) & looping audio C ABI verified!\n", ui_size);
 
     // 7. Verify shared diagnostic log confirms CoreCLR + JsonAddressLibrary (110 symbols) +
     //    ClientModLoader (harvest-garden.Client.dll in collectible ALC) + 5 managed frame ticks!

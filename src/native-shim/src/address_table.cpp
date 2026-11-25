@@ -16,14 +16,14 @@ constexpr std::array<BuildDescriptor, 3> kKnownBuilds = {{
 }};
 
 // Core verified 3.29.3d symbols (1:1 verbatim with data/addresses/3.29.3d.json and Game.exe).
-constexpr std::array<EmbeddedSymbol, 52> kSymbols3293d = {{
+constexpr std::array<EmbeddedSymbol, 62> kSymbols3293d = {{
     // Frame
-    {"frame.state_stack_pass_a",        "frame",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x1528f40ull, "48895c241048896c"},
+    {"frame.state_stack_pass_a",        "frame",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x1528f40ull, "48895c241048896c24184889742420"},
     {"frame.state_stack_pass_a_hook",   "frame",      NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x1528fbfull, "488b5d284883eb10"},
     {"frame.ingame_tick",               "frame",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0d54a00ull, "40534883ec400fb6"},
     {"frame.instance_tick",             "frame",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x214f1d0ull, "488bc44889581848"},
     // UI
-    {"ui.control_load",                 "ui",         NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x18b08d0ull, "48895c240848897c"},
+    {"ui.control_load",                 "ui",         NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x18b08d0ull, "48895c240848897c241055488dac24b0feffff"},
     {"ui.control_pool",                 "ui",         NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x18b6d20ull, "48895c2410488974"},
     {"ui.frame_create",                 "ui",         NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x014b0e0ull, "40534883ec20488b"},
     {"ui.add_child",                    "ui",         NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x18b5b10ull, "4c89442418535748"},
@@ -37,7 +37,12 @@ constexpr std::array<EmbeddedSymbol, 52> kSymbols3293d = {{
     {"ui.vtable_textbox",               "ui",         NM_SYM_VTABLE,      NM_SYM_STATUS_LIVE_VERIFIED,   0x30321a0ull, nullptr},
     {"ui.vtable_checkbox",              "ui",         NM_SYM_VTABLE,      NM_SYM_STATUS_LIVE_VERIFIED,   0x34afe98ull, nullptr},
     // Files
-    {"files.read_whole_file",           "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e564d0ull, "48895c2418488954"},
+    {"files.exists_query",              "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e55340ull, "48895c2408574881eca0000000488bf9"},
+    {"files.size_query",                "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e557f0ull, "48895c2410488974241855574156"},
+    {"files.read_variant_2",            "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e55aa0ull, "48895c2410488974241855574154"},
+    {"files.read_whole_file",           "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e564d0ull, "48895c241848895424105556574156"},
+    {"files.read_variant_5",            "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e56af0ull, "48895c241848895424105556574156"},
+    {"files.hash_to_wstring_view",      "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e40af0ull, "48895c24184889742420574883ec30"},
     {"files.text_stream_open",          "files",      NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x21d5b50ull, "48895c241048896c"},
     {"files.bundle_index_lookup",       "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e4c430ull, "48895c241048896c"},
     {"files.oodle_decompress",          "files",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x2c9d520ull, "4055535657415441"},
@@ -56,23 +61,28 @@ constexpr std::array<EmbeddedSymbol, 52> kSymbols3293d = {{
     // Rulesets
     {"rulesets.creator_table",          "rulesets",   NM_SYM_DATA,        NM_SYM_STATUS_STATIC_VERIFIED, 0x475dc70ull, nullptr},
     {"rulesets.create",                 "rulesets",   NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x15a6800ull, "48895c2408555657"},
-    {"rulesets.s2c_0x2c9_filter",       "rulesets",   NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x15a6b50ull, "48895c2408555657"},
+    {"rulesets.s2c_0x2c9_filter",       "rulesets",   NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x15a6b50ull, "48895c24085556574154415541564157"},
     {"rulesets.c2s_0x2ca_writer",       "rulesets",   NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x1fa7c10ull, "48895c2410574883"},
     // Network
     {"network.message_pump",            "network",    NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x29a77a0ull, "488bc44889501048"},
     {"network.register_handler_group",  "network",    NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x29a7710ull, "48895c2410574883"},
     {"network.socket_write",            "network",    NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x0dfa000ull, "48895c240848896c"},
     {"network.socket_flush",            "network",    NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x0dfa160ull, "48895c2410488974"},
-    {"network.chat_panel_listener",     "network",    NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x017a270ull, "48895c2408488974"},
+    {"network.chat_panel_listener",     "network",    NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x017a270ull, "48895c2408488974241855574156"},
     {"network.app_global_ref",          "network",    NM_SYM_GLOBAL_REF,  NM_SYM_STATUS_LIVE_VERIFIED,   0x00f3b30ull, "488b05????????488907488b05"},
     {"network.hnc_mask",                "network",    NM_SYM_DATA,        NM_SYM_STATUS_DOC_VERIFIED,    0x2feaeb0ull, nullptr},
+    {"network.iat_acquire_srw_lock",    "network",    NM_SYM_IMPORT_SLOT, NM_SYM_STATUS_LIVE_VERIFIED,   0x2f4d310ull, nullptr},
+    {"network.iat_release_srw_lock",    "network",    NM_SYM_IMPORT_SLOT, NM_SYM_STATUS_LIVE_VERIFIED,   0x2f4d308ull, nullptr},
     // Allocator & runtime
     {"allocator.alloc",                 "allocator",  NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x2c8cf60ull, "48895c2408488974"},
     {"allocator.free",                  "allocator",  NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x2c8ca30ull, "4c8bd14c8d49ff49"},
+    {"allocator.global_byte_counter",   "allocator",  NM_SYM_DATA,        NM_SYM_STATUS_STATIC_VERIFIED, 0x45d36a8ull, nullptr},
     {"runtime.wstring_assign",          "runtime",    NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x0144010ull, "48895c241048896c"},
     {"runtime.cxx_throw_exception",     "runtime",    NM_SYM_CODE,        NM_SYM_STATUS_LIVE_VERIFIED,   0x2ce6a40ull, "48895c2418488974"},
     {"runtime.deadlock_detector",       "runtime",    NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0e3ed10ull, "4055535657415441"},
     // Audio, Stats, World
+    {"audio.get_holder",                "audio",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0ffaa90ull, "48895c2410574883"},
+    {"audio.wrap_request",              "audio",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x00f0ae0ull, "40534883ec2033c0"},
     {"audio.submit_request",            "audio",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x0ff86e0ull, "48895c2410555657"},
     {"stats.set_local",                 "stats",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x24d65c0ull, "48895c241848896c"},
     {"stats.read",                      "stats",      NM_SYM_CODE,        NM_SYM_STATUS_STATIC_VERIFIED, 0x24d6510ull, "4c8b99f800000044"},
@@ -81,7 +91,7 @@ constexpr std::array<EmbeddedSymbol, 52> kSymbols3293d = {{
 
 // 3.29.3c table: shared code RVAs hold; data/vtable/IAT symbols explicitly unverified (rva=0)
 // except network.hnc_mask which is verified at 0x2feaed0 in LocalExile ClientBuilds.cs.
-constexpr std::array<EmbeddedSymbol, 52> kSymbols3293c = {{
+constexpr std::array<EmbeddedSymbol, 62> kSymbols3293c = {{
     {"frame.state_stack_pass_a",        "frame",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x1528f40ull, nullptr},
     {"frame.state_stack_pass_a_hook",   "frame",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x1528fbfull, "488b5d284883eb10"},
     {"frame.ingame_tick",               "frame",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0d54a00ull, nullptr},
@@ -99,7 +109,12 @@ constexpr std::array<EmbeddedSymbol, 52> kSymbols3293c = {{
     {"ui.vtable_button",                "ui",         NM_SYM_VTABLE,      NM_SYM_STATUS_UNVERIFIED,      0ull,         nullptr},
     {"ui.vtable_textbox",               "ui",         NM_SYM_VTABLE,      NM_SYM_STATUS_UNVERIFIED,      0ull,         nullptr},
     {"ui.vtable_checkbox",              "ui",         NM_SYM_VTABLE,      NM_SYM_STATUS_UNVERIFIED,      0ull,         nullptr},
+    {"files.exists_query",              "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e55340ull, nullptr},
+    {"files.size_query",                "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e557f0ull, nullptr},
+    {"files.read_variant_2",            "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e55aa0ull, nullptr},
     {"files.read_whole_file",           "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e564d0ull, nullptr},
+    {"files.read_variant_5",            "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e56af0ull, nullptr},
+    {"files.hash_to_wstring_view",      "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e40af0ull, nullptr},
     {"files.text_stream_open",          "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x21d5b50ull, nullptr},
     {"files.bundle_index_lookup",       "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e4c430ull, nullptr},
     {"files.oodle_decompress",          "files",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x2c9d520ull, nullptr},
@@ -125,11 +140,16 @@ constexpr std::array<EmbeddedSymbol, 52> kSymbols3293c = {{
     {"network.chat_panel_listener",     "network",    NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x017a270ull, nullptr},
     {"network.app_global_ref",          "network",    NM_SYM_GLOBAL_REF,  NM_SYM_STATUS_CODE_SHARED,     0x00f3b30ull, "488b05????????488907488b05"},
     {"network.hnc_mask",                "network",    NM_SYM_DATA,        NM_SYM_STATUS_DOC_VERIFIED,    0x2feaed0ull, nullptr},
+    {"network.iat_acquire_srw_lock",    "network",    NM_SYM_IMPORT_SLOT, NM_SYM_STATUS_UNVERIFIED,      0ull,         nullptr},
+    {"network.iat_release_srw_lock",    "network",    NM_SYM_IMPORT_SLOT, NM_SYM_STATUS_UNVERIFIED,      0ull,         nullptr},
     {"allocator.alloc",                 "allocator",  NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x2c8cf60ull, nullptr},
     {"allocator.free",                  "allocator",  NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x2c8ca30ull, nullptr},
+    {"allocator.global_byte_counter",   "allocator",  NM_SYM_DATA,        NM_SYM_STATUS_UNVERIFIED,      0ull,         nullptr},
     {"runtime.wstring_assign",          "runtime",    NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0144010ull, nullptr},
     {"runtime.cxx_throw_exception",     "runtime",    NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x2ce6a40ull, nullptr},
     {"runtime.deadlock_detector",       "runtime",    NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0e3ed10ull, nullptr},
+    {"audio.get_holder",                "audio",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0ffaa90ull, nullptr},
+    {"audio.wrap_request",              "audio",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x00f0ae0ull, nullptr},
     {"audio.submit_request",            "audio",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x0ff86e0ull, nullptr},
     {"stats.set_local",                 "stats",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x24d65c0ull, nullptr},
     {"stats.read",                      "stats",      NM_SYM_CODE,        NM_SYM_STATUS_CODE_SHARED,     0x24d6510ull, nullptr},

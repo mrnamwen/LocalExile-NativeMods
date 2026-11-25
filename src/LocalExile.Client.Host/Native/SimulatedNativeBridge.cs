@@ -25,7 +25,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly Dictionary<byte, List<Action<ReadOnlyMemory<byte>>>> _rulesetReceivers = [];
     private readonly List<Func<string, string, bool>> _chatInterceptors = [];
     private readonly Dictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawOpcodeReceivers = [];
-    private readonly Dictionary<int, (string PathOrEvent, bool IsFmod, float Volume, bool Active)> _audioChannels = [];
+    private readonly Dictionary<int, (string PathOrEvent, bool IsFmod, float Volume, bool Loop, bool Active)> _audioChannels = [];
     private readonly Dictionary<string, int> _stats = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, WorldObjectInfo> _worldObjects = [];
     private readonly List<(uint ObjectId, string EffectPath)> _playedEffects = [];
@@ -612,14 +612,63 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
-    public int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume)
+    public int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume) =>
+        PlayAudio(pathOrEvent, isFmodEvent, volume, loop: false);
+
+    /// <inheritdoc/>
+    public int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume, bool loop)
     {
         lock (_gate)
         {
             int handle = _nextAudioChannel++;
-            _audioChannels[handle] = (pathOrEvent, isFmodEvent, volume, true);
+            _audioChannels[handle] = (pathOrEvent, isFmodEvent, volume, loop, true);
             return handle;
         }
+    }
+
+    /// <inheritdoc/>
+    public void SetAudioVolume(int channelHandle, float volume)
+    {
+        lock (_gate)
+        {
+            if (_audioChannels.TryGetValue(channelHandle, out var entry))
+            {
+                _audioChannels[channelHandle] = entry with { Volume = Math.Clamp(volume, 0f, 1f) };
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool IsAudioPlaying(int channelHandle)
+    {
+        lock (_gate)
+        {
+            return _audioChannels.TryGetValue(channelHandle, out var entry) && entry.Active;
+        }
+    }
+
+    /// <summary>Gets recorded audio channel metadata for test assertions.</summary>
+    public bool TryGetSimulatedAudioChannel(int channelHandle, out string pathOrEvent, out bool isFmod, out float volume, out bool loop, out bool active)
+    {
+        lock (_gate)
+        {
+            if (_audioChannels.TryGetValue(channelHandle, out var entry))
+            {
+                pathOrEvent = entry.PathOrEvent;
+                isFmod = entry.IsFmod;
+                volume = entry.Volume;
+                loop = entry.Loop;
+                active = entry.Active;
+                return true;
+            }
+        }
+
+        pathOrEvent = string.Empty;
+        isFmod = false;
+        volume = 0f;
+        loop = false;
+        active = false;
+        return false;
     }
 
     /// <inheritdoc/>
@@ -633,6 +682,21 @@ public sealed class SimulatedNativeBridge : INativeBridge
             }
         }
     }
+
+    /// <inheritdoc/>
+    public nint CreateNativeUiWindow(string virtualPath) => nint.Zero;
+
+    /// <inheritdoc/>
+    public nint FindNativeUiChild(nint parentControl, string dotPath) => nint.Zero;
+
+    /// <inheritdoc/>
+    public void SetNativeUiVisible(nint control, bool visible) { }
+
+    /// <inheritdoc/>
+    public void SetNativeUiText(nint control, string text, bool isButton) { }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiClick(nint buttonControl, Action onClicked) => NoopDisposable.Instance;
 
     /// <inheritdoc/>
     public int ReadStat(string statKey, int defaultValue)

@@ -77,6 +77,9 @@ public class UiControlNode : IUiControl
     private string _text = string.Empty;
     private bool _visible = true;
 
+    internal nint NativeControlHandle { get; set; }
+    internal Native.INativeBridge? NativeBridge { get; set; }
+
     /// <summary>Creates a new control node.</summary>
     public UiControlNode(string id, string controlType, UiControlNode? parent, ICustomUiControl? customBehavior = null)
     {
@@ -124,6 +127,11 @@ public class UiControlNode : IUiControl
         {
             _visible = value;
             _properties["visible"] = value ? "true" : "false";
+            if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+            {
+                NativeBridge.SetNativeUiVisible(NativeControlHandle, value);
+            }
+
             _customBehavior?.OnPropertyChanged("visible", _properties["visible"]);
         }
     }
@@ -136,6 +144,15 @@ public class UiControlNode : IUiControl
         {
             _text = value ?? string.Empty;
             _properties["text"] = _text;
+            if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+            {
+                bool isButton = string.Equals(ControlType, "Button", StringComparison.OrdinalIgnoreCase);
+                if (isButton || string.Equals(ControlType, "Label", StringComparison.OrdinalIgnoreCase))
+                {
+                    NativeBridge.SetNativeUiText(NativeControlHandle, _text, isButton);
+                }
+            }
+
             _customBehavior?.OnPropertyChanged("text", _text);
         }
     }
@@ -434,14 +451,16 @@ public sealed class UiService : IUiService
 
     private readonly IFileOverlayService _files;
     private readonly UiControlRegistry _controlRegistry;
+    private readonly Native.INativeBridge? _bridge;
     private readonly Dictionary<string, UiWindowNode> _windows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _gate = new();
 
     /// <summary>Creates a new <see cref="UiService"/>.</summary>
-    public UiService(IFileOverlayService files, UiControlRegistry controlRegistry)
+    public UiService(IFileOverlayService files, UiControlRegistry controlRegistry, Native.INativeBridge? bridge = null)
     {
         _files = files;
         _controlRegistry = controlRegistry;
+        _bridge = bridge;
     }
 
     /// <inheritdoc/>
@@ -466,12 +485,18 @@ public sealed class UiService : IUiService
 
         var window = new UiWindowNode(resolvedId, virtualPath, ReloadInternal, CloseInternal);
         AttachParsedTree(window, parsedRoot);
+        BindNativeControlsIfLive(window, virtualPath);
 
         lock (_gate)
         {
             if (_windows.TryGetValue(resolvedId, out UiWindowNode? existing))
             {
                 existing.IsOpen = false;
+                if (existing.NativeControlHandle != nint.Zero && _bridge is not null)
+                {
+                    _bridge.SetNativeUiVisible(existing.NativeControlHandle, false);
+                }
+
                 existing.DestroyCustomRecursive();
             }
 
@@ -562,11 +587,67 @@ public sealed class UiService : IUiService
 
     private void CloseInternal(UiWindowNode window)
     {
+        if (window.NativeControlHandle != nint.Zero && _bridge is not null)
+        {
+            _bridge.SetNativeUiVisible(window.NativeControlHandle, false);
+        }
+
         lock (_gate)
         {
             if (_windows.TryGetValue(window.Id, out UiWindowNode? existing) && ReferenceEquals(existing, window))
             {
                 _windows.Remove(window.Id);
+            }
+        }
+    }
+
+    private void BindNativeControlsIfLive(UiWindowNode window, string virtualPath)
+    {
+        if (_bridge is null)
+        {
+            return;
+        }
+
+        nint nativeRoot = _bridge.CreateNativeUiWindow(virtualPath);
+        if (nativeRoot == nint.Zero)
+        {
+            return;
+        }
+
+        window.NativeBridge = _bridge;
+        window.NativeControlHandle = nativeRoot;
+        BindChildrenRecursive(nativeRoot, window);
+    }
+
+    private void BindChildrenRecursive(nint nativeParent, UiControlNode parentNode)
+    {
+        if (_bridge is null)
+        {
+            return;
+        }
+
+        foreach (UiControlNode child in parentNode.MutableChildren)
+        {
+            nint nativeChild = nint.Zero;
+            if (!string.IsNullOrWhiteSpace(child.Id))
+            {
+                nativeChild = _bridge.FindNativeUiChild(nativeParent, child.Id);
+            }
+
+            if (nativeChild != nint.Zero)
+            {
+                child.NativeBridge = _bridge;
+                child.NativeControlHandle = nativeChild;
+                if (child is UiButtonNode button)
+                {
+                    _ = _bridge.SubscribeNativeUiClick(nativeChild, button.Click);
+                }
+
+                BindChildrenRecursive(nativeChild, child);
+            }
+            else
+            {
+                BindChildrenRecursive(nativeParent, child);
             }
         }
     }

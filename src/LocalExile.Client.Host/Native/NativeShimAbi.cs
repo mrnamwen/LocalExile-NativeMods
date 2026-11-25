@@ -193,7 +193,7 @@ public unsafe struct NmExceptionInfo
 }
 
 /// <summary>
-/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.1.0, 24 function pointers).
+/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.1.0, 39 function pointers).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct NmAbiTable
@@ -238,5 +238,26 @@ public unsafe struct NmAbiTable
     public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<byte*, byte*, void*, void>, void*, ulong*, NmStatus> RegisterChatChannelHandler;
     public delegate* unmanaged[Cdecl]<ulong, NmStatus> UnregisterChatChannelHandler;
     public delegate* unmanaged[Cdecl]<byte*, NmStatus> SendChatLine;
+
+    /* Native disk file overlay directories & buffer release (4) */
+    public delegate* unmanaged[Cdecl]<byte*, ulong*, NmStatus> RegisterFileOverlayDir;
+    public delegate* unmanaged[Cdecl]<ulong, NmStatus> UnregisterFileOverlayDir;
+    public delegate* unmanaged[Cdecl]<byte*, nuint*, NmStatus> HasFileOverlay;
+    public delegate* unmanaged[Cdecl]<byte*, NmStatus> FreeFileOverlayBuffer;
+
+    /* Live FMOD 2.03 (.ogg) & engine audio playback (5) */
+    public delegate* unmanaged[Cdecl]<byte*, float, int, int*, NmStatus> AudioPlayOgg;
+    public delegate* unmanaged[Cdecl]<byte*, float, int*, NmStatus> AudioPlayEvent;
+    public delegate* unmanaged[Cdecl]<int, NmStatus> AudioStop;
+    public delegate* unmanaged[Cdecl]<int, float, NmStatus> AudioSetVolume;
+    public delegate* unmanaged[Cdecl]<int, int*, NmStatus> AudioIsPlaying;
+
+    /* Live native UI bridge (6) */
+    public delegate* unmanaged[Cdecl]<void**, NmStatus> UiGetRoot;
+    public delegate* unmanaged[Cdecl]<byte*, void**, NmStatus> UiCreateWindow;
+    public delegate* unmanaged[Cdecl]<void*, byte*, void**, NmStatus> UiFindChild;
+    public delegate* unmanaged[Cdecl]<void*, int, NmStatus> UiSetVisible;
+    public delegate* unmanaged[Cdecl]<void*, byte*, int, NmStatus> UiSetText;
+    public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, void*, void>, void*, ulong*, NmStatus> UiSubscribeClick;
 }
 

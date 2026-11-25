@@ -98,8 +98,33 @@ public interface INativeBridge : IDisposable
     /// <summary>Plays an audio event or <c>.ogg</c> file, returning a channel handle.</summary>
     int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume);
 
+    /// <summary>Plays an audio event or <c>.ogg</c> file with optional infinite looping, returning a channel handle.</summary>
+    int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume, bool loop) =>
+        PlayAudio(pathOrEvent, isFmodEvent, volume);
+
+    /// <summary>Updates linear volume (0.0 to 1.0) on an active audio channel.</summary>
+    void SetAudioVolume(int channelHandle, float volume) { }
+
+    /// <summary>Returns <c>true</c> if the audio channel is currently playing.</summary>
+    bool IsAudioPlaying(int channelHandle) => false;
+
     /// <summary>Stops an audio channel.</summary>
     void StopAudio(int channelHandle);
+
+    /// <summary>Creates and loads a live native 3.29 <c>Frame</c> window from a <c>.ui</c> virtual path (returns 0 when simulated or root not yet captured).</summary>
+    nint CreateNativeUiWindow(string virtualPath) => nint.Zero;
+
+    /// <summary>Finds a child control by dot-separated id path inside a live native 3.29 UI control.</summary>
+    nint FindNativeUiChild(nint parentControl, string dotPath) => nint.Zero;
+
+    /// <summary>Sets visibility on a live native 3.29 UI control.</summary>
+    void SetNativeUiVisible(nint control, bool visible) { }
+
+    /// <summary>Sets text on a live native 3.29 Label (<c>isButton=false</c>) or Button (<c>isButton=true</c>).</summary>
+    void SetNativeUiText(nint control, string text, bool isButton) { }
+
+    /// <summary>Subscribes a managed callback to a live native 3.29 Button's clicked event list.</summary>
+    IDisposable SubscribeNativeUiClick(nint buttonControl, Action onClicked) => NoopDisposable.Instance;
 
     /// <summary>Reads a client stat.</summary>
     int ReadStat(string statKey, int defaultValue);
@@ -132,7 +157,11 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         FileOverlay = 1,
         Ruleset = 2,
         Chat = 3,
+        UiClick = 4,
     }
+
+    [ThreadStatic]
+    private static bool s_inNativeGameFrame;
 
     private readonly NmAbiTable* _table;
     private readonly int _gameThreadId;
@@ -158,7 +187,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     public nint ImageBase { get; }
 
     /// <inheritdoc/>
-    public bool IsOnGameThread => Environment.CurrentManagedThreadId == _gameThreadId;
+    public bool IsOnGameThread => s_inNativeGameFrame || Environment.CurrentManagedThreadId == _gameThreadId;
 
     /// <summary>Creates a new bridge wrapping a validated <c>nm_abi_table_t*</c> pointer.</summary>
     public NativeShimBridge(nint abiTablePtr)
@@ -609,10 +638,148 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         new(false, GealValue.Null, "Native GEAL invocation requires live 3.29 client object pointer.");
 
     /// <inheritdoc/>
-    public int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume) => Interlocked.Increment(ref _nextAudioChannel);
+    public int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume) =>
+        PlayAudio(pathOrEvent, isFmodEvent, volume, loop: false);
 
     /// <inheritdoc/>
-    public void StopAudio(int channelHandle) { }
+    public int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume, bool loop)
+    {
+        byte[] utf8 = ToNullTerminatedUtf8(pathOrEvent);
+        fixed (byte* pPath = utf8)
+        {
+            int handle = 0;
+            if (isFmodEvent && _table->AudioPlayEvent is not null)
+            {
+                if (_table->AudioPlayEvent(pPath, volume, &handle) == NmStatus.Ok && handle > 0)
+                {
+                    return handle;
+                }
+            }
+            else if (!isFmodEvent && _table->AudioPlayOgg is not null)
+            {
+                if (_table->AudioPlayOgg(pPath, volume, loop ? 1 : 0, &handle) == NmStatus.Ok && handle > 0)
+                {
+                    return handle;
+                }
+            }
+        }
+
+        return Interlocked.Increment(ref _nextAudioChannel);
+    }
+
+    /// <inheritdoc/>
+    public void SetAudioVolume(int channelHandle, float volume)
+    {
+        if (_table->AudioSetVolume is not null && channelHandle > 0)
+        {
+            _table->AudioSetVolume(channelHandle, Math.Clamp(volume, 0f, 1f));
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool IsAudioPlaying(int channelHandle)
+    {
+        if (_table->AudioIsPlaying is not null && channelHandle > 0)
+        {
+            int playing = 0;
+            if (_table->AudioIsPlaying(channelHandle, &playing) == NmStatus.Ok)
+            {
+                return playing != 0;
+            }
+        }
+
+        return false;
+    }
+
+    /// <inheritdoc/>
+    public void StopAudio(int channelHandle)
+    {
+        if (_table->AudioStop is not null && channelHandle > 0)
+        {
+            _table->AudioStop(channelHandle);
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint CreateNativeUiWindow(string virtualPath)
+    {
+        if (_table->UiCreateWindow is null || string.IsNullOrWhiteSpace(virtualPath))
+        {
+            return nint.Zero;
+        }
+
+        byte[] utf8 = ToNullTerminatedUtf8(virtualPath);
+        fixed (byte* pPath = utf8)
+        {
+            void* ctrl = null;
+            return _table->UiCreateWindow(pPath, &ctrl) == NmStatus.Ok ? (nint)ctrl : nint.Zero;
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint FindNativeUiChild(nint parentControl, string dotPath)
+    {
+        if (_table->UiFindChild is null || parentControl == nint.Zero || string.IsNullOrWhiteSpace(dotPath))
+        {
+            return nint.Zero;
+        }
+
+        byte[] utf8 = ToNullTerminatedUtf8(dotPath);
+        fixed (byte* pPath = utf8)
+        {
+            void* child = null;
+            return _table->UiFindChild((void*)parentControl, pPath, &child) == NmStatus.Ok ? (nint)child : nint.Zero;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiVisible(nint control, bool visible)
+    {
+        if (_table->UiSetVisible is not null && control != nint.Zero)
+        {
+            _table->UiSetVisible((void*)control, visible ? 1 : 0);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiText(nint control, string text, bool isButton)
+    {
+        if (_table->UiSetText is not null && control != nint.Zero)
+        {
+            byte[] utf8 = ToNullTerminatedUtf8(text ?? string.Empty);
+            fixed (byte* pText = utf8)
+            {
+                _table->UiSetText((void*)control, pText, isButton ? 1 : 0);
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiClick(nint buttonControl, Action onClicked)
+    {
+        ArgumentNullException.ThrowIfNull(onClicked);
+        if (_table->UiSubscribeClick is null || buttonControl == nint.Zero)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        GCHandle handle = GCHandle.Alloc(onClicked);
+        ulong token = 0;
+        NmStatus st = _table->UiSubscribeClick((void*)buttonControl, &OnNativeUiClick, (void*)GCHandle.ToIntPtr(handle), &token);
+        if (st != NmStatus.Ok)
+        {
+            handle.Free();
+            return NoopDisposable.Instance;
+        }
+
+        var key = (CallbackKind.UiClick, token);
+        _pinnedCallbacks[key] = handle;
+        return new ActionDisposable(() =>
+        {
+            // Keep GCHandle pinned until bridge dispose if native button outlives managed wrapper,
+            // preventing dangling native vtable callbacks.
+        });
+    }
 
     /// <inheritdoc/>
     public int ReadStat(string statKey, int defaultValue) =>
@@ -685,6 +852,8 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnNativeFrame(float deltaSeconds, void* userData)
     {
+        bool prev = s_inNativeGameFrame;
+        s_inNativeGameFrame = true;
         try
         {
             GCHandle handle = GCHandle.FromIntPtr((nint)userData);
@@ -696,6 +865,27 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         catch
         {
             // Never let managed exceptions unwind across native game frames!
+        }
+        finally
+        {
+            s_inNativeGameFrame = prev;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeUiClick(void* control, void* userData)
+    {
+        try
+        {
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is Action cb)
+            {
+                cb();
+            }
+        }
+        catch
+        {
+            // Never unwind managed exceptions into native UI click dispatch.
         }
     }
 
