@@ -19,6 +19,7 @@ public sealed class ClientBridgeHost
     private readonly ConcurrentDictionary<string, ClientSession> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Channel, string MessageType), List<Action<IClientSession, ModEnvelope>>> _globalHandlers = [];
     private readonly Lock _gate = new();
+    private GatewayBridgeRegistration? _busRegistration;
     private long _sequence;
 
     /// <summary>Active bridge configuration options.</summary>
@@ -26,6 +27,9 @@ public sealed class ClientBridgeHost
 
     /// <summary>Snapshot of all tracked sessions.</summary>
     public IReadOnlyCollection<IClientSession> Sessions => _sessions.Values.ToArray();
+
+    /// <summary>Whether this host is currently attached to a cross-ALC <see cref="GatewayBridgeBus"/>.</summary>
+    public bool IsAttachedToGatewayBus => Volatile.Read(ref _busRegistration) is not null;
 
     /// <summary>Raised when a client completes a NativeMods handshake.</summary>
     public event Action<IClientSession>? ClientReady;
@@ -44,6 +48,35 @@ public sealed class ClientBridgeHost
         }
     }
 
+    /// <summary>
+    /// Attaches this bridge to the process-wide cross-<c>AssemblyLoadContext</c> <see cref="GatewayBridgeBus"/> so
+    /// multiple LocalExile server mods loaded simultaneously receive fanned-out <c>ClientHandshake</c>,
+    /// <c>ClientUiEventNotification</c>, and mod-channel packets over <c>0x02CA</c> and <c>/nm</c> while emitting
+    /// only a single deduplicated <see cref="ServerHandshake"/> on the wire.
+    /// Dispose the returned handle when the mod unloads.
+    /// </summary>
+    /// <param name="ownerId">Unique LocalExile mod identifier (for example <c>mod.Manifest.Id</c>).</param>
+    /// <param name="onGatewayContext">
+    /// Optional callback invoked with <c>(connectionId, characterName, gatewayContext)</c> before this host processes
+    /// a fanned-out packet or chat command so the mod can register the live Gateway player and character binding.
+    /// </param>
+    /// <param name="domainKey">Optional isolated <see cref="AppDomain"/> slot key (defaults to <see cref="GatewayBridgeBus.DefaultDomainKey"/>).</param>
+    /// <param name="onDispatchError">Optional callback invoked when any bus participant throws during fan-out.</param>
+    public GatewayBridgeRegistration AttachToGatewayBus(
+        string ownerId,
+        Action<string, string?, object?>? onGatewayContext = null,
+        string? domainKey = null,
+        Action<string, Exception>? onDispatchError = null)
+    {
+        GatewayBridgeRegistration next = GatewayBridgeBus.Attach(this, ownerId, onGatewayContext, domainKey, onDispatchError);
+        GatewayBridgeRegistration? previous = Interlocked.Exchange(ref _busRegistration, next);
+        previous?.Dispose();
+        return next;
+    }
+
+    internal void DetachBusRegistration(GatewayBridgeRegistration registration) =>
+        Interlocked.CompareExchange(ref _busRegistration, null, registration);
+
     /// <summary>Gets or creates the <see cref="IClientSession"/> for <paramref name="connectionId"/>.</summary>
     public IClientSession For(string connectionId) => GetOrCreateSession(connectionId);
 
@@ -51,12 +84,26 @@ public sealed class ClientBridgeHost
     public IClientSession GetOrCreateSession(string connectionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
-        return _sessions.GetOrAdd(connectionId, id => new ClientSession(this, id, _options.DefaultTransport));
+        ClientSession session = _sessions.GetOrAdd(connectionId, id => new ClientSession(this, id, _options.DefaultTransport));
+        if (!session.HasNativeHost && Volatile.Read(ref _busRegistration) is { } bus)
+        {
+            TryHydrateSessionFromBus(session, bus);
+        }
+
+        return session;
     }
 
     /// <summary>Removes a closed connection's session state.</summary>
-    public bool RemoveSession(string connectionId) =>
-        !string.IsNullOrWhiteSpace(connectionId) && _sessions.TryRemove(connectionId, out _);
+    public bool RemoveSession(string connectionId)
+    {
+        if (string.IsNullOrWhiteSpace(connectionId))
+        {
+            return false;
+        }
+
+        Volatile.Read(ref _busRegistration)?.ClearCachedHandshake(connectionId);
+        return _sessions.TryRemove(connectionId, out _);
+    }
 
     /// <summary>
     /// Subscribes to incoming typed messages from any connected client on <paramref name="channel"/>.
@@ -102,27 +149,127 @@ public sealed class ClientBridgeHost
 
     /// <summary>
     /// Handles an incoming C→S packet from LocalExile's <c>GameEvents.Packet(0x02CA)</c> hook.
+    /// When attached via <see cref="AttachToGatewayBus"/>, fans out across all loaded mods' bridges
+    /// (across separate <c>AssemblyLoadContext</c>s) and deduplicates <see cref="ServerHandshake"/> replies.
     /// Returns <c>true</c> if the packet belonged to NativeMods and was consumed; <c>false</c> so stock handlers continue running.
     /// </summary>
     /// <param name="connectionId">Source player connection identifier.</param>
     /// <param name="opcode">Incoming wire opcode (expected <c>0x02CA</c> for C→S ruleset traffic).</param>
-    /// <param name="payload">Packet body bytes (without the 2-byte opcode prefix: <c>[u8 rulesetId][u16 BE len][envelope]</c>).</param>
+    /// <param name="payload">Packet body bytes (without the 2-byte opcode prefix: <c>[u8 rulesetId][compact-uint len][envelope]</c>).</param>
+    /// <param name="cancellationToken">Optional cancellation token.</param>
+    public Task<bool> HandleIncomingPacketAsync(
+        string connectionId,
+        ushort opcode,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken = default) =>
+        HandleIncomingPacketAsync(connectionId, opcode, payload, characterName: null, gatewayContext: null, cancellationToken);
+
+    /// <summary>
+    /// Handles an incoming C→S packet from LocalExile's <c>GameEvents.Packet(0x02CA)</c> hook,
+    /// propagating optional <paramref name="characterName"/> and live Gateway <paramref name="gatewayContext"/>
+    /// (for example the live <c>Player</c> instance) to every mod attached to the <see cref="GatewayBridgeBus"/>.
+    /// </summary>
+    /// <param name="connectionId">Source player connection identifier.</param>
+    /// <param name="opcode">Incoming wire opcode (expected <c>0x02CA</c> for C→S ruleset traffic).</param>
+    /// <param name="payload">Packet body bytes (without the 2-byte opcode prefix).</param>
+    /// <param name="characterName">Optional active character name associated with <paramref name="connectionId"/>.</param>
+    /// <param name="gatewayContext">Optional live Gateway context object (such as <c>Player</c>) passed to each bus participant.</param>
     /// <param name="cancellationToken">Optional cancellation token.</param>
     public async Task<bool> HandleIncomingPacketAsync(
         string connectionId,
         ushort opcode,
         ReadOnlyMemory<byte> payload,
+        string? characterName,
+        object? gatewayContext = null,
         CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _busRegistration) is { } bus)
+        {
+            return await bus.DispatchPacketAsync(
+                connectionId,
+                opcode,
+                payload,
+                characterName,
+                gatewayContext,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        int result = await HandleIncomingPacketLocalAsync(
+            connectionId,
+            opcode,
+            payload,
+            suppressServerHandshakeReply: false,
+            mergedRequiredMods: null,
+            mergedCapabilities: null,
+            onServerHandshakeSent: null,
+            cancellationToken).ConfigureAwait(false);
+        return (result & GatewayBridgeBus.ResultHandled) != 0;
+    }
+
+    /// <summary>
+    /// Handles an incoming C→S chat command line (<c>/nm env &lt;base64&gt;</c>) for the chat fallback transport.
+    /// When attached via <see cref="AttachToGatewayBus"/>, fans out across all loaded mods' bridges
+    /// and deduplicates <see cref="ServerHandshake"/> replies.
+    /// Returns <c>true</c> if the command was a NativeMods envelope and was consumed.
+    /// </summary>
+    public Task<bool> HandleIncomingChatCommandAsync(
+        string connectionId,
+        string commandLine,
+        CancellationToken cancellationToken = default) =>
+        HandleIncomingChatCommandAsync(connectionId, commandLine, characterName: null, gatewayContext: null, cancellationToken);
+
+    /// <summary>
+    /// Handles an incoming C→S chat command line (<c>/nm env &lt;base64&gt;</c>), propagating optional
+    /// <paramref name="characterName"/> and live Gateway <paramref name="gatewayContext"/> to every mod
+    /// attached to the <see cref="GatewayBridgeBus"/>.
+    /// </summary>
+    public async Task<bool> HandleIncomingChatCommandAsync(
+        string connectionId,
+        string commandLine,
+        string? characterName,
+        object? gatewayContext = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _busRegistration) is { } bus)
+        {
+            return await bus.DispatchChatCommandAsync(
+                connectionId,
+                commandLine,
+                characterName,
+                gatewayContext,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        int result = await HandleIncomingChatCommandLocalAsync(
+            connectionId,
+            commandLine,
+            suppressServerHandshakeReply: false,
+            mergedRequiredMods: null,
+            mergedCapabilities: null,
+            onServerHandshakeSent: null,
+            cancellationToken).ConfigureAwait(false);
+        return (result & GatewayBridgeBus.ResultHandled) != 0;
+    }
+
+    internal async Task<int> HandleIncomingPacketLocalAsync(
+        string connectionId,
+        ushort opcode,
+        ReadOnlyMemory<byte> payload,
+        bool suppressServerHandshakeReply,
+        IReadOnlyList<string>? mergedRequiredMods,
+        IReadOnlyList<string>? mergedCapabilities,
+        Action? onServerHandshakeSent,
+        CancellationToken cancellationToken)
     {
         if (opcode != IOpcodeRegistry.ClientRulesetOpcode)
         {
-            return false;
+            return GatewayBridgeBus.ResultNone;
         }
 
         if (!MessageCodec.TryDecodeRulesetBody(payload, out byte rulesetId, out ReadOnlyMemory<byte> inner)
             || rulesetId != _options.HostRulesetId)
         {
-            return false;
+            return GatewayBridgeBus.ResultNone;
         }
 
         ModEnvelope envelope;
@@ -132,33 +279,66 @@ public sealed class ClientBridgeHost
         }
         catch (InvalidDataException)
         {
-            return false;
+            return GatewayBridgeBus.ResultNone;
         }
 
         ClientSession session = (ClientSession)GetOrCreateSession(connectionId);
         session.SetActiveTransport(NetTransportKind.HostRuleset);
-        await DispatchIncomingEnvelopeAsync(session, envelope, cancellationToken).ConfigureAwait(false);
-        return true;
+        return await DispatchIncomingEnvelopeAsync(
+            session,
+            envelope,
+            suppressServerHandshakeReply,
+            mergedRequiredMods,
+            mergedCapabilities,
+            onServerHandshakeSent,
+            cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Handles an incoming C→S chat command line (<c>/nm env &lt;base64&gt;</c>) for the chat fallback transport.
-    /// Returns <c>true</c> if the command was a NativeMods envelope and was consumed.
-    /// </summary>
-    public async Task<bool> HandleIncomingChatCommandAsync(
+    internal async Task<int> HandleIncomingChatCommandLocalAsync(
         string connectionId,
         string commandLine,
-        CancellationToken cancellationToken = default)
+        bool suppressServerHandshakeReply,
+        IReadOnlyList<string>? mergedRequiredMods,
+        IReadOnlyList<string>? mergedCapabilities,
+        Action? onServerHandshakeSent,
+        CancellationToken cancellationToken)
     {
         if (!MessageCodec.TryDecodeClientChatEnvelope(commandLine, out ModEnvelope? envelope) || envelope is null)
         {
-            return false;
+            return GatewayBridgeBus.ResultNone;
         }
 
         ClientSession session = (ClientSession)GetOrCreateSession(connectionId);
         session.SetActiveTransport(NetTransportKind.ChatFallback);
-        await DispatchIncomingEnvelopeAsync(session, envelope, cancellationToken).ConfigureAwait(false);
-        return true;
+        return await DispatchIncomingEnvelopeAsync(
+            session,
+            envelope,
+            suppressServerHandshakeReply,
+            mergedRequiredMods,
+            mergedCapabilities,
+            onServerHandshakeSent,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private void TryHydrateSessionFromBus(ClientSession session, GatewayBridgeRegistration bus)
+    {
+        if (!bus.TryGetCachedHandshake(session.ConnectionId, _options.HostRulesetId, out byte[] rawEnvelope, out bool isChatFallback))
+        {
+            return;
+        }
+
+        try
+        {
+            ModEnvelope envelope = MessageCodec.DecodeEnvelope(rawEnvelope);
+            ClientHandshake handshake = MessageCodec.DeserializePayload<ClientHandshake>(envelope);
+            session.TryApplyCachedHandshake(
+                isChatFallback ? NetTransportKind.ChatFallback : NetTransportKind.HostRuleset,
+                handshake);
+        }
+        catch (Exception)
+        {
+            // Ignore malformed cached handshake payloads; live handshake will still apply normally.
+        }
     }
 
     internal async Task SendEnvelopeAsync(ClientSession session, ModEnvelope envelope, CancellationToken cancellationToken)
@@ -177,7 +357,14 @@ public sealed class ClientBridgeHost
 
     internal long NextSequence() => Interlocked.Increment(ref _sequence);
 
-    private async Task DispatchIncomingEnvelopeAsync(ClientSession session, ModEnvelope envelope, CancellationToken cancellationToken)
+    private async Task<int> DispatchIncomingEnvelopeAsync(
+        ClientSession session,
+        ModEnvelope envelope,
+        bool suppressServerHandshakeReply,
+        IReadOnlyList<string>? mergedRequiredMods,
+        IReadOnlyList<string>? mergedCapabilities,
+        Action? onServerHandshakeSent,
+        CancellationToken cancellationToken)
     {
         MessageReceived?.Invoke(session, envelope);
 
@@ -188,25 +375,32 @@ public sealed class ClientBridgeHost
                 ClientHandshake handshake = MessageCodec.DeserializePayload<ClientHandshake>(envelope);
                 session.ApplyHandshake(handshake);
 
-                var reply = new ServerHandshake(
-                    ServerVersion: _options.ServerVersion,
-                    BridgeVersion: _options.BridgeVersion,
-                    ProtocolVersion: Sdk.SdkVersion.ProtocolVersion,
-                    HostRulesetId: _options.HostRulesetId,
-                    PreferredTransport: session.ActiveTransport,
-                    RequiredMods: _options.RequiredMods,
-                    ServerCapabilities: _options.ServerCapabilities);
+                int flags = GatewayBridgeBus.ResultHandled | GatewayBridgeBus.ResultWasClientHandshake;
+                if (!suppressServerHandshakeReply)
+                {
+                    var reply = new ServerHandshake(
+                        ServerVersion: _options.ServerVersion,
+                        BridgeVersion: _options.BridgeVersion,
+                        ProtocolVersion: Sdk.SdkVersion.ProtocolVersion,
+                        HostRulesetId: _options.HostRulesetId,
+                        PreferredTransport: session.ActiveTransport,
+                        RequiredMods: mergedRequiredMods ?? _options.RequiredMods,
+                        ServerCapabilities: mergedCapabilities ?? _options.ServerCapabilities);
 
-                await session.SendAsync(MessageCodec.SystemChannel, reply, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await session.SendAsync(MessageCodec.SystemChannel, reply, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    onServerHandshakeSent?.Invoke();
+                    flags |= GatewayBridgeBus.ResultSentServerHandshake;
+                }
+
                 ClientReady?.Invoke(session);
-                return;
+                return flags;
             }
 
             if (string.Equals(envelope.MessageType, nameof(ClientUiEventNotification), StringComparison.Ordinal))
             {
                 ClientUiEventNotification uiEvent = MessageCodec.DeserializePayload<ClientUiEventNotification>(envelope);
                 session.DispatchUiEvent(uiEvent);
-                return;
+                return GatewayBridgeBus.ResultHandled;
             }
         }
 
@@ -223,6 +417,8 @@ public sealed class ClientBridgeHost
         {
             handler(session, envelope);
         }
+
+        return GatewayBridgeBus.ResultHandled;
     }
 
     internal sealed class Subscription(Action onDispose) : IDisposable
@@ -287,9 +483,33 @@ internal sealed class ClientSession : IClientSession
         _ui = new ClientUiSession(this);
     }
 
-    internal void SetActiveTransport(NetTransportKind kind) => ActiveTransport = kind;
+    internal void SetActiveTransport(NetTransportKind kind)
+    {
+        lock (_gate)
+        {
+            ActiveTransport = kind;
+        }
+    }
 
-    internal void ApplyHandshake(ClientHandshake handshake) => Handshake = handshake;
+    internal void ApplyHandshake(ClientHandshake handshake)
+    {
+        lock (_gate)
+        {
+            Handshake = handshake;
+        }
+    }
+
+    internal void TryApplyCachedHandshake(NetTransportKind kind, ClientHandshake handshake)
+    {
+        lock (_gate)
+        {
+            if (Handshake is null)
+            {
+                ActiveTransport = kind;
+                Handshake = handshake;
+            }
+        }
+    }
 
     public bool HasClientMod(string modId, string? expectedPayloadHash = null)
     {

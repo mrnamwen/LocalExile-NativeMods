@@ -20,6 +20,7 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
 {
     private readonly ConcurrentDictionary<string, Player> _players = new(StringComparer.Ordinal);
     private ClientBridgeHost? _bridge;
+    private GatewayBridgeRegistration? _busRegistration;
     private LocalExileCurrencyRegistrar? _registrar;
     private SiphonServerMod? _serverMod;
     private StatDescriptions? _statDescriptions;
@@ -41,6 +42,19 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
         _serverMod = new SiphonServerMod(_bridge, backend, _registrar);
         _serverMod.Attach();
 
+        // Register on the shared cross-ALC AppDomain bus so multiple NativeMods server mods
+        // coexist cleanly on 0x02CA and /nm with a single deduplicated ServerHandshake.
+        _busRegistration = _bridge.AttachToGatewayBus(
+            id,
+            onGatewayContext: (connId, character, gatewayPlayer) =>
+            {
+                if (gatewayPlayer is Player p)
+                    _players[connId] = p;
+                if (!string.IsNullOrWhiteSpace(character))
+                    _serverMod.BindConnection(connId, character);
+            },
+            onDispatchError: (owner, ex) => mod.Log($"[gateway-bus] participant '{owner}' failed: {ex.Message}"));
+
         // Register both custom currencies immediately at mod load (before listener.Start) so
         // CharacterSaves.FromSaved recognizes saved Empty & Charged Orbs on relog/restart.
         _registrar.ApplyToLiveCatalog(Program.Items, mod.Log);
@@ -58,23 +72,26 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
                     await Program.PlayerOf(player).Tell(reply);
             });
 
-        // /nm chat fallback transport (C->S)
+        // /nm chat fallback transport (C->S, fanned out across all NativeMods server mods via GatewayBridgeBus)
         GameEvents.Command(id, "nm", "/nm <native-mods-envelope>", async (player, args) =>
         {
             string connId = ConnectionKey(player);
+            string character = Program.CharacterName(player);
             _players[connId] = player;
-            _serverMod.BindConnection(connId, Program.CharacterName(player));
-            await _bridge.HandleIncomingChatCommandAsync(connId, "/nm " + string.Join(' ', args));
+            _serverMod.BindConnection(connId, character);
+            await _bridge.HandleIncomingChatCommandAsync(connId, "/nm " + string.Join(' ', args), character, player);
         });
 
-        // C->S 0x02CA host ruleset transport (unclaimed by stock modules for ruleset 0xA0)
+        // C->S 0x02CA host ruleset transport (unclaimed by stock modules for ruleset 0xA0;
+        // fanned out to every attached NativeMods server mod via GatewayBridgeBus)
         GameEvents.Packet(IOpcodeRegistry.ClientRulesetOpcode).Add(id, async (player, bytes) =>
         {
             if (bytes.Length <= 2) return false;
             string connId = ConnectionKey(player);
+            string character = Program.CharacterName(player);
             _players[connId] = player;
-            _serverMod.BindConnection(connId, Program.CharacterName(player));
-            return await _bridge.HandleIncomingPacketAsync(connId, IOpcodeRegistry.ClientRulesetOpcode, bytes.AsMemory(2));
+            _serverMod.BindConnection(connId, character);
+            return await _bridge.HandleIncomingPacketAsync(connId, IOpcodeRegistry.ClientRulesetOpcode, bytes.AsMemory(2), character, player);
         });
 
         // C->S 0x0071 (UseItemOn): claim ONLY our registered custom currency TypeHashes; return false for all stock currencies.
@@ -140,6 +157,8 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
 
     public void Dispose()
     {
+        _busRegistration?.Dispose();
+        _busRegistration = null;
         _serverMod?.Dispose();
         _serverMod = null;
         _registrar?.Dispose();
