@@ -22,6 +22,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly List<Func<string, byte[]?>> _overlayResolvers = [];
     private readonly Dictionary<string, byte[]> _stockFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _invalidatedPaths = [];
+    private HashSet<string> _knownOverlayPaths = new(StringComparer.Ordinal);
     private readonly Dictionary<byte, List<Action<ReadOnlyMemory<byte>>>> _rulesetReceivers = [];
     private readonly List<Func<string, string, bool>> _chatInterceptors = [];
     private readonly Dictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawOpcodeReceivers = [];
@@ -77,6 +78,34 @@ public sealed class SimulatedNativeBridge : INativeBridge
 
     /// <summary>Recorded outgoing chat lines sent by the client.</summary>
     public List<string> SentChatLines { get; } = [];
+
+    /// <summary>Enables simulated instance-connection token tracking in <see cref="ClientHostRuntime"/>.</summary>
+    public bool SimulateConnectionLifecycle { get; set; }
+
+    /// <summary>Active simulated instance connection token (<c>0</c> = disconnected).</summary>
+    public ulong ActiveConnectionToken { get; set; }
+
+    /// <inheritdoc/>
+    public bool SupportsConnectionToken => SimulateConnectionLifecycle || ActiveConnectionToken != 0;
+
+    /// <inheritdoc/>
+    public ulong GetActiveConnectionToken() => ActiveConnectionToken;
+
+    /// <summary>Latest normalized overlay paths pushed by <see cref="Services.FileOverlayService"/>.</summary>
+    public IReadOnlyCollection<string> KnownOverlayPaths
+    {
+        get { lock (_gate) { return [.. _knownOverlayPaths]; } }
+    }
+
+    /// <inheritdoc/>
+    public void SetFileOverlayKnownPaths(IReadOnlyCollection<string> normalizedPaths)
+    {
+        ArgumentNullException.ThrowIfNull(normalizedPaths);
+        lock (_gate)
+        {
+            _knownOverlayPaths = new HashSet<string>(normalizedPaths, StringComparer.Ordinal);
+        }
+    }
 
     /// <summary>Creates a simulated 3.29 client bridge with verified default 3.29.3d symbols.</summary>
     public SimulatedNativeBridge(

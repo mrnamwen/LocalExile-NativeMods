@@ -3,6 +3,7 @@
 #include "exception_wall.hpp"
 #include "hook_engine.hpp"
 #include "live_engine_hooks.hpp"
+#include "overlay_and_channels.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -627,6 +628,74 @@ int test_disk_overlays_audio_and_wire_encoders() {
     return 0;
 }
 
+int test_overlay_hash_prefilter_and_connection_token() {
+    // 1. Verify exact UTF-8 <-> UTF-16LE case-insensitive slash-normalized hash parity
+    const char* u8_a = "Data/MTXTypes.datc64";
+    const char* u8_b = "/data\\mtxtypes.datc64";
+    const wchar_t* w_a = L"Data\\MTXTypes.datc64";
+    const wchar_t* w_b = L"/DATA/MtxTypes.datc64";
+    const uint64_t h_u8_a = nativemods::OverlayAndChannels::hash_virtual_path_ci_utf8(u8_a, std::strlen(u8_a));
+    const uint64_t h_u8_b = nativemods::OverlayAndChannels::hash_virtual_path_ci_utf8(u8_b, std::strlen(u8_b));
+    const uint64_t h_w_a  = nativemods::OverlayAndChannels::hash_virtual_path_ci_wide(w_a, std::wcslen(w_a));
+    const uint64_t h_w_b  = nativemods::OverlayAndChannels::hash_virtual_path_ci_wide(w_b, std::wcslen(w_b));
+    CHECK(h_u8_a != 0);
+    CHECK(h_u8_a == h_u8_b);
+    CHECK(h_u8_a == h_w_a);
+    CHECK(h_u8_a == h_w_b);
+
+    // 2. Verify nm_set_file_overlay_known_paths prevents callback invocations for all non-matching stock paths!
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    static uint8_t kPanelBytes[] = {0xFF, 0xFE, 'O', 0x00, 'K', 0x00};
+    struct FilterProbe {
+        int calls = 0;
+    } probe;
+
+    auto filtered_cb = [](const char* path, uint8_t** out_data, size_t* out_size, void* ud) -> nm_status_t {
+        auto* p = static_cast<FilterProbe*>(ud);
+        ++p->calls;
+        if (std::strcmp(path, "metadata/ui/mods/maxwell/maxwellpanel.ui") == 0) {
+            *out_data = kPanelBytes;
+            *out_size = sizeof(kPanelBytes);
+            return NM_OK;
+        }
+        return NM_ERR_SYMBOL_NOT_FOUND;
+    };
+
+    uint64_t tok = 0;
+    CHECK(nm_register_file_overlay(filtered_cb, nullptr, &probe, &tok) == NM_OK);
+    const char* known[] = {"Metadata\\UI\\Mods\\Maxwell\\MaxwellPanel.ui"};
+    CHECK(nm_set_file_overlay_known_paths(tok, known, 1) == NM_OK);
+
+    // Query 2000 stock game paths -> callback MUST NOT be invoked even once!
+    size_t sz = 0;
+    for (int i = 0; i < 2000; ++i) {
+        std::string stock = "Art/Textures/Stock_" + std::to_string(i) + ".dds";
+        CHECK(nm_has_file_overlay(stock.c_str(), &sz) == NM_ERR_SYMBOL_NOT_FOUND);
+    }
+    CHECK(probe.calls == 0);
+
+    // Query the registered overlay path (with different casing/slashes) -> callback IS invoked!
+    CHECK(nm_has_file_overlay("METADATA/ui/mods/maxwell/MAXWELLPANEL.UI", &sz) == NM_OK);
+    CHECK(sz == sizeof(kPanelBytes));
+    CHECK(probe.calls == 1);
+
+    // Empty known path list -> callback bypassed completely!
+    CHECK(nm_set_file_overlay_known_paths(tok, nullptr, 0) == NM_OK);
+    CHECK(nm_has_file_overlay("Metadata/UI/Mods/Maxwell/MaxwellPanel.ui", &sz) == NM_ERR_SYMBOL_NOT_FOUND);
+    CHECK(probe.calls == 1);
+
+    // 3. Verify nm_get_active_connection_token returns 0 cleanly on synthetic build
+    uint64_t conn_tok = 0xDEADBEEFull;
+    CHECK(nm_get_active_connection_token(&conn_tok) == NM_OK);
+    CHECK(conn_tok == 0ull);
+
+    CHECK(nm_unregister_file_overlay(tok) == NM_OK);
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -640,6 +709,7 @@ int main() {
     if (test_file_overlay_and_channels() != 0) return 1;
     if (test_prologue_length_and_sha256() != 0) return 1;
     if (test_disk_overlays_audio_and_wire_encoders() != 0) return 1;
+    if (test_overlay_hash_prefilter_and_connection_token() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

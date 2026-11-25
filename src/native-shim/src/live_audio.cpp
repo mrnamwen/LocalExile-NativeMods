@@ -453,18 +453,29 @@ nm_status_t LiveAudioManager::stop(int32_t channel_handle) {
         return NM_OK;
     }
 #if defined(_WIN32)
-    if (it->second.fmod_channel && g_fmod.Channel_Stop) {
-        (void)g_fmod.Channel_Stop(it->second.fmod_channel);
+    int32_t stop_rc = 0;
+    int32_t release_rc = 0;
+    if (it->second.fmod_channel) {
+        if (g_fmod.Channel_SetVolume) {
+            (void)g_fmod.Channel_SetVolume(it->second.fmod_channel, 0.0f);
+        }
+        if (g_fmod.Channel_Stop) {
+            stop_rc = g_fmod.Channel_Stop(it->second.fmod_channel);
+        }
     }
     if (it->second.fmod_sound && g_fmod.Sound_Release) {
-        (void)g_fmod.Sound_Release(it->second.fmod_sound);
+        release_rc = g_fmod.Sound_Release(it->second.fmod_sound);
     }
     if (fmod_system_ && g_fmod.System_Update) {
         (void)g_fmod.System_Update(fmod_system_);
     }
-#endif
     tracks_.erase(it);
-    logger_logf("INFO", "[AUDIO] Stopped handle=%d", channel_handle);
+    logger_logf("INFO", "[AUDIO] Stopped handle=%d (fmod_rc=%d, release_rc=%d)",
+                channel_handle, stop_rc, release_rc);
+#else
+    tracks_.erase(it);
+    logger_logf("INFO", "[AUDIO] Stopped handle=%d (fmod_rc=0)", channel_handle);
+#endif
     return NM_OK;
 }
 

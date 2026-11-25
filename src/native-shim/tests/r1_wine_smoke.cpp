@@ -151,6 +151,8 @@ int main() {
     SMOKE_CHECK(abi->audio_stop != nullptr);
     SMOKE_CHECK(abi->ui_create_window != nullptr);
     SMOKE_CHECK(abi->ui_subscribe_click != nullptr);
+    SMOKE_CHECK(abi->set_file_overlay_known_paths != nullptr);
+    SMOKE_CHECK(abi->get_active_connection_token != nullptr);
 
     constexpr const char* kSha3293d = "e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d";
     SMOKE_CHECK(p_init(NM_BUILD_3_29_3D_328228, NM_NOMINAL_IMAGE_BASE, 0x4d9a000u, kSha3293d) == NM_OK);
@@ -318,7 +320,10 @@ int main() {
     SMOKE_CHECK(audio_playing == 1);
     SMOKE_CHECK(abi->audio_set_volume(audio_handle, 0.25f) == NM_OK);
     SMOKE_CHECK(abi->audio_stop(audio_handle) == NM_OK);
-    std::printf("[r1_wine_smoke] Live file overlay dir (%zu bytes) & looping audio C ABI verified!\n", ui_size);
+    uint64_t conn_tok = 0xDEADBEEFull;
+    SMOKE_CHECK(abi->get_active_connection_token(&conn_tok) == NM_OK);
+    SMOKE_CHECK(conn_tok == 0ull);
+    std::printf("[r1_wine_smoke] Live file overlay dir (%zu bytes), connection token API & looping audio C ABI verified!\n", ui_size);
 
     // 7. Verify shared diagnostic log confirms CoreCLR + JsonAddressLibrary (110 symbols) +
     //    ClientModLoader (harvest-garden.Client.dll in collectible ALC) + 5 managed frame ticks!

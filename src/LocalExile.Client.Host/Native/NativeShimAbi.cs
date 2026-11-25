@@ -193,7 +193,7 @@ public unsafe struct NmExceptionInfo
 }
 
 /// <summary>
-/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.1.0, 39 function pointers).
+/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.1.0, 41 function pointers).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct NmAbiTable
@@ -259,5 +259,9 @@ public unsafe struct NmAbiTable
     public delegate* unmanaged[Cdecl]<void*, int, NmStatus> UiSetVisible;
     public delegate* unmanaged[Cdecl]<void*, byte*, int, NmStatus> UiSetText;
     public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, void*, void>, void*, ulong*, NmStatus> UiSubscribeClick;
+
+    /* Fast overlay path pre-filter & live connection generation token (2) */
+    public delegate* unmanaged[Cdecl]<ulong, byte**, nuint, NmStatus> SetFileOverlayKnownPaths;
+    public delegate* unmanaged[Cdecl]<ulong*, NmStatus> GetActiveConnectionToken;
 }
 

@@ -329,6 +329,13 @@ typedef struct nm_abi_table_t {
         nm_ui_event_callback_t cb,
         void*                  user_data,
         uint64_t*              out_token);
+
+    /* Fast overlay path pre-filter & live connection generation token (2) */
+    nm_status_t (NM_CALL *set_file_overlay_known_paths)(
+        uint64_t           token,
+        const char* const* paths_utf8,
+        size_t             path_count);
+    nm_status_t (NM_CALL *get_active_connection_token)(uint64_t* out_token);
 } nm_abi_table_t;
 
 /* Exported C ABI functions. */
@@ -396,6 +403,11 @@ NM_API nm_status_t NM_CALL nm_has_file_overlay(
     const char* virtual_path_utf8,
     size_t*     out_size);
 NM_API nm_status_t NM_CALL nm_free_file_overlay_buffer(uint8_t* data);
+NM_API nm_status_t NM_CALL nm_set_file_overlay_known_paths(
+    uint64_t           token,
+    const char* const* paths_utf8,
+    size_t             path_count);
+NM_API nm_status_t NM_CALL nm_get_active_connection_token(uint64_t* out_token);
 
 NM_API nm_status_t NM_CALL nm_audio_play_ogg(
     const char* virtual_or_disk_path_utf8,

@@ -137,9 +137,78 @@ std::wstring utf8_to_wide_local(const std::string& s) {
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), needed);
     return out;
 }
+
+std::string wide_to_utf8_local(const wchar_t* ptr, size_t len) {
+    if (!ptr || len == 0) return {};
+    const int needed = WideCharToMultiByte(CP_UTF8, 0, ptr, static_cast<int>(len), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return {};
+    std::string out(static_cast<size_t>(needed), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ptr, static_cast<int>(len), out.data(), needed, nullptr, nullptr);
+    return out;
+}
+
+void walk_dir_win32(
+    const std::string&                                            disk_dir,
+    const std::string&                                            rel_prefix,
+    std::unordered_map<std::string, OverlayIndex::DiskFileEntry>& out_files) {
+    std::string search = disk_dir;
+    if (!search.empty() && search.back() != '\\' && search.back() != '/') {
+        search.push_back('\\');
+    }
+    const std::string base_dir = search;
+    search.push_back('*');
+
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(utf8_to_wide_local(search).c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        if (std::wcscmp(fd.cFileName, L".") == 0 || std::wcscmp(fd.cFileName, L"..") == 0) {
+            continue;
+        }
+        const std::string name_u8 = wide_to_utf8_local(fd.cFileName, std::wcslen(fd.cFileName));
+        if (name_u8.empty()) {
+            continue;
+        }
+        const std::string child_disk = base_dir + name_u8;
+        const std::string child_rel = rel_prefix.empty() ? name_u8 : (rel_prefix + "/" + name_u8);
+
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+                walk_dir_win32(child_disk, child_rel, out_files);
+            }
+        } else {
+            const std::string norm = OverlayAndChannels::normalize_virtual_path(child_rel.c_str());
+            if (!is_safe_relative_virtual_path(norm)) {
+                continue;
+            }
+            const uint64_t raw_sz = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) |
+                                    static_cast<uint64_t>(fd.nFileSizeLow);
+            OverlayIndex::DiskFileEntry entry{};
+            entry.resolved_path = child_disk;
+            entry.raw_size = static_cast<size_t>(raw_sz);
+            entry.served_size = entry.raw_size;
+            entry.is_utf16_text = is_poe_utf16_text_extension(norm);
+            out_files[norm] = std::move(entry);
+        }
+    } while (FindNextFileW(h, &fd));
+
+    FindClose(h);
+}
 #endif
 
 } // namespace
+
+OverlayAndChannels::~OverlayAndChannels() {
+    const OverlayIndex* cur = active_index_.exchange(nullptr, std::memory_order_acq_rel);
+    delete cur;
+    for (OverlayIndex* old : retired_indices_) {
+        delete old;
+    }
+    retired_indices_.clear();
+}
 
 std::string OverlayAndChannels::normalize_virtual_path(const char* path) {
     if (!path) return {};
@@ -155,103 +224,174 @@ std::string OverlayAndChannels::normalize_virtual_path(const char* path) {
     return out;
 }
 
-bool OverlayAndChannels::stat_disk_overlay(
-    const std::string& root_dir,
-    const std::string& normalized_rel,
-    size_t&            out_size,
-    std::string&       out_resolved_path) {
-    out_size = 0;
-    out_resolved_path.clear();
-    if (root_dir.empty() || !is_safe_relative_virtual_path(normalized_rel)) {
-        return false;
+uint64_t OverlayAndChannels::hash_virtual_path_ci_utf8(const char* ptr, size_t len) noexcept {
+    if (!ptr || len == 0) return 0;
+    uint64_t h = 14695981039346656037ULL;
+    bool started = false;
+    for (size_t i = 0; i < len; ++i) {
+        uint8_t c = static_cast<uint8_t>(ptr[i]);
+        if (c == '\\') {
+            c = '/';
+        } else if (c >= 'A' && c <= 'Z') {
+            c = static_cast<uint8_t>(c + ('a' - 'A'));
+        }
+        if (!started) {
+            if (c == '/') continue;
+            started = true;
+        }
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+    if (!started) return 0;
+    return (h == 0) ? 1ULL : h;
+}
+
+uint64_t OverlayAndChannels::hash_virtual_path_ci_wide(const wchar_t* ptr, size_t len) noexcept {
+    if (!ptr || len == 0) return 0;
+    uint64_t h = 14695981039346656037ULL;
+    bool started = false;
+    for (size_t i = 0; i < len; ++i) {
+        uint32_t ch = static_cast<uint32_t>(ptr[i]);
+        if (ch == L'\\') {
+            ch = L'/';
+        } else if (ch >= L'A' && ch <= L'Z') {
+            ch += static_cast<uint32_t>(L'a' - L'A');
+        }
+        if (!started) {
+            if (ch == L'/') continue;
+            started = true;
+        }
+        if (ch < 0x80u) {
+            h ^= static_cast<uint8_t>(ch);
+            h *= 1099511628211ULL;
+        } else if (ch < 0x800u) {
+            h ^= static_cast<uint8_t>(0xC0u | (ch >> 6));
+            h *= 1099511628211ULL;
+            h ^= static_cast<uint8_t>(0x80u | (ch & 0x3Fu));
+            h *= 1099511628211ULL;
+        } else {
+            h ^= static_cast<uint8_t>(0xE0u | (ch >> 12));
+            h *= 1099511628211ULL;
+            h ^= static_cast<uint8_t>(0x80u | ((ch >> 6) & 0x3Fu));
+            h *= 1099511628211ULL;
+            h ^= static_cast<uint8_t>(0x80u | (ch & 0x3Fu));
+            h *= 1099511628211ULL;
+        }
+    }
+    if (!started) return 0;
+    return (h == 0) ? 1ULL : h;
+}
+
+void OverlayAndChannels::index_disk_directory(
+    const std::string&                                            root_dir,
+    std::unordered_map<std::string, OverlayIndex::DiskFileEntry>& out_files) {
+    if (root_dir.empty()) {
+        return;
     }
 
 #if defined(_WIN32)
-    // Windows / Wine / Proton paths are case-insensitive natively.
-    std::string combined = root_dir;
-    if (!combined.empty() && combined.back() != '\\' && combined.back() != '/') {
-        combined.push_back('\\');
-    }
-    for (char c : normalized_rel) {
-        combined.push_back(c == '/' ? '\\' : c);
-    }
-    const std::wstring wpath = utf8_to_wide_local(combined);
-    WIN32_FILE_ATTRIBUTE_DATA fad{};
-    if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &fad) != 0 &&
-        (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-        const uint64_t sz = (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) | static_cast<uint64_t>(fad.nFileSizeLow);
-        out_size = static_cast<size_t>(sz);
-        out_resolved_path = std::move(combined);
-        return true;
-    }
-    return false;
+    walk_dir_win32(root_dir, std::string{}, out_files);
 #else
     namespace fs = std::filesystem;
     std::error_code ec;
-    fs::path cur(root_dir);
-    if (!fs::exists(cur, ec) || !fs::is_directory(cur, ec)) {
-        return false;
+    fs::path root(root_dir);
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+        return;
     }
-
-    // Fast path: direct relative lookup.
-    fs::path direct = cur / normalized_rel;
-    if (fs::is_regular_file(direct, ec)) {
-        const auto sz = fs::file_size(direct, ec);
-        if (!ec) {
-            out_size = static_cast<size_t>(sz);
-            out_resolved_path = direct.string();
-            return true;
-        }
-    }
-
-    // Case-insensitive component walk for Linux host tests.
-    size_t start = 0;
-    while (start < normalized_rel.size()) {
-        size_t slash = normalized_rel.find('/', start);
-        const std::string seg = (slash == std::string::npos)
-                                    ? normalized_rel.substr(start)
-                                    : normalized_rel.substr(start, slash - start);
-        if (seg.empty()) {
-            if (slash == std::string::npos) break;
-            start = slash + 1;
+    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+         it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) {
             continue;
         }
+        const fs::path rel = fs::relative(it->path(), root, ec);
+        if (ec) {
+            continue;
+        }
+        const std::string norm = normalize_virtual_path(rel.generic_string().c_str());
+        if (!is_safe_relative_virtual_path(norm)) {
+            continue;
+        }
+        const auto raw_sz = it->file_size(ec);
+        if (ec) {
+            continue;
+        }
+        OverlayIndex::DiskFileEntry entry{};
+        entry.resolved_path = it->path().string();
+        entry.raw_size = static_cast<size_t>(raw_sz);
+        entry.served_size = entry.raw_size;
+        entry.is_utf16_text = is_poe_utf16_text_extension(norm);
+        out_files[norm] = std::move(entry);
+    }
+#endif
 
-        fs::path next = cur / seg;
-        if (fs::exists(next, ec)) {
-            cur = std::move(next);
+    // Precompute exact served size for PoE UTF-16LE text overlays (.ui/.ot/.ao/.act/.amd/.sm)
+    // once at index time so live has_file_overlay / size_query hits never touch disk!
+    for (auto& kv : out_files) {
+        if (kv.second.is_utf16_text && kv.second.raw_size > 0 && kv.second.raw_size <= 4u * 1024u * 1024u) {
+            std::vector<uint8_t> bytes;
+            if (read_disk_file(kv.second.resolved_path, bytes)) {
+                maybe_transcode_poe_text_inplace(kv.first, bytes);
+                kv.second.served_size = bytes.size();
+            }
+        }
+    }
+}
+
+void OverlayAndChannels::rebuild_index_locked() {
+    auto* next = new OverlayIndex();
+    next->generation = ++index_generation_;
+
+    // Walk overlay_dirs_ in registration order so later directories overwrite earlier ones (exact LIFO precedence!).
+    for (const auto& dir : overlay_dirs_) {
+        index_disk_directory(dir.root_dir, next->disk_files);
+    }
+
+    std::vector<uint64_t> all_hashes;
+    all_hashes.reserve(next->disk_files.size() + 32);
+    for (const auto& kv : next->disk_files) {
+        const uint64_t h = hash_virtual_path_ci_utf8(kv.first.data(), kv.first.size());
+        if (h != 0) {
+            all_hashes.push_back(h);
+        }
+    }
+
+    bool unfiltered = false;
+    for (const auto& cb : overlays_) {
+        if (!cb.has_path_filter) {
+            unfiltered = true;
         } else {
-            bool matched = false;
-            for (const auto& entry : fs::directory_iterator(cur, ec)) {
-                if (ec) break;
-                std::string name = entry.path().filename().string();
-                std::transform(name.begin(), name.end(), name.begin(),
-                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-                if (name == seg) {
-                    cur = entry.path();
-                    matched = true;
-                    break;
+            for (const auto& path : cb.known_paths) {
+                const uint64_t h = hash_virtual_path_ci_utf8(path.data(), path.size());
+                if (h != 0) {
+                    all_hashes.push_back(h);
                 }
             }
-            if (!matched) {
-                return false;
+        }
+    }
+
+    next->has_unfiltered_callbacks = unfiltered;
+    if (!all_hashes.empty()) {
+        size_t cap = 64;
+        while (cap < all_hashes.size() * 4u) {
+            cap <<= 1u;
+        }
+        next->ci_hash_table.assign(cap, 0ull);
+        next->ci_hash_mask = static_cast<uint64_t>(cap - 1u);
+        for (uint64_t h : all_hashes) {
+            size_t slot = static_cast<size_t>(h & next->ci_hash_mask);
+            while (next->ci_hash_table[slot] != 0 && next->ci_hash_table[slot] != h) {
+                slot = (slot + 1u) & static_cast<size_t>(next->ci_hash_mask);
             }
-        }
-
-        if (slash == std::string::npos) break;
-        start = slash + 1;
-    }
-
-    if (fs::is_regular_file(cur, ec)) {
-        const auto sz = fs::file_size(cur, ec);
-        if (!ec) {
-            out_size = static_cast<size_t>(sz);
-            out_resolved_path = cur.string();
-            return true;
+            next->ci_hash_table[slot] = h;
         }
     }
-    return false;
-#endif
+
+    next->empty = !next->has_unfiltered_callbacks && next->ci_hash_table.empty();
+
+    const OverlayIndex* prev = active_index_.exchange(next, std::memory_order_acq_rel);
+    if (prev != nullptr) {
+        retired_indices_.push_back(const_cast<OverlayIndex*>(prev));
+    }
 }
 
 bool OverlayAndChannels::read_disk_file(const std::string& resolved_path, std::vector<uint8_t>& out_bytes) {
@@ -314,7 +454,14 @@ nm_status_t OverlayAndChannels::register_file_overlay(
     }
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t token = next_token_++;
-    overlays_.push_back(OverlayEntry{token, cb, free_cb, user_data});
+    OverlayEntry entry{};
+    entry.token = token;
+    entry.cb = cb;
+    entry.free_cb = free_cb;
+    entry.user_data = user_data;
+    entry.has_path_filter = false;
+    overlays_.push_back(std::move(entry));
+    rebuild_index_locked();
     *out_token = token;
     return NM_OK;
 }
@@ -327,7 +474,36 @@ nm_status_t OverlayAndChannels::unregister_file_overlay(uint64_t token) {
         return NM_ERR_INVALID_ARG;
     }
     overlays_.erase(it, overlays_.end());
+    rebuild_index_locked();
     return NM_OK;
+}
+
+nm_status_t OverlayAndChannels::set_file_overlay_known_paths(
+    uint64_t           token,
+    const char* const* paths_utf8,
+    size_t             path_count) {
+    if (path_count > 0 && paths_utf8 == nullptr) {
+        return NM_ERR_INVALID_ARG;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& entry : overlays_) {
+        if (entry.token == token) {
+            entry.has_path_filter = true;
+            entry.known_paths.clear();
+            entry.known_paths.reserve(path_count);
+            for (size_t i = 0; i < path_count; ++i) {
+                if (paths_utf8[i] != nullptr && paths_utf8[i][0] != '\0') {
+                    const std::string norm = normalize_virtual_path(paths_utf8[i]);
+                    if (!norm.empty()) {
+                        entry.known_paths.insert(norm);
+                    }
+                }
+            }
+            rebuild_index_locked();
+            return NM_OK;
+        }
+    }
+    return NM_ERR_INVALID_ARG;
 }
 
 nm_status_t OverlayAndChannels::register_file_overlay_dir(const char* root_dir_utf8, uint64_t* out_token) {
@@ -337,6 +513,7 @@ nm_status_t OverlayAndChannels::register_file_overlay_dir(const char* root_dir_u
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t token = next_token_++;
     overlay_dirs_.push_back(OverlayDirEntry{token, std::string(root_dir_utf8)});
+    rebuild_index_locked();
     *out_token = token;
     return NM_OK;
 }
@@ -349,6 +526,7 @@ nm_status_t OverlayAndChannels::unregister_file_overlay_dir(uint64_t token) {
         return NM_ERR_INVALID_ARG;
     }
     overlay_dirs_.erase(it, overlay_dirs_.end());
+    rebuild_index_locked();
     return NM_OK;
 }
 
@@ -360,32 +538,52 @@ nm_status_t OverlayAndChannels::has_file_overlay(const char* virtual_path_utf8, 
         *out_size = 0;
     }
 
-    const std::string normalized = normalize_virtual_path(virtual_path_utf8);
-    if (normalized.empty()) {
+    const OverlayIndex* idx = get_active_index();
+    if (!idx || idx->empty) {
         return NM_ERR_SYMBOL_NOT_FOUND;
     }
 
-    std::vector<OverlayEntry> cb_snapshot;
-    std::vector<OverlayDirEntry> dir_snapshot;
+    if (!idx->has_unfiltered_callbacks) {
+        const uint64_t h = hash_virtual_path_ci_utf8(virtual_path_utf8, std::strlen(virtual_path_utf8));
+        if (!idx->might_contain_ci_hash(h)) {
+            return NM_ERR_SYMBOL_NOT_FOUND;
+        }
+    }
+
+    const std::string normalized = normalize_virtual_path(virtual_path_utf8);
+    if (normalized.empty() || !is_safe_relative_virtual_path(normalized)) {
+        return NM_ERR_SYMBOL_NOT_FOUND;
+    }
+
+    // Snapshot matching managed / dynamic callbacks only (never copy disk dirs or run stat()).
+    struct MatchingCallback {
+        nm_file_overlay_callback_t cb;
+        nm_file_overlay_free_t     free_cb;
+        void*                      user_data;
+    };
+    std::vector<MatchingCallback> matched_cbs;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        cb_snapshot = overlays_;
-        dir_snapshot = overlay_dirs_;
+        for (auto it = overlays_.rbegin(); it != overlays_.rend(); ++it) {
+            if (!it->has_path_filter || it->known_paths.find(normalized) != it->known_paths.end()) {
+                matched_cbs.push_back(MatchingCallback{it->cb, it->free_cb, it->user_data});
+            }
+        }
     }
 
     // 1. Managed / dynamic callbacks (LIFO).
-    for (auto it = cb_snapshot.rbegin(); it != cb_snapshot.rend(); ++it) {
+    for (const auto& cb : matched_cbs) {
         uint8_t* data = nullptr;
         size_t size = 0;
-        if (it->cb(normalized.c_str(), &data, &size, it->user_data) == NM_OK && data != nullptr) {
+        if (cb.cb(normalized.c_str(), &data, &size, cb.user_data) == NM_OK && data != nullptr) {
             size_t final_size = size;
             if (out_size && needs_utf8_to_utf16le_transcode(normalized, data, size)) {
                 std::vector<uint8_t> transcoded;
                 transcode_utf8_to_utf16le_bom_crlf(data, size, transcoded);
                 final_size = transcoded.size();
             }
-            if (it->free_cb) {
-                it->free_cb(data, it->user_data);
+            if (cb.free_cb) {
+                cb.free_cb(data, cb.user_data);
             }
             if (out_size) {
                 *out_size = final_size;
@@ -394,23 +592,13 @@ nm_status_t OverlayAndChannels::has_file_overlay(const char* virtual_path_utf8, 
         }
     }
 
-    // 2. Native disk overlay directories (LIFO, fast stat without reading file for binary assets).
-    for (auto it = dir_snapshot.rbegin(); it != dir_snapshot.rend(); ++it) {
-        size_t sz = 0;
-        std::string resolved;
-        if (stat_disk_overlay(it->root_dir, normalized, sz, resolved)) {
-            if (out_size) {
-                if (is_poe_utf16_text_extension(normalized) && sz > 0) {
-                    std::vector<uint8_t> bytes;
-                    if (read_disk_file(resolved, bytes)) {
-                        maybe_transcode_poe_text_inplace(normalized, bytes);
-                        sz = bytes.size();
-                    }
-                }
-                *out_size = sz;
-            }
-            return NM_OK;
+    // 2. Pre-indexed native disk overlay directories (O(1) map lookup, ZERO disk syscalls!).
+    const auto disk_it = idx->disk_files.find(normalized);
+    if (disk_it != idx->disk_files.end()) {
+        if (out_size) {
+            *out_size = disk_it->second.served_size;
         }
+        return NM_OK;
     }
 
     return NM_ERR_SYMBOL_NOT_FOUND;
@@ -422,42 +610,58 @@ bool OverlayAndChannels::resolve_file_overlay_owned(const char* virtual_path_utf
         return false;
     }
 
-    const std::string normalized = normalize_virtual_path(virtual_path_utf8);
-    if (normalized.empty()) {
+    const OverlayIndex* idx = get_active_index();
+    if (!idx || idx->empty) {
         return false;
     }
 
-    std::vector<OverlayEntry> cb_snapshot;
-    std::vector<OverlayDirEntry> dir_snapshot;
+    if (!idx->has_unfiltered_callbacks) {
+        const uint64_t h = hash_virtual_path_ci_utf8(virtual_path_utf8, std::strlen(virtual_path_utf8));
+        if (!idx->might_contain_ci_hash(h)) {
+            return false;
+        }
+    }
+
+    const std::string normalized = normalize_virtual_path(virtual_path_utf8);
+    if (normalized.empty() || !is_safe_relative_virtual_path(normalized)) {
+        return false;
+    }
+
+    struct MatchingCallback {
+        nm_file_overlay_callback_t cb;
+        nm_file_overlay_free_t     free_cb;
+        void*                      user_data;
+    };
+    std::vector<MatchingCallback> matched_cbs;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        cb_snapshot = overlays_;
-        dir_snapshot = overlay_dirs_;
+        for (auto it = overlays_.rbegin(); it != overlays_.rend(); ++it) {
+            if (!it->has_path_filter || it->known_paths.find(normalized) != it->known_paths.end()) {
+                matched_cbs.push_back(MatchingCallback{it->cb, it->free_cb, it->user_data});
+            }
+        }
     }
 
     // 1. Managed / dynamic callbacks take highest precedence (LIFO).
-    for (auto it = cb_snapshot.rbegin(); it != cb_snapshot.rend(); ++it) {
+    for (const auto& cb : matched_cbs) {
         uint8_t* data = nullptr;
         size_t size = 0;
-        if (it->cb(normalized.c_str(), &data, &size, it->user_data) == NM_OK && data != nullptr) {
+        if (cb.cb(normalized.c_str(), &data, &size, cb.user_data) == NM_OK && data != nullptr) {
             out_bytes.assign(data, data + size);
-            if (it->free_cb) {
-                it->free_cb(data, it->user_data);
+            if (cb.free_cb) {
+                cb.free_cb(data, cb.user_data);
             }
             maybe_transcode_poe_text_inplace(normalized, out_bytes);
             return true;
         }
     }
 
-    // 2. Native disk overlay directories (LIFO — includes early-boot NATIVEMODS_OVERLAY_DIR).
-    for (auto it = dir_snapshot.rbegin(); it != dir_snapshot.rend(); ++it) {
-        size_t sz = 0;
-        std::string resolved;
-        if (stat_disk_overlay(it->root_dir, normalized, sz, resolved)) {
-            if (read_disk_file(resolved, out_bytes)) {
-                maybe_transcode_poe_text_inplace(normalized, out_bytes);
-                return true;
-            }
+    // 2. Pre-indexed native disk overlay directories (LIFO precedence already resolved in index).
+    const auto disk_it = idx->disk_files.find(normalized);
+    if (disk_it != idx->disk_files.end()) {
+        if (read_disk_file(disk_it->second.resolved_path, out_bytes)) {
+            maybe_transcode_poe_text_inplace(normalized, out_bytes);
+            return true;
         }
     }
 
@@ -471,29 +675,48 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
     *out_data = nullptr;
     *out_size = 0;
 
-    const std::string normalized = normalize_virtual_path(virtual_path_utf8);
-    if (normalized.empty()) {
+    const OverlayIndex* idx = get_active_index();
+    if (!idx || idx->empty) {
         return NM_ERR_SYMBOL_NOT_FOUND;
     }
 
-    std::vector<OverlayEntry> cb_snapshot;
-    std::vector<OverlayDirEntry> dir_snapshot;
+    if (!idx->has_unfiltered_callbacks) {
+        const uint64_t h = hash_virtual_path_ci_utf8(virtual_path_utf8, std::strlen(virtual_path_utf8));
+        if (!idx->might_contain_ci_hash(h)) {
+            return NM_ERR_SYMBOL_NOT_FOUND;
+        }
+    }
+
+    const std::string normalized = normalize_virtual_path(virtual_path_utf8);
+    if (normalized.empty() || !is_safe_relative_virtual_path(normalized)) {
+        return NM_ERR_SYMBOL_NOT_FOUND;
+    }
+
+    struct MatchingCallback {
+        nm_file_overlay_callback_t cb;
+        nm_file_overlay_free_t     free_cb;
+        void*                      user_data;
+    };
+    std::vector<MatchingCallback> matched_cbs;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        cb_snapshot = overlays_;
-        dir_snapshot = overlay_dirs_;
+        for (auto it = overlays_.rbegin(); it != overlays_.rend(); ++it) {
+            if (!it->has_path_filter || it->known_paths.find(normalized) != it->known_paths.end()) {
+                matched_cbs.push_back(MatchingCallback{it->cb, it->free_cb, it->user_data});
+            }
+        }
     }
 
     // Latest registered callback overlay wins (LIFO precedence).
-    for (auto it = cb_snapshot.rbegin(); it != cb_snapshot.rend(); ++it) {
+    for (const auto& cb : matched_cbs) {
         uint8_t* data = nullptr;
         size_t size = 0;
-        if (it->cb(normalized.c_str(), &data, &size, it->user_data) == NM_OK && data != nullptr) {
+        if (cb.cb(normalized.c_str(), &data, &size, cb.user_data) == NM_OK && data != nullptr) {
             if (needs_utf8_to_utf16le_transcode(normalized, data, size)) {
                 std::vector<uint8_t> transcoded;
                 transcode_utf8_to_utf16le_bom_crlf(data, size, transcoded);
-                if (it->free_cb) {
-                    it->free_cb(data, it->user_data);
+                if (cb.free_cb) {
+                    cb.free_cb(data, cb.user_data);
                 }
                 auto* buf = new uint8_t[std::max<size_t>(1, transcoded.size())];
                 if (!transcoded.empty()) {
@@ -508,9 +731,9 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
                 return NM_OK;
             }
 
-            if (it->free_cb) {
+            if (cb.free_cb) {
                 std::lock_guard<std::mutex> lock(mutex_);
-                owned_buffers_[data] = OwnedBufferRecord{it->free_cb, it->user_data, false};
+                owned_buffers_[data] = OwnedBufferRecord{cb.free_cb, cb.user_data, false};
             }
             *out_data = data;
             *out_size = size;
@@ -518,26 +741,23 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
         }
     }
 
-    // Fallback to native disk overlay directories (LIFO).
-    for (auto it = dir_snapshot.rbegin(); it != dir_snapshot.rend(); ++it) {
-        size_t sz = 0;
-        std::string resolved;
-        if (stat_disk_overlay(it->root_dir, normalized, sz, resolved)) {
-            std::vector<uint8_t> bytes;
-            if (read_disk_file(resolved, bytes)) {
-                maybe_transcode_poe_text_inplace(normalized, bytes);
-                auto* buf = new uint8_t[std::max<size_t>(1, bytes.size())];
-                if (!bytes.empty()) {
-                    std::memcpy(buf, bytes.data(), bytes.size());
-                }
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    owned_buffers_[buf] = OwnedBufferRecord{nullptr, nullptr, true};
-                }
-                *out_data = buf;
-                *out_size = bytes.size();
-                return NM_OK;
+    // Fallback to pre-indexed native disk overlay directories (LIFO).
+    const auto disk_it = idx->disk_files.find(normalized);
+    if (disk_it != idx->disk_files.end()) {
+        std::vector<uint8_t> bytes;
+        if (read_disk_file(disk_it->second.resolved_path, bytes)) {
+            maybe_transcode_poe_text_inplace(normalized, bytes);
+            auto* buf = new uint8_t[std::max<size_t>(1, bytes.size())];
+            if (!bytes.empty()) {
+                std::memcpy(buf, bytes.data(), bytes.size());
             }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                owned_buffers_[buf] = OwnedBufferRecord{nullptr, nullptr, true};
+            }
+            *out_data = buf;
+            *out_size = bytes.size();
+            return NM_OK;
         }
     }
 
@@ -762,6 +982,12 @@ void OverlayAndChannels::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     overlays_.clear();
     overlay_dirs_.clear();
+    const OverlayIndex* cur = active_index_.exchange(nullptr, std::memory_order_acq_rel);
+    delete cur;
+    for (OverlayIndex* old : retired_indices_) {
+        delete old;
+    }
+    retired_indices_.clear();
     for (auto& kv : owned_buffers_) {
         if (kv.second.cpp_delete_array) {
             delete[] kv.first;
