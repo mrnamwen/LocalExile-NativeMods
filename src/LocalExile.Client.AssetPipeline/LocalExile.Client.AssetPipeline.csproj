@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>LocalExile.Client.AssetPipeline</AssemblyName>
+    <RootNamespace>LocalExile.Client.AssetPipeline</RootNamespace>
+    <Description>Reusable Path of Exile 3.29 asset conversion and .datc64 row-patching pipeline (GLB -> .smd/.sm/.ast/.amd/.mat/.ot/.ao/.act, DDS + .dds.header, OGG Vorbis, .datc64).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OozSharp" Version="3.1.0" />
+  </ItemGroup>
+</Project>
