@@ -479,7 +479,25 @@ public sealed class ClientModLoader : IDisposable
         string shadowDir = alc.ShadowDirectory;
         var weakRef = new WeakReference(alc, trackResurrection: true);
         alc.Unload();
+        TryClearSystemTextJsonMetadataCache();
         return (true, weakRef, shadowDir);
+    }
+
+    private static void TryClearSystemTextJsonMetadataCache()
+    {
+        // Defense-in-depth: if a client mod invoked System.Text.Json.JsonSerializer directly on its own types,
+        // flush STJ's hot-reload metadata cache so the collectible AssemblyLoadContext is not pinned.
+        try
+        {
+            Type? handler = typeof(System.Text.Json.JsonSerializerOptions).Assembly
+                .GetType("System.Text.Json.JsonSerializerOptionsUpdateHandler");
+            handler?.GetMethod("ClearCache", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                ?.Invoke(null, [null]);
+        }
+        catch
+        {
+            // Best-effort only; MessageCodec itself uses CollectibleJsonCodec and never populates STJ caches for collectible types.
+        }
     }
 
     /// <summary>
