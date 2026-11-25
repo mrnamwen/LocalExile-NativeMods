@@ -126,10 +126,18 @@ public interface INativeBridge : IDisposable
 /// </summary>
 public sealed unsafe class NativeShimBridge : INativeBridge
 {
+    private enum CallbackKind : byte
+    {
+        Frame = 0,
+        FileOverlay = 1,
+        Ruleset = 2,
+        Chat = 3,
+    }
+
     private readonly NmAbiTable* _table;
     private readonly int _gameThreadId;
     private readonly ConcurrentQueue<Action> _pendingWork = new();
-    private readonly ConcurrentDictionary<ulong, GCHandle> _pinnedCallbacks = new();
+    private readonly ConcurrentDictionary<(CallbackKind Kind, ulong Token), GCHandle> _pinnedCallbacks = new();
     private readonly ConcurrentDictionary<string, int> _localStats = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<uint, WorldObjectInfo> _clientObjects = new();
     private readonly ConcurrentDictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawReceivers = new();
@@ -380,16 +388,16 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             EnsureOk(status, "RegisterFrameCallback");
         }
 
-        ulong capturedToken = token;
-        _pinnedCallbacks[capturedToken] = handle;
+        var key = (CallbackKind.Frame, token);
+        _pinnedCallbacks[key] = handle;
         return new ActionDisposable(() =>
         {
             if (_table->UnregisterFrameCallback is not null)
             {
-                _table->UnregisterFrameCallback(capturedToken);
+                _table->UnregisterFrameCallback(key.token);
             }
 
-            if (_pinnedCallbacks.TryRemove(capturedToken, out GCHandle h) && h.IsAllocated)
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
             {
                 h.Free();
             }
@@ -448,16 +456,16 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             EnsureOk(status, "RegisterFileOverlay");
         }
 
-        ulong capturedToken = token;
-        _pinnedCallbacks[capturedToken] = handle;
+        var key = (CallbackKind.FileOverlay, token);
+        _pinnedCallbacks[key] = handle;
         return new ActionDisposable(() =>
         {
             if (_table->UnregisterFileOverlay is not null)
             {
-                _table->UnregisterFileOverlay(capturedToken);
+                _table->UnregisterFileOverlay(key.token);
             }
 
-            if (_pinnedCallbacks.TryRemove(capturedToken, out GCHandle h) && h.IsAllocated)
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
             {
                 h.Free();
             }
@@ -491,16 +499,16 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             EnsureOk(status, "RegisterRulesetReceiver");
         }
 
-        ulong capturedToken = token;
-        _pinnedCallbacks[capturedToken] = handle;
+        var key = (CallbackKind.Ruleset, token);
+        _pinnedCallbacks[key] = handle;
         return new ActionDisposable(() =>
         {
             if (_table->UnregisterRulesetHandler is not null)
             {
-                _table->UnregisterRulesetHandler(capturedToken);
+                _table->UnregisterRulesetHandler(key.token);
             }
 
-            if (_pinnedCallbacks.TryRemove(capturedToken, out GCHandle h) && h.IsAllocated)
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
             {
                 h.Free();
             }
@@ -540,16 +548,16 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             EnsureOk(status, "RegisterChatInterceptor");
         }
 
-        ulong capturedToken = token;
-        _pinnedCallbacks[capturedToken] = handle;
+        var key = (CallbackKind.Chat, token);
+        _pinnedCallbacks[key] = handle;
         return new ActionDisposable(() =>
         {
             if (_table->UnregisterChatChannelHandler is not null)
             {
-                _table->UnregisterChatChannelHandler(capturedToken);
+                _table->UnregisterChatChannelHandler(key.token);
             }
 
-            if (_pinnedCallbacks.TryRemove(capturedToken, out GCHandle h) && h.IsAllocated)
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
             {
                 h.Free();
             }

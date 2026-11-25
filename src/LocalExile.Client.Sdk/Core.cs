@@ -271,7 +271,16 @@ public sealed record ClientModManifest(
         bool rawAccess = GetBool(clientSection, "rawAccess") ?? GetBool(root, "rawAccess") ?? false;
         string? rawJustification = GetString(clientSection, "rawAccessJustification")
             ?? GetString(root, "rawAccessJustification");
-        string? payloadHash = GetString(clientSection, "payloadHash") ?? GetString(root, "payloadHash");
+        string? payloadHash = GetString(clientSection, "payloadHash")
+            ?? GetString(clientSection, "bundleSha256")
+            ?? GetString(root, "payloadHash")
+            ?? GetString(root, "bundleSha256");
+        if (payloadHash is null
+            && clientSection.TryGetProperty("integrity", out JsonElement integrityElem)
+            && integrityElem.ValueKind == JsonValueKind.Object)
+        {
+            payloadHash = GetString(integrityElem, "packageSha256");
+        }
         bool enabled = GetBool(root, "enabled") ?? true;
 
         return new ClientModManifest(

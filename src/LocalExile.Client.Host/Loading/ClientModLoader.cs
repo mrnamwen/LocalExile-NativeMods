@@ -262,10 +262,29 @@ public sealed class ClientModLoader : IDisposable
         var loaded = new LoadedClientMod(manifest, fullDir, assemblyPath, generation);
 
         // Register loose payload directory if present.
-        string payloadDir = !string.IsNullOrWhiteSpace(manifest.PayloadDir)
-            ? Path.Combine(fullDir, manifest.PayloadDir)
-            : Path.Combine(fullDir, "files");
-        if (Directory.Exists(payloadDir))
+        // WaypointModInstaller copies mod.json (with payloadDir: "client") into Mods/Client/<id>/mod.json
+        // while deploying UTF-16LE loose overlays into Mods/Client/<id>/files/, so fall back to "files"
+        // whenever manifest.PayloadDir does not exist in the deployed mod folder.
+        string? payloadDir = null;
+        if (!string.IsNullOrWhiteSpace(manifest.PayloadDir))
+        {
+            string declared = Path.Combine(fullDir, manifest.PayloadDir);
+            if (Directory.Exists(declared))
+            {
+                payloadDir = declared;
+            }
+        }
+
+        if (payloadDir is null)
+        {
+            string defaultFilesDir = Path.Combine(fullDir, "files");
+            if (Directory.Exists(defaultFilesDir))
+            {
+                payloadDir = defaultFilesDir;
+            }
+        }
+
+        if (payloadDir is not null)
         {
             loaded.TrackedDisposables.Add(_runtime.FileOverlayService.RegisterDirectoryForMod(manifest.Id, payloadDir, priority: 0));
         }

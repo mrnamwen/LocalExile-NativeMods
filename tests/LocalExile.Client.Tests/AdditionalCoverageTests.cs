@@ -58,6 +58,38 @@ public sealed class AdditionalCoverageTests
         Assert.True(manifest.RawAccess);
         Assert.Equal("Reads camera node pointer", manifest.RawAccessJustification);
         Assert.Equal("deadbeef", manifest.PayloadHash);
+
+        // Also verify bundleSha256 fallback & Waypoint-deployed Mods/Client/<id>/files/ fallback.
+        string tempModDir = Path.Combine(Path.GetTempPath(), $"nm-wp-layout-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(tempModDir, "files", "metadata", "ui", "mods", "wp"));
+        try
+        {
+            File.WriteAllText(Path.Combine(tempModDir, "mod.json"), """
+                {
+                  "id": "wpmod",
+                  "name": "Waypoint Deployed Mod",
+                  "version": "1.0.0",
+                  "nativeClient": {
+                    "sdkVersionRange": ">=0.1.0-poc",
+                    "payloadDir": "client",
+                    "bundleSha256": "cafebabe01234567"
+                  }
+                }
+                """);
+            File.WriteAllBytes(
+                Path.Combine(tempModDir, "files", "metadata", "ui", "mods", "wp", "test.ui"),
+                ClientTextEncoding.EncodeUtf16LeBomCrlf("begin Frame\n id = wp_win;\nend"));
+
+            using var bridge = new SimulatedNativeBridge();
+            using var host = new ClientHostRuntime(bridge);
+            LoadedClientMod loaded = host.Loader.LoadModFromDirectory(tempModDir);
+            Assert.Equal("cafebabe01234567", loaded.Manifest.PayloadHash);
+            Assert.True(host.FileOverlayService.Exists("Metadata/UI/Mods/WP/Test.ui"));
+        }
+        finally
+        {
+            Directory.Delete(tempModDir, recursive: true);
+        }
     }
 
     [Fact]

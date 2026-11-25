@@ -176,8 +176,13 @@ public sealed class AddressLibraryTests
     [Fact]
     public unsafe void NativeShimBridge_BindsToUnmanagedAbiTableAndNativeEntryPoint()
     {
-        // Build a genuine unmanaged nm_abi_table_t matching nativemods_abi.h and verify NativeEntryPoint + NativeShimBridge!
+        // Exact C ABI struct size parity with src/native-shim/include/nativemods_abi.h (x64).
+        Assert.Equal(120, sizeof(NmHostInfo));
+        Assert.Equal(48, sizeof(NmSymbolInfo));
         Assert.Equal(16, sizeof(NmGameAllocHeader));
+        Assert.Equal(528, sizeof(NmExceptionInfo));
+        Assert.Equal(200, sizeof(NmAbiTable));
+        Assert.Equal("LocalExile.Client.Host.NativeEntryPoint", typeof(NativeEntryPoint).FullName);
 
         NmAbiTable table = default;
         table.StructSize = (uint)sizeof(NmAbiTable);
@@ -188,11 +193,20 @@ public sealed class AddressLibraryTests
         table.VerifyBytes = &MockVerifyBytes;
         table.InstallInlineHook = &MockInstallInlineHook;
         table.RemoveHook = &MockRemoveHook;
+        table.RegisterFrameCallback = &MockRegisterFrameCallback;
+        table.UnregisterFrameCallback = &MockUnregisterFrameCallback;
+        table.RegisterFileOverlay = &MockRegisterFileOverlay;
+        table.UnregisterFileOverlay = &MockUnregisterFileOverlay;
+        table.RegisterRulesetHandler = &MockRegisterRulesetHandler;
+        table.UnregisterRulesetHandler = &MockUnregisterRulesetHandler;
+        table.RegisterChatChannelHandler = &MockRegisterChatHandler;
+        table.UnregisterChatChannelHandler = &MockUnregisterChatHandler;
         table.SendRulesetPacket = &MockSendRulesetPacket;
         table.SendChatLine = &MockSendChatLine;
 
         _lastSentRulesetLen = 0;
         _lastSentChat = null;
+        _unregisteredCount = 0;
 
         int status = NativeEntryPoint.InitializeManaged((nint)(&table));
         try
@@ -205,6 +219,13 @@ public sealed class AddressLibraryTests
             Assert.True(rt.Addresses.TryResolveRva("frame.state_stack_pass_a_hook", out ulong rva));
             Assert.Equal(0x1528FBFul, rva);
             Assert.True(rt.Bridge.VerifyExpectedBytes(rt.Addresses.ResolveAddress("frame.state_stack_pass_a_hook"), "488b5d284883eb10"));
+
+            // Registering Frame, FileOverlay, Ruleset, and Chat callbacks that all receive token=1 from separate
+            // C++ counters must not collide in _pinnedCallbacks or leak GCHandles.
+            using IDisposable fSub = rt.Bridge.RegisterFrameCallback(_ => { });
+            using IDisposable oSub = rt.Bridge.RegisterFileOverlayResolver(_ => null);
+            using IDisposable rSub = rt.Bridge.RegisterRulesetReceiver(0xA1, _ => { });
+            using IDisposable cSub = rt.Bridge.RegisterChatInterceptor((_, _) => false);
 
             ulong hook = rt.Bridge.InstallInlineHook("frame.state_stack_pass_a_hook", 0x1234, out nint tramp);
             Assert.NotEqual(0ul, hook);
@@ -221,13 +242,25 @@ public sealed class AddressLibraryTests
         {
             NativeEntryPoint.Shutdown();
         }
+
+        Assert.True(_unregisteredCount >= 4);
     }
 
-    private static readonly byte[] MockSymName = "frame.state_stack_pass_a_hook\0"u8.ToArray();
-    private static readonly byte[] MockSymCat = "frame\0"u8.ToArray();
-    private static readonly byte[] MockSymBytes = "488b5d284883eb10\0"u8.ToArray();
+    private static readonly byte[] MockSymName = AllocatePinnedUtf8("frame.state_stack_pass_a_hook");
+    private static readonly byte[] MockSymCat = AllocatePinnedUtf8("frame");
+    private static readonly byte[] MockSymBytes = AllocatePinnedUtf8("488b5d284883eb10");
     private static int _lastSentRulesetLen;
     private static string? _lastSentChat;
+    private static int _unregisteredCount;
+
+    private static byte[] AllocatePinnedUtf8(string text)
+    {
+        byte[] utf8 = Encoding.UTF8.GetBytes(text);
+        byte[] pinned = GC.AllocateArray<byte>(utf8.Length + 1, pinned: true);
+        utf8.CopyTo(pinned, 0);
+        pinned[utf8.Length] = 0;
+        return pinned;
+    }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe NmStatus MockGetHostInfo(NmHostInfo* outInfo)
@@ -261,21 +294,56 @@ public sealed class AddressLibraryTests
 
     private static unsafe NmStatus FillSymbol0(NmSymbolInfo* outSym)
     {
-        fixed (byte* pName = MockSymName)
-        fixed (byte* pCat = MockSymCat)
-        fixed (byte* pBytes = MockSymBytes)
-        {
-            outSym->Name = pName;
-            outSym->Category = pCat;
-            outSym->Kind = NmSymbolKind.Code;
-            outSym->Status = NmSymbolStatus.LiveVerified;
-            outSym->Rva = 0x1528FBFul;
-            outSym->RuntimeAddress = NativeShimConstants.NominalImageBase + 0x1528FBFul;
-            outSym->ExpectedBytesHex = pBytes;
-        }
-
+        // Arrays are allocated on the Pinned Object Heap (GC.AllocateArray pinned:true), so these pointers never move.
+        outSym->Name = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(MockSymName));
+        outSym->Category = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(MockSymCat));
+        outSym->Kind = NmSymbolKind.Code;
+        outSym->Status = NmSymbolStatus.LiveVerified;
+        outSym->Rva = 0x1528FBFul;
+        outSym->RuntimeAddress = NativeShimConstants.NominalImageBase + 0x1528FBFul;
+        outSym->ExpectedBytesHex = (byte*)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(MockSymBytes));
         return NmStatus.Ok;
     }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockRegisterFrameCallback(delegate* unmanaged[Cdecl]<float, void*, void> cb, void* ud, ulong* outToken)
+    {
+        *outToken = 1;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static NmStatus MockUnregisterFrameCallback(ulong token) { Interlocked.Increment(ref _unregisteredCount); return NmStatus.Ok; }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockRegisterFileOverlay(delegate* unmanaged[Cdecl]<byte*, byte**, nuint*, void*, NmStatus> cb, delegate* unmanaged[Cdecl]<byte*, void*, void> freeCb, void* ud, ulong* outToken)
+    {
+        *outToken = 1;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static NmStatus MockUnregisterFileOverlay(ulong token) { Interlocked.Increment(ref _unregisteredCount); return NmStatus.Ok; }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockRegisterRulesetHandler(uint rulesetId, delegate* unmanaged[Cdecl]<uint, byte*, uint, void*, void> cb, void* ud, ulong* outToken)
+    {
+        *outToken = 1;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static NmStatus MockUnregisterRulesetHandler(ulong token) { Interlocked.Increment(ref _unregisteredCount); return NmStatus.Ok; }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockRegisterChatHandler(delegate* unmanaged[Cdecl]<byte*, byte*, void*, void> cb, void* ud, ulong* outToken)
+    {
+        *outToken = 1;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static NmStatus MockUnregisterChatHandler(ulong token) { Interlocked.Increment(ref _unregisteredCount); return NmStatus.Ok; }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe NmStatus MockVerifyBytes(ulong address, byte* expectedHex)
