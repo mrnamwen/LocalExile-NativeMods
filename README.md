@@ -55,6 +55,21 @@ game.
 
 **Target clients: 3.29.3c and 3.29.3d only**, the builds LocalExile supports.
 
+## Proof of Concept & API Documentation
+
+This repository now includes a cross-platform **.NET 10 + C++20 Proof of Concept** implementing the script extender architecture in [11-client-sdk.md](11-client-sdk.md):
+
+- **Developer Documentation:** [docs/README.md](docs/README.md) — quickstart, architecture diagram, [API Reference](docs/api-reference.md), [Address Library Guide](docs/address-library.md), [Patcher & Native Shim](docs/patcher-and-shim.md), [Waypoint Integration](docs/waypoint-integration.md), and [Authoring Dual-Side Mods](docs/authoring-dual-mods.md).
+- **Source & Libraries (`src/`):**
+  - [src/LocalExile.Client.Sdk/](src/LocalExile.Client.Sdk/) — public versioned Client SDK (`0.1.0-poc`) for third-party client mods (`Engine`, `Extend`, `Net`, `Raw`, `IAddressLibrary`).
+  - [src/LocalExile.Client.Host/](src/LocalExile.Client.Host/) — managed `.NET 10` client host with collectible `AssemblyLoadContext` hot reload, `NativeShimBridge`, and `SimulatedNativeBridge`.
+  - [src/LocalExile.Client.ServerBridge/](src/LocalExile.Client.ServerBridge/) — Gateway-side bridge (`ClientBridgeHost`, `Client.For`, handshake, `HostRuleset` `0x2c9`/`0x2ca` & `ChatFallback` transports, server-driven UI).
+  - [src/LocalExile.Client.Patcher/](src/LocalExile.Client.Patcher/) — universal PE32+ import-table patcher library & CLI (`check`, `patch`, `verify`, `unpatch`, `dump-addresses`, `--proxy-dll`).
+  - [src/native-shim/](src/native-shim/) — C++20 Win64 script extender shim (`LocalExile.ClientHost.dll`, `include/nativemods_abi.h`, `version.dll` proxy, host-side CTest suite).
+  - [src/LocalExile.Client.Waypoint/](src/LocalExile.Client.Waypoint/) — Waypoint dual-side manifest validator, `.ui` linter, `NMB1` stored-block bundle packer, installer, and extender manager.
+- **Address Library & Dual-Side Example:** [data/addresses/](data/addresses/) (`3.29.3d.json`, `3.29.3c.json`, `address-library.schema.json`) and [examples/DualMod.HarvestGarden/](examples/DualMod.HarvestGarden/).
+- **Knowledge Base:** [.codexmind/index.md](.codexmind/index.md) — distilled 3.29 findings, architecture decisions, and known regressions.
+
 ## Documents
 
 | File | What it holds |
