@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -89,6 +90,7 @@ public sealed class ClientPatcher
     public const string ProxyManifestFileName = ".nativemods-proxy.json";
 
     private static readonly byte[] UnpatchMagic = "NMUNPAT1"u8.ToArray();
+    private static readonly JsonSerializerOptions PrettyJsonOptions = new() { WriteIndented = true };
     private const uint UnpatchFormatVersion = 1;
     private const uint PatchSectionCharacteristics = 0xC0000040u; // CNT_INITIALIZED_DATA | MEM_READ | MEM_WRITE
 
@@ -280,6 +282,7 @@ public sealed class ClientPatcher
             Message: $"Injected import '{options.DllName}' ({options.ImportAnchorSymbol}) into section {PatchSectionName} at RVA 0x{newSecRva:X}."));
     }
 
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Part of the uniform ClientPatcher instance service surface.")]
     public VerifyResult VerifyBytes(byte[] bytes, string dllName = DefaultHostDllName)
     {
         try
@@ -343,6 +346,7 @@ public sealed class ClientPatcher
         }
     }
 
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Part of the uniform ClientPatcher instance service surface.")]
     public (byte[] RestoredBytes, UnpatchResult Result) UnpatchBytes(byte[] patchedBytes)
     {
         var image = Pe32PlusImage.Parse(patchedBytes);
@@ -453,6 +457,7 @@ public sealed class ClientPatcher
 
     // ---- Proxy-DLL (version.dll) Fallback Deployment ----
 
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Part of the uniform ClientPatcher instance service surface.")]
     public ProxyDeploymentManifest DeployProxyDll(
         string clientDirectory,
         string proxyDllSourcePath,
@@ -486,10 +491,11 @@ public sealed class ClientPatcher
             WineDllOverridesHint: $"WINEDLLOVERRIDES=\"{Path.GetFileNameWithoutExtension(proxyDllName)}=n,b\"");
 
         string manifestPath = Path.Combine(clientDirectory, ProxyManifestFileName);
-        File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest, PrettyJsonOptions));
         return manifest;
     }
 
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Part of the uniform ClientPatcher instance service surface.")]
     public (bool IsValid, string Message, ProxyDeploymentManifest? Manifest) VerifyProxyDll(string clientDirectory)
     {
         string manifestPath = Path.Combine(clientDirectory, ProxyManifestFileName);
@@ -522,6 +528,7 @@ public sealed class ClientPatcher
         return (true, $"Proxy-DLL deployment verified ({manifest.ProxyDllName}; Proton hint: {manifest.WineDllOverridesHint}).", manifest);
     }
 
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Part of the uniform ClientPatcher instance service surface.")]
     public bool RemoveProxyDll(string clientDirectory)
     {
         string manifestPath = Path.Combine(clientDirectory, ProxyManifestFileName);
