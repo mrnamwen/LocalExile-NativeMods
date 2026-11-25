@@ -36,6 +36,12 @@ public sealed record ClientHostOptions
 
     /// <summary>Optional structured log sink <c>(level, source, message)</c>.</summary>
     public Action<string, string, string>? LogSink { get; init; }
+
+    /// <summary>
+    /// Debounce duration after an instance socket drops to <c>0</c> before raising <see cref="IGameLifecycle.Disconnected"/>,
+    /// avoiding spurious disconnect events during rapid zone-transition socket handoffs.
+    /// </summary>
+    public TimeSpan DisconnectDebounce { get; init; } = TimeSpan.FromMilliseconds(1500);
 }
 
 /// <summary>
@@ -55,6 +61,11 @@ public sealed class ClientHostRuntime : IDisposable
     private bool _disposed;
     private long _frameCount;
     private long _lastAutoHandshakeTimestamp;
+    private long _lastConnPollTimestamp;
+    private long _disconnectedSinceTimestamp;
+    private ulong _lastObservedConnectionToken;
+    private ulong _handshakeConnectionToken;
+    private bool _isLiveConnected;
 
     /// <summary>Total number of game frames processed by this host runtime.</summary>
     public long FrameCount => Interlocked.Read(ref _frameCount);
@@ -267,10 +278,92 @@ public sealed class ClientHostRuntime : IDisposable
             Log("INFO", "host", $"Managed frame tick #{frame} (dt={deltaSeconds:F4}s, loadedMods={Loader.LoadedMods.Count}).");
         }
 
-        // Automatically negotiate ClientHandshake on live NativeShimBridge connections once the
-        // InstanceClient socket is active (keeps SimulatedNativeBridge tests deterministic).
-        if (_bridge is NativeShimBridge && LastServerHandshake is null && frame >= 30)
+        // Track live InstanceClient socket changes across area transitions (e.g. Lioneye's Watch -> The Coast)
+        // and reconnects so every new Gateway TCP session immediately receives a fresh ClientHandshake.
+        if (_bridge.SupportsConnectionToken)
         {
+            bool shouldPoll = _bridge is not NativeShimBridge
+                || _lastConnPollTimestamp == 0
+                || Stopwatch.GetElapsedTime(_lastConnPollTimestamp) >= TimeSpan.FromMilliseconds(100);
+
+            if (shouldPoll)
+            {
+                _lastConnPollTimestamp = Stopwatch.GetTimestamp();
+                ulong currentToken = _bridge.GetActiveConnectionToken();
+
+                if (currentToken != _lastObservedConnectionToken)
+                {
+                    ulong prevToken = _lastObservedConnectionToken;
+                    _lastObservedConnectionToken = currentToken;
+
+                    if (currentToken != 0)
+                    {
+                        _disconnectedSinceTimestamp = 0;
+                        if (prevToken != 0 || LastServerHandshake is not null)
+                        {
+                            LastServerHandshake = null;
+                            _handshakeConnectionToken = 0;
+                            Interlocked.Exchange(ref _lastAutoHandshakeTimestamp, 0);
+                            Log("INFO", "host", $"Detected new instance connection (token=0x{currentToken:X16}, prev=0x{prevToken:X16}); resetting handshake state for automatic re-handshake.");
+                        }
+
+                        if (!_isLiveConnected)
+                        {
+                            _isLiveConnected = true;
+                            NotifyConnected();
+                        }
+                    }
+                    else
+                    {
+                        if (LastServerHandshake is not null)
+                        {
+                            LastServerHandshake = null;
+                            _handshakeConnectionToken = 0;
+                            Interlocked.Exchange(ref _lastAutoHandshakeTimestamp, 0);
+                        }
+
+                        if (_isLiveConnected && _disconnectedSinceTimestamp == 0)
+                        {
+                            _disconnectedSinceTimestamp = Stopwatch.GetTimestamp();
+                        }
+                    }
+                }
+
+                if (_isLiveConnected && _lastObservedConnectionToken == 0 && _disconnectedSinceTimestamp != 0)
+                {
+                    if (_options.DisconnectDebounce <= TimeSpan.Zero ||
+                        Stopwatch.GetElapsedTime(_disconnectedSinceTimestamp) >= _options.DisconnectDebounce)
+                    {
+                        _isLiveConnected = false;
+                        _disconnectedSinceTimestamp = 0;
+                        Log("INFO", "host", "Instance connection closed; notifying lifecycle listeners of disconnect.");
+                        NotifyDisconnected("instance-disconnected");
+                    }
+                }
+            }
+
+            if (_lastObservedConnectionToken != 0 &&
+                (LastServerHandshake is null || _handshakeConnectionToken != _lastObservedConnectionToken))
+            {
+                long lastTs = Interlocked.Read(ref _lastAutoHandshakeTimestamp);
+                if (lastTs == 0 || Stopwatch.GetElapsedTime(lastTs) >= TimeSpan.FromMilliseconds(1500))
+                {
+                    Interlocked.Exchange(ref _lastAutoHandshakeTimestamp, Stopwatch.GetTimestamp());
+                    try
+                    {
+                        SendHandshake();
+                        Log("INFO", "host", $"Sent automatic live ClientHandshake on frame #{frame} (token=0x{_lastObservedConnectionToken:X16}, mods={Loader.LoadedMods.Count}).");
+                    }
+                    catch
+                    {
+                        // Socket may still be completing its initial TCP handshake; retry on next interval.
+                    }
+                }
+            }
+        }
+        else if (_bridge is NativeShimBridge && LastServerHandshake is null && frame >= 30)
+        {
+            // Fallback for minimal mock ABI tables that omit GetActiveConnectionToken.
             long lastTs = Interlocked.Read(ref _lastAutoHandshakeTimestamp);
             if (lastTs == 0 || Stopwatch.GetElapsedTime(lastTs) >= TimeSpan.FromSeconds(2))
             {
@@ -296,7 +389,8 @@ public sealed class ClientHostRuntime : IDisposable
     private void HandleServerHandshake(ServerHandshake handshake)
     {
         LastServerHandshake = handshake;
-        Log("INFO", "host", $"Handshake acknowledged by server {handshake.ServerVersion} (preferred transport {handshake.PreferredTransport}).");
+        _handshakeConnectionToken = _lastObservedConnectionToken;
+        Log("INFO", "host", $"Handshake acknowledged by server {handshake.ServerVersion} (preferred transport {handshake.PreferredTransport}, token=0x{_handshakeConnectionToken:X16}).");
         HandshakeCompleted?.Invoke(handshake);
     }
 

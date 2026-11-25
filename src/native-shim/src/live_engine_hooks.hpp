@@ -45,6 +45,10 @@ public:
     nm_status_t send_live_chat_line(const char* text_utf8);
     nm_status_t send_live_ruleset_packet(uint32_t ruleset_id, const uint8_t* payload, uint32_t length);
 
+    // Returns a non-zero connection token identifying the current live InstanceClient socket
+    // (0 when disconnected / login / character select). Changes on every zone transition/reconnect.
+    nm_status_t get_active_connection_token(uint64_t* out_token) const;
+
     // Live native UI helpers.
     nm_status_t ui_get_root(void** out_root);
     nm_status_t ui_create_window(const char* virtual_path_utf8, void** out_control);

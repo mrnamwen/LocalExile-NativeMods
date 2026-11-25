@@ -68,6 +68,21 @@ public interface INativeBridge : IDisposable
     /// <summary>Registers a managed file overlay resolver callback.</summary>
     IDisposable RegisterFileOverlayResolver(Func<string, byte[]?> resolver);
 
+    /// <summary>
+    /// Updates the native shim's lock-free O(1) pre-filter with the exact normalized virtual paths
+    /// currently served by the managed file overlay resolver so stock game files bypass P/Invoke.
+    /// </summary>
+    void SetFileOverlayKnownPaths(IReadOnlyCollection<string> normalizedPaths) { }
+
+    /// <summary>Whether the bridge exposes a live instance-server connection token for reconnect/zone-change detection.</summary>
+    bool SupportsConnectionToken => false;
+
+    /// <summary>
+    /// Returns a non-zero connection token identifying the current live instance-server TCP socket
+    /// (<c>0</c> when disconnected / login / character select). Changes on every zone transition.
+    /// </summary>
+    ulong GetActiveConnectionToken() => 0;
+
     /// <summary>Reads a file from the underlying game archive (stock fallback when overlays miss).</summary>
     byte[]? ReadStockGameFile(string virtualPath);
 
@@ -172,6 +187,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     private readonly ConcurrentDictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawReceivers = new();
     private int _nextAudioChannel = 1;
     private uint _nextClientObjectId = 0x8000_0001u;
+    private ulong _managedFileOverlayToken;
     private bool _disposed;
 
     /// <inheritdoc/>
@@ -487,8 +503,14 @@ public sealed unsafe class NativeShimBridge : INativeBridge
 
         var key = (CallbackKind.FileOverlay, token);
         _pinnedCallbacks[key] = handle;
+        Volatile.Write(ref _managedFileOverlayToken, token);
         return new ActionDisposable(() =>
         {
+            if (Volatile.Read(ref _managedFileOverlayToken) == key.token)
+            {
+                Volatile.Write(ref _managedFileOverlayToken, 0);
+            }
+
             if (_table->UnregisterFileOverlay is not null)
             {
                 _table->UnregisterFileOverlay(key.token);
@@ -499,6 +521,64 @@ public sealed unsafe class NativeShimBridge : INativeBridge
                 h.Free();
             }
         });
+    }
+
+    /// <inheritdoc/>
+    public void SetFileOverlayKnownPaths(IReadOnlyCollection<string> normalizedPaths)
+    {
+        ArgumentNullException.ThrowIfNull(normalizedPaths);
+        ulong token = Volatile.Read(ref _managedFileOverlayToken);
+        if (token == 0 || _table->SetFileOverlayKnownPaths is null)
+        {
+            return;
+        }
+
+        int count = normalizedPaths.Count;
+        if (count == 0)
+        {
+            _table->SetFileOverlayKnownPaths(token, null, 0);
+            return;
+        }
+
+        byte** ptrs = (byte**)NativeMemory.Alloc((nuint)count, (nuint)sizeof(byte*));
+        int allocated = 0;
+        try
+        {
+            foreach (string path in normalizedPaths)
+            {
+                int byteLen = Encoding.UTF8.GetByteCount(path);
+                byte* buf = (byte*)NativeMemory.Alloc((nuint)(byteLen + 1));
+                Encoding.UTF8.GetBytes(path, new Span<byte>(buf, byteLen));
+                buf[byteLen] = 0;
+                ptrs[allocated++] = buf;
+            }
+
+            _table->SetFileOverlayKnownPaths(token, ptrs, (nuint)allocated);
+        }
+        finally
+        {
+            for (int i = 0; i < allocated; i++)
+            {
+                NativeMemory.Free(ptrs[i]);
+            }
+
+            NativeMemory.Free(ptrs);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SupportsConnectionToken => _table->GetActiveConnectionToken is not null;
+
+    /// <inheritdoc/>
+    public ulong GetActiveConnectionToken()
+    {
+        if (_table->GetActiveConnectionToken is null)
+        {
+            return 0;
+        }
+
+        ulong token = 0;
+        return _table->GetActiveConnectionToken(&token) == NmStatus.Ok ? token : 0;
     }
 
     /// <inheritdoc/>

@@ -181,7 +181,7 @@ public sealed class AddressLibraryTests
         Assert.Equal(48, sizeof(NmSymbolInfo));
         Assert.Equal(16, sizeof(NmGameAllocHeader));
         Assert.Equal(528, sizeof(NmExceptionInfo));
-        Assert.Equal(320, sizeof(NmAbiTable));
+        Assert.Equal(336, sizeof(NmAbiTable));
         Assert.Equal("LocalExile.Client.Host.NativeEntryPoint", typeof(NativeEntryPoint).FullName);
 
         NmAbiTable table = default;
@@ -320,6 +320,103 @@ public sealed class AddressLibraryTests
         }
 
         Assert.True(_unregisteredCount >= 4);
+    }
+
+    [Fact]
+    public void ClientHostRuntime_ReHandshakesOnZoneChangeAndRaisesDisconnectedOnLogout()
+    {
+        using var bridge = new SimulatedNativeBridge { SimulateConnectionLifecycle = true };
+        var serverHandshakesSent = 0;
+        var clientHandshakesSent = 0;
+        var connectedCount = 0;
+        var disconnectedCount = 0;
+
+        using var host = new ClientHostRuntime(bridge, new ClientHostOptions
+        {
+            DisconnectDebounce = TimeSpan.FromSeconds(5),
+        });
+        host.Lifecycle.Connected += () => connectedCount++;
+        host.Lifecycle.Disconnected += _ => disconnectedCount++;
+
+        bridge.OnOutgoingRulesetPacket = (_, payload) =>
+        {
+            var env = LocalExile.Client.Sdk.Protocol.MessageCodec.DecodeEnvelope(payload.Span);
+            if (env.MessageType == nameof(LocalExile.Client.Sdk.Protocol.ClientHandshake))
+            {
+                clientHandshakesSent++;
+                serverHandshakesSent++;
+                var reply = new LocalExile.Client.Sdk.Protocol.ServerHandshake(
+                    ServerVersion: "LocalExile-3.29.3d",
+                    BridgeVersion: LocalExile.Client.Sdk.SdkVersion.Current,
+                    ProtocolVersion: LocalExile.Client.Sdk.SdkVersion.ProtocolVersion,
+                    HostRulesetId: LocalExile.Client.Sdk.Extend.IRulesetRegistry.DefaultHostChannelRulesetId,
+                    PreferredTransport: LocalExile.Client.Sdk.Engine.NetTransportKind.HostRuleset,
+                    RequiredMods: [],
+                    ServerCapabilities: ["rulesets.0x2c9"]);
+                byte[] wire = LocalExile.Client.Sdk.Protocol.MessageCodec.EncodeEnvelope(
+                    LocalExile.Client.Sdk.Protocol.MessageCodec.CreateTypedEnvelope(
+                        LocalExile.Client.Sdk.Protocol.MessageCodec.SystemChannel, reply));
+                bridge.SimulateIncomingRulesetPacket(
+                    LocalExile.Client.Sdk.Extend.IRulesetRegistry.DefaultHostChannelRulesetId, wire);
+            }
+        };
+
+        // 1. Login screen (token=0): no handshake sent, not connected.
+        host.TickFrame();
+        Assert.Equal(0, clientHandshakesSent);
+        Assert.Null(host.LastServerHandshake);
+
+        // 2. Enter Lioneye's Watch (token=0x1001): connects & sends ClientHandshake immediately.
+        bridge.ActiveConnectionToken = 0x1001ul;
+        host.TickFrame();
+        Assert.Equal(1, connectedCount);
+        Assert.Equal(1, clientHandshakesSent);
+        Assert.NotNull(host.LastServerHandshake);
+
+        // Subsequent frames on the same socket do NOT spam ClientHandshake.
+        host.TickFrame();
+        host.TickFrame();
+        Assert.Equal(1, clientHandshakesSent);
+
+        // 3. Zone transition Lioneye's Watch -> The Coast (token=0x1002):
+        // resets LastServerHandshake and immediately re-sends ClientHandshake without firing Disconnected!
+        bridge.ActiveConnectionToken = 0x1002ul;
+        host.TickFrame();
+        Assert.Equal(0, disconnectedCount);
+        Assert.Equal(2, clientHandshakesSent);
+        Assert.Equal(2, serverHandshakesSent);
+        Assert.NotNull(host.LastServerHandshake);
+
+        // 4. Brief socket handoff (0x1002 -> 0 for 1 frame -> 0x1003):
+        // does NOT fire Disconnected within debounce window, still re-handshakes cleanly on 0x1003!
+        bridge.ActiveConnectionToken = 0ul;
+        host.TickFrame();
+        Assert.Null(host.LastServerHandshake);
+        Assert.Equal(0, disconnectedCount);
+
+        bridge.ActiveConnectionToken = 0x1003ul;
+        host.TickFrame();
+        Assert.Equal(0, disconnectedCount);
+        Assert.Equal(3, clientHandshakesSent);
+        Assert.NotNull(host.LastServerHandshake);
+
+        // 5. Full disconnect with zero debounce raises Lifecycle.Disconnected and clears handshake.
+        using var bridge2 = new SimulatedNativeBridge { SimulateConnectionLifecycle = true };
+        var disc2 = 0;
+        using var host2 = new ClientHostRuntime(bridge2, new ClientHostOptions
+        {
+            DisconnectDebounce = TimeSpan.Zero,
+        });
+        host2.Lifecycle.Disconnected += _ => disc2++;
+        bridge2.ActiveConnectionToken = 0x2001ul;
+        host2.TickFrame();
+        Assert.True(host2.Lifecycle.IsConnected);
+
+        bridge2.ActiveConnectionToken = 0ul;
+        host2.TickFrame();
+        Assert.Equal(1, disc2);
+        Assert.False(host2.Lifecycle.IsConnected);
+        Assert.Null(host2.LastServerHandshake);
     }
 
     private static readonly byte[] MockSymName = AllocatePinnedUtf8("frame.state_stack_pass_a_hook");

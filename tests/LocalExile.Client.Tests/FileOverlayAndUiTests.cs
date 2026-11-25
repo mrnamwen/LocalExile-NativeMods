@@ -106,10 +106,14 @@ public sealed class FileOverlayAndUiTests
             using IDisposable jsonSub = host.FileOverlayService.RegisterVirtualTextFile("Mods/Demo/config.json", "{\"ok\":true}");
             byte[]? jsonBytes = host.FileOverlayService.ReadAllBytes("Mods/Demo/config.json");
             Assert.Equal("{\"ok\":true}", Encoding.UTF8.GetString(jsonBytes!));
+            Assert.Contains("metadata/ui/mods/demo/panel.ui", bridge.KnownOverlayPaths);
+            Assert.Contains("mods/demo/config.json", bridge.KnownOverlayPaths);
 
             // 6. Disposing virtual file falls back cleanly to loose directory.
             vfSub.Dispose();
             Assert.Equal("loose-content", host.FileOverlayService.ReadAllText("Metadata/UI/Mods/Demo/Panel.ui"));
+            jsonSub.Dispose();
+            Assert.DoesNotContain("mods/demo/config.json", bridge.KnownOverlayPaths);
 
             // 7. Invalidation forwards normalized path to native bridge.
             host.FileOverlayService.Invalidate("Metadata\\UI\\Mods\\Demo\\Panel.ui");

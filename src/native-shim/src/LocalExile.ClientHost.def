@@ -24,6 +24,8 @@ EXPORTS
     nm_unregister_file_overlay_dir
     nm_has_file_overlay
     nm_free_file_overlay_buffer
+    nm_set_file_overlay_known_paths
+    nm_get_active_connection_token
     nm_audio_play_ogg
     nm_audio_play_event
     nm_audio_stop

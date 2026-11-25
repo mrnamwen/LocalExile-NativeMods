@@ -20,7 +20,7 @@ namespace LocalExile.Client.Host.Services;
 public sealed class FileOverlayService : IFileOverlayService
 {
     private sealed record VirtualFileLayer(long Id, string NormalizedPath, byte[] Bytes, string OwnerModId, int Priority);
-    private sealed record DirectoryLayer(long Id, string RootDirectory, string OwnerModId, int Priority);
+    private sealed record DirectoryLayer(long Id, string RootDirectory, string OwnerModId, int Priority, Dictionary<string, string> IndexedFiles);
     private sealed record BundleEntrySlice(string NormalizedPath, long Offset, int Size);
     private sealed record BundleLayer(long Id, string BundlePath, string ManifestPath, string OwnerModId, int Priority, Dictionary<string, BundleEntrySlice> Entries);
 
@@ -29,6 +29,7 @@ public sealed class FileOverlayService : IFileOverlayService
     private readonly List<DirectoryLayer> _directories = [];
     private readonly List<BundleLayer> _bundles = [];
     private readonly Lock _gate = new();
+    private Dictionary<string, Func<byte[]?>> _resolvedIndex = new(StringComparer.Ordinal);
     private long _nextLayerId = 1;
 
     /// <summary>Creates a new <see cref="FileOverlayService"/> wired to <paramref name="bridge"/>.</summary>
@@ -36,6 +37,7 @@ public sealed class FileOverlayService : IFileOverlayService
     {
         _bridge = bridge;
         _bridge.RegisterFileOverlayResolver(ResolveOverlayOnly);
+        _bridge.SetFileOverlayKnownPaths([]);
     }
 
     /// <inheritdoc/>
@@ -46,19 +48,28 @@ public sealed class FileOverlayService : IFileOverlayService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         string full = Path.GetFullPath(rootDirectory);
+        Dictionary<string, string> indexed = IndexDirectory(full);
         long id = Interlocked.Increment(ref _nextLayerId);
-        var layer = new DirectoryLayer(id, full, ownerModId, priority);
+        var layer = new DirectoryLayer(id, full, ownerModId, priority, indexed);
+        string[] knownPaths;
         lock (_gate)
         {
             _directories.Add(layer);
+            knownPaths = RebuildResolvedIndexLocked();
         }
+
+        _bridge.SetFileOverlayKnownPaths(knownPaths);
 
         return new ActionDisposable(() =>
         {
+            string[] updated;
             lock (_gate)
             {
                 _directories.RemoveAll(l => l.Id == id);
+                updated = RebuildResolvedIndexLocked();
             }
+
+            _bridge.SetFileOverlayKnownPaths(updated);
         });
     }
 
@@ -71,17 +82,25 @@ public sealed class FileOverlayService : IFileOverlayService
         string normalized = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
         long id = Interlocked.Increment(ref _nextLayerId);
         var layer = new VirtualFileLayer(id, normalized, rawBytes.ToArray(), ownerModId, priority);
+        string[] knownPaths;
         lock (_gate)
         {
             _virtualFiles.Add(layer);
+            knownPaths = RebuildResolvedIndexLocked();
         }
+
+        _bridge.SetFileOverlayKnownPaths(knownPaths);
 
         return new ActionDisposable(() =>
         {
+            string[] updated;
             lock (_gate)
             {
                 _virtualFiles.RemoveAll(l => l.Id == id);
+                updated = RebuildResolvedIndexLocked();
             }
+
+            _bridge.SetFileOverlayKnownPaths(updated);
         });
     }
 
@@ -109,17 +128,25 @@ public sealed class FileOverlayService : IFileOverlayService
         Dictionary<string, BundleEntrySlice> entries = ParseBundleManifest(manifestPath);
         long id = Interlocked.Increment(ref _nextLayerId);
         var layer = new BundleLayer(id, Path.GetFullPath(bundlePath), Path.GetFullPath(manifestPath), ownerModId, priority, entries);
+        string[] knownPaths;
         lock (_gate)
         {
             _bundles.Add(layer);
+            knownPaths = RebuildResolvedIndexLocked();
         }
+
+        _bridge.SetFileOverlayKnownPaths(knownPaths);
 
         return new ActionDisposable(() =>
         {
+            string[] updated;
             lock (_gate)
             {
                 _bundles.RemoveAll(l => l.Id == id);
+                updated = RebuildResolvedIndexLocked();
             }
+
+            _bridge.SetFileOverlayKnownPaths(updated);
         });
     }
 
@@ -144,6 +171,26 @@ public sealed class FileOverlayService : IFileOverlayService
     public void Invalidate(string virtualPath)
     {
         string normalized = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
+        string[]? updatedPaths = null;
+        lock (_gate)
+        {
+            if (_directories.Count > 0)
+            {
+                for (int i = 0; i < _directories.Count; i++)
+                {
+                    DirectoryLayer d = _directories[i];
+                    _directories[i] = d with { IndexedFiles = IndexDirectory(d.RootDirectory) };
+                }
+
+                updatedPaths = RebuildResolvedIndexLocked();
+            }
+        }
+
+        if (updatedPaths is not null)
+        {
+            _bridge.SetFileOverlayKnownPaths(updatedPaths);
+        }
+
         _bridge.InvalidateCachedAsset(normalized);
     }
 
@@ -178,89 +225,99 @@ public sealed class FileOverlayService : IFileOverlayService
     private byte[]? ResolveOverlayOnly(string virtualPath)
     {
         string normalized = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
-        var candidates = new List<(int Priority, int KindRank, long Id, Func<byte[]?> Reader)>();
-
-        lock (_gate)
-        {
-            foreach (VirtualFileLayer vf in _virtualFiles)
-            {
-                if (string.Equals(vf.NormalizedPath, normalized, StringComparison.Ordinal))
-                {
-                    candidates.Add((vf.Priority, 3, vf.Id, () => (byte[])vf.Bytes.Clone()));
-                }
-            }
-
-            foreach (DirectoryLayer dir in _directories)
-            {
-                string candidatePath = ResolveLoosePath(dir.RootDirectory, normalized);
-                if (File.Exists(candidatePath))
-                {
-                    candidates.Add((dir.Priority, 2, dir.Id, () => File.ReadAllBytes(candidatePath)));
-                }
-            }
-
-            foreach (BundleLayer bundle in _bundles)
-            {
-                if (bundle.Entries.TryGetValue(normalized, out BundleEntrySlice? slice) && File.Exists(bundle.BundlePath))
-                {
-                    candidates.Add((bundle.Priority, 1, bundle.Id, () => ReadBundleSlice(bundle.BundlePath, slice)));
-                }
-            }
-        }
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        // Highest priority wins; ties broken by VirtualFile > LooseDirectory > BundleOverlay, then most recently registered.
-        candidates.Sort(static (a, b) =>
-        {
-            int p = b.Priority.CompareTo(a.Priority);
-            if (p != 0)
-            {
-                return p;
-            }
-
-            int k = b.KindRank.CompareTo(a.KindRank);
-            return k != 0 ? k : b.Id.CompareTo(a.Id);
-        });
-
-        return candidates[0].Reader();
+        Dictionary<string, Func<byte[]?>> index = Volatile.Read(ref _resolvedIndex);
+        return index.TryGetValue(normalized, out Func<byte[]?>? reader) ? reader() : null;
     }
 
-    private static string ResolveLoosePath(string rootDirectory, string normalizedVirtualPath)
+    private string[] RebuildResolvedIndexLocked()
     {
-        string rel = normalizedVirtualPath.Replace('/', Path.DirectorySeparatorChar);
-        string combined = Path.GetFullPath(Path.Combine(rootDirectory, rel));
-        string rootPrefix = rootDirectory.EndsWith(Path.DirectorySeparatorChar)
-            ? rootDirectory
-            : rootDirectory + Path.DirectorySeparatorChar;
-        if (!combined.StartsWith(rootPrefix, StringComparison.Ordinal))
-        {
-            return string.Empty;
-        }
+        var winners = new Dictionary<string, (int Priority, int KindRank, long Id, Func<byte[]?> Reader)>(StringComparer.Ordinal);
 
-        if (File.Exists(combined))
+        void Consider(string normalizedPath, int priority, int kindRank, long id, Func<byte[]?> reader)
         {
-            return combined;
-        }
-
-        // Case-insensitive fallback on Linux filesystems.
-        string? dir = Path.GetDirectoryName(combined);
-        string fileName = Path.GetFileName(combined);
-        if (dir is not null && Directory.Exists(dir))
-        {
-            foreach (string existing in Directory.EnumerateFiles(dir))
+            if (winners.TryGetValue(normalizedPath, out var existing))
             {
-                if (string.Equals(Path.GetFileName(existing), fileName, StringComparison.OrdinalIgnoreCase))
+                int p = priority.CompareTo(existing.Priority);
+                if (p < 0) return;
+                if (p == 0)
                 {
-                    return existing;
+                    int k = kindRank.CompareTo(existing.KindRank);
+                    if (k < 0) return;
+                    if (k == 0 && id < existing.Id) return;
                 }
+            }
+
+            winners[normalizedPath] = (priority, kindRank, id, reader);
+        }
+
+        foreach (BundleLayer bundle in _bundles)
+        {
+            if (!File.Exists(bundle.BundlePath))
+            {
+                continue;
+            }
+
+            string bundlePath = bundle.BundlePath;
+            foreach (KeyValuePair<string, BundleEntrySlice> kv in bundle.Entries)
+            {
+                BundleEntrySlice slice = kv.Value;
+                Consider(kv.Key, bundle.Priority, 1, bundle.Id, () => ReadBundleSlice(bundlePath, slice));
             }
         }
 
-        return combined;
+        foreach (DirectoryLayer dir in _directories)
+        {
+            foreach (KeyValuePair<string, string> kv in dir.IndexedFiles)
+            {
+                string diskPath = kv.Value;
+                Consider(kv.Key, dir.Priority, 2, dir.Id, () => File.Exists(diskPath) ? File.ReadAllBytes(diskPath) : null);
+            }
+        }
+
+        foreach (VirtualFileLayer vf in _virtualFiles)
+        {
+            byte[] captured = vf.Bytes;
+            Consider(vf.NormalizedPath, vf.Priority, 3, vf.Id, () => (byte[])captured.Clone());
+        }
+
+        var next = new Dictionary<string, Func<byte[]?>>(winners.Count, StringComparer.Ordinal);
+        foreach (KeyValuePair<string, (int Priority, int KindRank, long Id, Func<byte[]?> Reader)> kv in winners)
+        {
+            next[kv.Key] = kv.Value.Reader;
+        }
+
+        Volatile.Write(ref _resolvedIndex, next);
+        return [.. next.Keys];
+    }
+
+    private static Dictionary<string, string> IndexDirectory(string rootDirectory)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (!Directory.Exists(rootDirectory))
+        {
+            return map;
+        }
+
+        try
+        {
+            foreach (string fullPath in Directory.EnumerateFiles(rootDirectory, "*", SearchOption.AllDirectories))
+            {
+                string rel = Path.GetRelativePath(rootDirectory, fullPath);
+                string normalized = ClientTextEncoding.NormalizeVirtualPath(rel);
+                if (!string.IsNullOrEmpty(normalized))
+                {
+                    map[normalized] = fullPath;
+                }
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        return map;
     }
 
     private static byte[] ReadBundleSlice(string bundlePath, BundleEntrySlice slice)

@@ -153,9 +153,28 @@ std::atomic<ChatListenerFn>      g_orig_chat_listener{nullptr};
 std::atomic<RulesetS2cFilterFn>  g_orig_ruleset_s2c{nullptr};
 std::atomic<void*>               g_captured_ui_root{nullptr};
 std::atomic<bool>                g_trace_files{false};
+std::atomic<uint64_t>            g_cached_app_global_addr{0};
+
+constexpr size_t                 kFsMissCacheSize = 16384u;
+std::atomic<uint64_t>            g_fs_miss_cache[kFsMissCacheSize];
 
 std::mutex                       g_hit_log_mutex;
 std::unordered_set<std::string>  g_logged_overlay_hits;
+
+inline uint64_t fs_miss_tag(uint64_t path_hash, uint64_t generation) noexcept {
+    uint64_t x = path_hash ^ (generation * 0x9E3779B97F4A7C15ULL);
+    x ^= x >> 30;
+    x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 27;
+    x *= 0x94D049BB133111EBULL;
+    x ^= x >> 31;
+    return (x == 0) ? 1ULL : x;
+}
+
+inline size_t fs_miss_slot(uint64_t path_hash) noexcept {
+    const uint64_t mixed = (path_hash ^ (path_hash >> 33)) * 0xFF51AFD7ED558CCDULL;
+    return static_cast<size_t>(mixed & (kFsMissCacheSize - 1u));
+}
 
 thread_local bool                t_in_fs_hook = false;
 
@@ -247,21 +266,86 @@ void maybe_trace_miss(const char* hook_name, const std::string& path) {
     }
 }
 
+// Fast-path filter for path_hash-keyed FileSystem hooks.
+// Returns true ONLY when the path is a candidate overlay (or an unfiltered C callback is registered),
+// populating out_utf8. 99.99% of stock game files return false with zero locks, zero heap
+// allocations, zero Win32 UTF-8 conversions, zero P/Invoke, and zero disk stat() calls!
+bool resolve_hash_if_overlay_candidate(
+    const char*         hook_name,
+    const OverlayIndex* idx,
+    const uint64_t*     path_hash,
+    std::string&        out_utf8) {
+    out_utf8.clear();
+    if (!idx || idx->empty || !path_hash) {
+        return false;
+    }
+
+    const bool tracing = g_trace_files.load(std::memory_order_relaxed);
+    if (!idx->has_unfiltered_callbacks) {
+        const uint64_t ph = *path_hash;
+        const uint64_t tag = fs_miss_tag(ph, idx->generation);
+        const size_t slot = fs_miss_slot(ph);
+        if (!tracing && g_fs_miss_cache[slot].load(std::memory_order_relaxed) == tag) {
+            return false;
+        }
+
+        auto fn = g_hash_to_wv.load(std::memory_order_acquire);
+        if (!fn) return false;
+        WStringView wv{nullptr, 0};
+        WStringView* res = fn(path_hash, &wv);
+        if (!res || !res->ptr || res->len == 0 || res->len > 4096) {
+            return false;
+        }
+
+        const uint64_t ci_h = OverlayAndChannels::hash_virtual_path_ci_wide(
+            res->ptr, static_cast<size_t>(res->len));
+        if (!idx->might_contain_ci_hash(ci_h)) {
+            g_fs_miss_cache[slot].store(tag, std::memory_order_relaxed);
+            if (tracing) {
+                const std::string utf8 = wview_to_utf8(res->ptr, static_cast<size_t>(res->len));
+                maybe_trace_miss(hook_name, utf8);
+            }
+            return false;
+        }
+
+        out_utf8 = wview_to_utf8(res->ptr, static_cast<size_t>(res->len));
+        return !out_utf8.empty();
+    }
+
+    return resolve_hash_to_utf8(path_hash, out_utf8);
+}
+
 // --- Route A FileSystem Detours ---
 
 uint8_t NM_CALL detour_fs_exists(void* fs, const WStringView* path) {
     auto orig = g_orig_fs_exists.load(std::memory_order_acquire);
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && path && path->ptr && path->len > 0 && path->len < 4096) {
-        ScopedFsReentrancyGuard guard;
-        if (guard.entered) {
-            const std::string utf8 = wview_to_utf8(path->ptr, static_cast<size_t>(path->len));
-            size_t sz = 0;
-            if (!utf8.empty() && ov->has_file_overlay(utf8.c_str(), &sz) == NM_OK) {
-                log_overlay_hit_once("exists", utf8, sz);
-                return 1;
+        const OverlayIndex* idx = ov->get_active_index();
+        if (idx && !idx->empty) {
+            const bool tracing = g_trace_files.load(std::memory_order_relaxed);
+            bool candidate = idx->has_unfiltered_callbacks;
+            if (!candidate) {
+                const uint64_t ci_h = OverlayAndChannels::hash_virtual_path_ci_wide(
+                    path->ptr, static_cast<size_t>(path->len));
+                candidate = idx->might_contain_ci_hash(ci_h);
             }
-            maybe_trace_miss("exists", utf8);
+            if (candidate || tracing) {
+                ScopedFsReentrancyGuard guard;
+                if (guard.entered) {
+                    const std::string utf8 = wview_to_utf8(path->ptr, static_cast<size_t>(path->len));
+                    if (candidate && !utf8.empty()) {
+                        size_t sz = 0;
+                        if (ov->has_file_overlay(utf8.c_str(), &sz) == NM_OK) {
+                            log_overlay_hit_once("exists", utf8, sz);
+                            return 1;
+                        }
+                    }
+                    if (tracing) {
+                        maybe_trace_miss("exists", utf8);
+                    }
+                }
+            }
         }
     }
     return orig ? orig(fs, path) : 0;
@@ -271,16 +355,19 @@ uint64_t NM_CALL detour_fs_size(void* fs, const uint64_t* path_hash) {
     auto orig = g_orig_fs_size.load(std::memory_order_acquire);
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && path_hash) {
-        ScopedFsReentrancyGuard guard;
-        if (guard.entered) {
-            std::string utf8;
-            if (resolve_hash_to_utf8(path_hash, utf8)) {
-                size_t sz = 0;
-                if (ov->has_file_overlay(utf8.c_str(), &sz) == NM_OK) {
-                    log_overlay_hit_once("size", utf8, sz);
-                    return static_cast<uint64_t>(sz);
+        const OverlayIndex* idx = ov->get_active_index();
+        if (idx && !idx->empty) {
+            ScopedFsReentrancyGuard guard;
+            if (guard.entered) {
+                std::string utf8;
+                if (resolve_hash_if_overlay_candidate("size", idx, path_hash, utf8)) {
+                    size_t sz = 0;
+                    if (ov->has_file_overlay(utf8.c_str(), &sz) == NM_OK) {
+                        log_overlay_hit_once("size", utf8, sz);
+                        return static_cast<uint64_t>(sz);
+                    }
+                    maybe_trace_miss("size", utf8);
                 }
-                maybe_trace_miss("size", utf8);
             }
         }
     }
@@ -296,22 +383,25 @@ uint64_t NM_CALL detour_fs_read_range(
     auto orig = g_orig_fs_read_range.load(std::memory_order_acquire);
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && path_hash) {
-        ScopedFsReentrancyGuard guard;
-        if (guard.entered) {
-            std::string utf8;
-            if (resolve_hash_to_utf8(path_hash, utf8)) {
-                std::vector<uint8_t> bytes;
-                if (ov->resolve_file_overlay_owned(utf8.c_str(), bytes)) {
-                    log_overlay_hit_once("read_range", utf8, bytes.size());
-                    if (!dst_buf || count == 0 || offset >= bytes.size()) {
-                        return 0;
+        const OverlayIndex* idx = ov->get_active_index();
+        if (idx && !idx->empty) {
+            ScopedFsReentrancyGuard guard;
+            if (guard.entered) {
+                std::string utf8;
+                if (resolve_hash_if_overlay_candidate("read_range", idx, path_hash, utf8)) {
+                    std::vector<uint8_t> bytes;
+                    if (ov->resolve_file_overlay_owned(utf8.c_str(), bytes)) {
+                        log_overlay_hit_once("read_range", utf8, bytes.size());
+                        if (!dst_buf || count == 0 || offset >= bytes.size()) {
+                            return 0;
+                        }
+                        const uint64_t avail = static_cast<uint64_t>(bytes.size()) - offset;
+                        const uint64_t to_copy = std::min<uint64_t>(count, avail);
+                        std::memcpy(dst_buf, bytes.data() + offset, static_cast<size_t>(to_copy));
+                        return to_copy;
                     }
-                    const uint64_t avail = static_cast<uint64_t>(bytes.size()) - offset;
-                    const uint64_t to_copy = std::min<uint64_t>(count, avail);
-                    std::memcpy(dst_buf, bytes.data() + offset, static_cast<size_t>(to_copy));
-                    return to_copy;
+                    maybe_trace_miss("read_range", utf8);
                 }
-                maybe_trace_miss("read_range", utf8);
             }
         }
     }
@@ -327,30 +417,33 @@ FsReadResult* serve_whole_file_common(
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     auto* alloc = g_live_alloc.load(std::memory_order_acquire);
     if (ov && alloc && out && path_hash) {
-        ScopedFsReentrancyGuard guard;
-        if (guard.entered) {
-            std::string utf8;
-            if (resolve_hash_to_utf8(path_hash, utf8)) {
-                std::vector<uint8_t> bytes;
-                if (ov->resolve_file_overlay_owned(utf8.c_str(), bytes)) {
-                    void* game_buf = nullptr;
-                    if (alloc->alloc(bytes.size(), 16, NM_DEFAULT_ALLOC_TAG, &game_buf) == NM_OK && game_buf) {
-                        if (!bytes.empty()) {
-                            std::memcpy(game_buf, bytes.data(), bytes.size());
+        const OverlayIndex* idx = ov->get_active_index();
+        if (idx && !idx->empty) {
+            ScopedFsReentrancyGuard guard;
+            if (guard.entered) {
+                std::string utf8;
+                if (resolve_hash_if_overlay_candidate(hook_name, idx, path_hash, utf8)) {
+                    std::vector<uint8_t> bytes;
+                    if (ov->resolve_file_overlay_owned(utf8.c_str(), bytes)) {
+                        void* game_buf = nullptr;
+                        if (alloc->alloc(bytes.size(), 16, NM_DEFAULT_ALLOC_TAG, &game_buf) == NM_OK && game_buf) {
+                            if (!bytes.empty()) {
+                                std::memcpy(game_buf, bytes.data(), bytes.size());
+                            }
+                            std::memset(out, 0, sizeof(*out));
+                            out->ok = 1;
+                            out->begin = static_cast<uint8_t*>(game_buf);
+                            out->end = out->begin + bytes.size();
+                            out->cap = out->end;
+                            out->err_len = 0;
+                            out->err_cap = 15; // Valid empty MSVC std::string SSO
+                            log_overlay_hit_once(hook_name, utf8, bytes.size());
+                            return out;
                         }
-                        std::memset(out, 0, sizeof(*out));
-                        out->ok = 1;
-                        out->begin = static_cast<uint8_t*>(game_buf);
-                        out->end = out->begin + bytes.size();
-                        out->cap = out->end;
-                        out->err_len = 0;
-                        out->err_cap = 15; // Valid empty MSVC std::string SSO
-                        log_overlay_hit_once(hook_name, utf8, bytes.size());
-                        return out;
+                        logger_logf("ERROR", "[OVERLAY] GameAllocator::alloc(%zu) failed for '%s'", bytes.size(), utf8.c_str());
+                    } else {
+                        maybe_trace_miss(hook_name, utf8);
                     }
-                    logger_logf("ERROR", "[OVERLAY] GameAllocator::alloc(%zu) failed for '%s'", bytes.size(), utf8.c_str());
-                } else {
-                    maybe_trace_miss(hook_name, utf8);
                 }
             }
         }
@@ -481,30 +574,56 @@ std::mutex                          g_ui_windows_mutex;
 void*                               g_ui_windows_root = nullptr;
 std::unordered_map<std::string, void*> g_ui_loaded_windows;
 
-// Resolves the live game InstanceClient socket pointer via network.app_global_ref (0x00f3b30).
-void* resolve_live_game_socket(nm_build_id_t build_id, uint64_t image_base) {
+// Resolves and caches the live App global pointer address via network.app_global_ref (0x00f3b30).
+uint64_t resolve_app_global_addr(nm_build_id_t build_id, uint64_t image_base) {
+    uint64_t cached = g_cached_app_global_addr.load(std::memory_order_acquire);
+    if (cached != 0) {
+        return cached;
+    }
     if (build_id == NM_BUILD_SYNTHETIC || build_id == NM_BUILD_UNKNOWN || image_base == 0) {
-        return nullptr;
+        return 0;
     }
     const EmbeddedSymbol* ref_sym = find_symbol(build_id, "network.app_global_ref");
-    if (!ref_sym || ref_sym->rva == 0) return nullptr;
+    if (!ref_sym || ref_sym->rva == 0) return 0;
     const uint64_t ref_addr = image_base + ref_sym->rva;
-    if (!is_ptr_readable(reinterpret_cast<const void*>(static_cast<uintptr_t>(ref_addr)), 13)) return nullptr;
-    if (verify_memory_bytes(ref_addr, "488b05????????488907488b05") != NM_OK) return nullptr;
+    if (!is_ptr_readable(reinterpret_cast<const void*>(static_cast<uintptr_t>(ref_addr)), 13)) return 0;
+    if (verify_memory_bytes(ref_addr, "488b05????????488907488b05") != NM_OK) return 0;
 
     int32_t disp32 = 0;
     std::memcpy(&disp32, reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(ref_addr)) + 3, sizeof(disp32));
     const uint64_t app_global_addr = static_cast<uint64_t>(static_cast<int64_t>(ref_addr + 7) + disp32);
-    if (!is_ptr_readable(reinterpret_cast<const void*>(static_cast<uintptr_t>(app_global_addr)), sizeof(void*))) return nullptr;
+    if (!is_ptr_readable(reinterpret_cast<const void*>(static_cast<uintptr_t>(app_global_addr)), sizeof(void*))) return 0;
+
+    g_cached_app_global_addr.store(app_global_addr, std::memory_order_release);
+    return app_global_addr;
+}
+
+// Resolves the live game InstanceClient & SocketStream pointers via network.app_global_ref (0x00f3b30).
+bool resolve_live_connection_ptrs(nm_build_id_t build_id, uint64_t image_base, void** out_instance, void** out_sock) {
+    if (out_instance) *out_instance = nullptr;
+    if (out_sock) *out_sock = nullptr;
+
+    const uint64_t app_global_addr = resolve_app_global_addr(build_id, image_base);
+    if (app_global_addr == 0) return false;
+    if (!is_ptr_readable(reinterpret_cast<const void*>(static_cast<uintptr_t>(app_global_addr)), sizeof(void*))) return false;
 
     void* app = *reinterpret_cast<void* const*>(static_cast<uintptr_t>(app_global_addr));
-    if (!app || !is_ptr_readable(static_cast<const uint8_t*>(app) + 0x348, sizeof(void*))) return nullptr;
+    if (!app || !is_ptr_readable(static_cast<const uint8_t*>(app) + 0x348, sizeof(void*))) return false;
 
     void* instance = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(app) + 0x348);
-    if (!instance || !is_ptr_readable(static_cast<const uint8_t*>(instance) + 0xC288, sizeof(void*))) return nullptr;
+    if (!instance || !is_ptr_readable(static_cast<const uint8_t*>(instance) + 0xC288, sizeof(void*))) return false;
 
     void* sock = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(instance) + 0xC288);
-    if (!sock || !is_ptr_readable(static_cast<const uint8_t*>(sock) + 0x250, 8)) return nullptr;
+    if (!sock || !is_ptr_readable(static_cast<const uint8_t*>(sock) + 0x250, 8)) return false;
+
+    if (out_instance) *out_instance = instance;
+    if (out_sock) *out_sock = sock;
+    return true;
+}
+
+void* resolve_live_game_socket(nm_build_id_t build_id, uint64_t image_base) {
+    void* sock = nullptr;
+    (void)resolve_live_connection_ptrs(build_id, image_base, nullptr, &sock);
     return sock;
 }
 
@@ -647,6 +766,8 @@ void LiveEngineHooks::register_startup_disk_overlays(
             pos = sep + 1;
         }
     }
+    logger_logf("INFO", "[OVERLAY] Pre-indexed %zu startup disk overlay file(s) for lock-free O(1) FileSystem filtering",
+                overlay.indexed_disk_file_count());
 #else
     (void)dll_dir_utf8;
     (void)overlay;
@@ -754,6 +875,10 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
     g_orig_chat_listener.store(nullptr, std::memory_order_release);
     g_orig_ruleset_s2c.store(nullptr, std::memory_order_release);
     g_captured_ui_root.store(nullptr, std::memory_order_release);
+    g_cached_app_global_addr.store(0, std::memory_order_release);
+    for (auto& slot : g_fs_miss_cache) {
+        slot.store(0, std::memory_order_relaxed);
+    }
     {
         std::lock_guard<std::mutex> lock(g_hit_log_mutex);
         g_logged_overlay_hits.clear();
@@ -794,6 +919,36 @@ nm_status_t LiveEngineHooks::send_live_ruleset_packet(uint32_t ruleset_id, const
     return st;
 #else
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::get_active_connection_token(uint64_t* out_token) const {
+    if (!out_token) return NM_ERR_INVALID_ARG;
+    *out_token = 0;
+#if defined(_WIN32)
+    void* instance = nullptr;
+    void* sock = nullptr;
+    if (!resolve_live_connection_ptrs(build_id_, image_base_, &instance, &sock) || !instance || !sock) {
+        return NM_OK;
+    }
+
+    // Mix InstanceClient pointer, SocketStream pointer, and the per-connect deadline timestamp
+    // at instance+0xC400 (set at Game.exe 0x14214ebf4 on every instance server connect) so every
+    // zone transition / reconnect produces a unique non-zero token even if heap addresses are reused.
+    uint64_t connect_stamp = 0;
+    if (is_ptr_readable(static_cast<const uint8_t*>(instance) + 0xC400, sizeof(uint64_t))) {
+        connect_stamp = *reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(instance) + 0xC400);
+    }
+    uint64_t tok = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sock));
+    tok ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(instance)) * 0x9E3779B97F4A7C15ULL;
+    tok ^= connect_stamp * 0xBF58476D1CE4E5B9ULL;
+    tok ^= tok >> 33;
+    tok *= 0xFF51AFD7ED558CCDULL;
+    tok ^= tok >> 33;
+    *out_token = (tok == 0) ? 1ULL : tok;
+    return NM_OK;
+#else
+    return NM_OK;
 #endif
 }
 

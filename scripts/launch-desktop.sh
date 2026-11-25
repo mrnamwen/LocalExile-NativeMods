@@ -25,6 +25,7 @@
 #   --localexile-dir <path>      Path to LocalExile checkout (default: /home/nam/Git/LocalExile)
 #   --rebuild                    Force rebuild of Win64 extender, Maxwell assets, and DualMod.MaxwellPet
 #   --keep-save                  Keep data/characters.db* changes on exit (default: snapshot & restore)
+#   --show-logo                  Show the GGG intro video on startup (default passes --nologo for faster boot)
 #   --trace-files                Enable NATIVEMODS_TRACE_FILES=1 diagnostic tracing
 #   --dry-run                    Validate tools/paths/staging plan and print exact launch command
 #                                without starting LocalExile/Proton or modifying LocalExile/
@@ -39,6 +40,7 @@ MODE="proxy"
 LOCALEXILE_DIR="/home/nam/Git/LocalExile"
 REBUILD=0
 KEEP_SAVE=0
+SHOW_LOGO=0
 TRACE_FILES=0
 DRY_RUN=0
 
@@ -74,6 +76,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --keep-save)
             KEEP_SAVE=1
+            shift
+            ;;
+        --show-logo)
+            SHOW_LOGO=1
             shift
             ;;
         --trace-files)
@@ -248,6 +254,7 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     else
         echo "    Save DB handling : SNAPSHOT & RESTORE ${LOCALEXILE_DIR}/data/characters.db* on exit (default)"
     fi
+    echo "    Intro video      : $([[ "${SHOW_LOGO}" -eq 1 ]] && echo 'ENABLED (--show-logo)' || echo 'SKIPPED (--nologo default; pass --show-logo to play GGG intro)')"
     echo "    File tracing     : $([[ "${TRACE_FILES}" -eq 1 ]] && echo 'ON (NATIVEMODS_TRACE_FILES=1)' || echo 'OFF')"
     echo ""
     echo "==> Build status:"
@@ -279,7 +286,11 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
     if [[ "${MODE}" == "proxy" ]]; then
         echo '    export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+${WINEDLLOVERRIDES};}version=n,b"'
     fi
-    echo '    exec umu-run "$@" --nologo --disable-assert-box'
+    if [[ "${SHOW_LOGO}" -eq 1 ]]; then
+        echo '    exec umu-run "$@" --disable-assert-box'
+    else
+        echo '    exec umu-run "$@" --nologo --disable-assert-box'
+    fi
     echo ""
     echo "==> Exact launch command:"
     printf "    (cd %q && Game_MODS_FOLDER=%q Game_CLIENT_RUNNER=%q pwsh -NoProfile -File %q -NoBuild -NoExtract)\n" \
@@ -531,7 +542,11 @@ fi
     if [[ "${MODE}" == "proxy" ]]; then
         printf '%s\n' 'export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+${WINEDLLOVERRIDES};}version=n,b"'
     fi
-    printf '%s\n' 'exec umu-run "$@" --nologo --disable-assert-box'
+    if [[ "${SHOW_LOGO}" -eq 1 ]]; then
+        printf '%s\n' 'exec umu-run "$@" --disable-assert-box'
+    else
+        printf '%s\n' 'exec umu-run "$@" --nologo --disable-assert-box'
+    fi
 } > "${RUNNER_SCRIPT}"
 chmod +x "${RUNNER_SCRIPT}"
 

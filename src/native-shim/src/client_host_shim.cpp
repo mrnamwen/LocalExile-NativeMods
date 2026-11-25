@@ -94,6 +94,8 @@ const nm_abi_table_t kAbiTable = {
     &nm_ui_set_visible,
     &nm_ui_set_text,
     &nm_ui_subscribe_click,
+    &nm_set_file_overlay_known_paths,
+    &nm_get_active_connection_token,
 };
 
 #if defined(_WIN32)
@@ -601,6 +603,21 @@ NM_API nm_status_t NM_CALL nm_has_file_overlay(const char* virtual_path_utf8, si
 NM_API nm_status_t NM_CALL nm_free_file_overlay_buffer(uint8_t* data) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
     return state().channels.free_file_overlay_buffer(data);
+}
+
+NM_API nm_status_t NM_CALL nm_set_file_overlay_known_paths(
+    uint64_t           token,
+    const char* const* paths_utf8,
+    size_t             path_count) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.set_file_overlay_known_paths(token, paths_utf8, path_count);
+}
+
+NM_API nm_status_t NM_CALL nm_get_active_connection_token(uint64_t* out_token) {
+    if (!out_token) return NM_ERR_INVALID_ARG;
+    *out_token = 0;
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.get_active_connection_token(out_token);
 }
 
 NM_API nm_status_t NM_CALL nm_audio_play_ogg(
