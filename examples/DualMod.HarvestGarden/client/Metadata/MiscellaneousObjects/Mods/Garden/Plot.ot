@@ -1,0 +1,37 @@
+version 2
+extends "Metadata/MiscellaneousObjects/MiscellaneousObject"
+
+// Custom Sacred Grove Plot object type.
+// Uses only verified client-callable GEAL built-ins (samples/geal-builtins-classified.tsv)
+// plus the custom 'GardenRipen' built-in registered by harvest-garden.Client.dll.
+
+Animated
+{
+	animated_object = "Metadata/Effects/Environment/Harvest/HarvestPlot.ao"
+}
+
+StateMachine
+{
+	state = "growth_stage"
+}
+
+client
+{
+	Functions
+	{
+		on_growth_changed =
+		{
+			local stage = arg1;
+			PlayAnimation( "grow" );
+			GardenRipen( stage );
+			IfState( growth_stage, = 3,
+			{
+				AddEffectPack( "Metadata/Effects/Environment/Harvest/PlotRipe.epk" );
+				Delay( 0.5,
+				{
+					PlayAudio( "Audio/Sound Effects/Harvest/PlotReady.ogg" );
+				} );
+			} );
+		}
+	}
+}

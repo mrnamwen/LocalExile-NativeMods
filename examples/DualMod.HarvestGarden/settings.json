@@ -1,0 +1,21 @@
+{
+  "maxPlots": {
+    "type": "int",
+    "default": 6,
+    "min": 1,
+    "max": 24,
+    "label": "Maximum Garden Plots"
+  },
+  "lifeforcePerSeed": {
+    "type": "int",
+    "default": 25,
+    "min": 1,
+    "max": 1000,
+    "label": "Lifeforce Per Harvested Seed"
+  },
+  "autoRipenOnPlant": {
+    "type": "bool",
+    "default": true,
+    "label": "Ripen Plots Automatically Over Time"
+  }
+}

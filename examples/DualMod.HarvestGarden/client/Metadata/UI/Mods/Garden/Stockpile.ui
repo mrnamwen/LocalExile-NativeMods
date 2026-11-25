@@ -1,0 +1,147 @@
+// Harvest Garden — Custom 3.29 UI layout for the Sacred Grove Seed Stockpile.
+// Follows verified 3.29.3d conventions from spikes/overlay-src/metadata/ui/mods/spike/garden.ui:
+// - Leading comment/blank line before <DEFINITIONS> (required by 3.29 parser)
+// - Unique sibling IDs under every parent container
+// - Spacer Frame instead of Picture with margin inside StackLayout (avoids 100% CPU hang)
+// - Uses custom control 'GrowthGauge' registered via IUiService.RegisterControl
+
+<DEFINITIONS>
+
+const $w = 1120;
+const $pad = 30;
+
+begin Frame
+	id = garden_stockpile_window;
+	aspect_mode = scaley;
+	size = $w, 480;
+	float = centre;
+	y = 300;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	border = normal,
+		"Art/2DArt/UIImages/Common/OrnateTopLeft", "Art/2DArt/UIImages/Common/OrnateTop", "Art/2DArt/UIImages/Common/OrnateTopRight",
+		"Art/2DArt/UIImages/Common/OrnateLeft", "Art/2DArt/UIImages/Common/OrnateRight",
+		"Art/2DArt/UIImages/Common/OrnateBottomLeft", "Art/2DArt/UIImages/Common/OrnateBottom", "Art/2DArt/UIImages/Common/OrnateBottomRight";
+	border_position = outside;
+	background = "Art/2DArt/UIImages/Common/Background1", tile;
+
+	begin StackLayout
+		id = body;
+		auto_size = true, true;
+		margin = $pad, 20, $pad, 20;
+		float = centre;
+
+		begin Label
+			id = title_label;
+			font = Fonts.NormalSC;
+			foreground_colour = rgb( 164, 221, 124 );
+			float = centre;
+			text = "Sacred Grove — Seed Stockpile";
+			margin = 0, 0, 0, 6;
+		end
+
+		begin Picture
+			id = header_divider;
+			float = centre;
+			source = "Art/2DArt/UIImages/InGame/Divider";
+			size = $w - 200, 8;
+		end
+
+		// Spacer Frame (never put 'margin' on a Picture inside StackLayout).
+		begin Frame
+			id = divider_spacer;
+			size = 10, 14;
+		end
+
+		begin Label
+			id = lifeforce_label;
+			width = $w - 2 * $pad;
+			auto_size = true;
+			foreground_colour = rgb( 120, 210, 255 );
+			font = Fonts.NormalSC;
+			text = "Condensed Lifeforce: 0";
+			margin = 0, 0, 0, 8;
+		end
+
+		begin GrowthGauge
+			id = growth_gauge;
+			size = $w - 2 * $pad, 26;
+			progress = 0;
+			margin = 0, 0, 0, 12;
+		end
+
+		begin Label
+			id = status_label;
+			width = $w - 2 * $pad;
+			auto_size = true;
+			foreground_colour = Colours.White;
+			font = Fonts.Normal;
+			text = "Plant seeds to grow Condensed Lifeforce in the Sacred Grove.";
+			margin = 0, 0, 0, 16;
+		end
+
+		begin Frame
+			id = seed_row;
+			size = $w - 2 * $pad, 62;
+			margin = 0, 0, 0, 16;
+			pixel_border_colour = Colours.BorderColour;
+
+			begin Label
+				id = seed_prompt;
+				location = 16, 0;
+				size = 260, 62;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.NormalSC;
+				foreground_colour = Colours.LabelTextColour;
+				text = "Seed name";
+			end
+
+			begin TextBox
+				id = seed_box;
+				location = 290, 0;
+				size = $w - 2 * $pad - 310, 62;
+				font = Fonts[ "TextBox" ].Normal;
+				caret_colour = Colours.White;
+				pixel_border_colour = argb( 0, 0, 0, 0 );
+			end
+		end
+
+		begin CheckBox
+			id = auto_collect;
+			font = Fonts.NormalSC;
+			foreground_colour = Colours.LabelTextColour;
+			size = 540, 42;
+			text_side = right;
+			text = "Collect lifeforce automatically on harvest";
+			margin = 0, 0, 0, 18;
+		end
+
+		begin Frame
+			id = button_row;
+			size = $w - 2 * $pad, Sizes[ "Button" ].Size.Height;
+			propagate_properties = false;
+
+			begin Button
+				id = plant_button;
+				size = Sizes[ "Button" ].Size.Width, Sizes[ "Button" ].Size.Height;
+				float = inside left, 0;
+				text = "Plant Seed";
+			end
+
+			begin Button based on plant_button
+				id = harvest_button;
+				float = centre;
+				text = "Harvest Plots";
+			end
+
+			begin Button based on plant_button
+				id = close_button;
+				float = inside right, 0;
+				text = "Close";
+			end
+		end
+	end
+end
