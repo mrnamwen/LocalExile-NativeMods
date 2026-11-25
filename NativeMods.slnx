@@ -3,8 +3,12 @@
     <Project Path="src/LocalExile.Client.Sdk/LocalExile.Client.Sdk.csproj" />
     <Project Path="src/LocalExile.Client.Host/LocalExile.Client.Host.csproj" />
     <Project Path="src/LocalExile.Client.ServerBridge/LocalExile.Client.ServerBridge.csproj" />
+    <Project Path="src/LocalExile.Client.Patcher/LocalExile.Client.Patcher.csproj" />
+    <Project Path="src/LocalExile.Client.Waypoint/LocalExile.Client.Waypoint.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LocalExile.Client.Tests/LocalExile.Client.Tests.csproj" />
+    <Project Path="tests/LocalExile.Client.Patcher.Tests/LocalExile.Client.Patcher.Tests.csproj" />
+    <Project Path="tests/LocalExile.Client.Waypoint.Tests/LocalExile.Client.Waypoint.Tests.csproj" />
   </Folder>
 </Solution>
