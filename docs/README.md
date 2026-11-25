@@ -8,11 +8,13 @@ Developer documentation for the **NativeMods 3.29** Proof of Concept — a unive
 
 | Guide | Audience | Covers |
 |---|---|---|
+| **[Modding Reference](modding-reference.md)** | **Human mod authors & AI coding agents** | **Start here!** Copy-paste mod skeletons (Server-only, Client-only, Dual-Side), non-negotiable 3.29 invariants, complete API cookbook (`.ui`, overlays, looping `.ogg` audio, networking, GEAL/rulesets/opcodes, brand-new `.datc64` content & Pet MTX Cosmetics `K` menu registration, `AssetPipeline`, `Raw`), testing & live Proton workflow |
 | [API Reference](api-reference.md) | Mod authors, framework contributors | `LocalExile.Client.Sdk` (`IClientMod`, `IClientContext`, `IAddressLibrary`, `Engine`, `Extend`, `Net`, `Raw`), `LocalExile.Client.ServerBridge`, threading & exception-wall contracts, versioning |
 | [Address Library](address-library.md) | Reverse engineers, extender maintainers | `3.29.3d` / `3.29.3c` JSON schema (`schemaVersion: 1`), verified symbol & offset tables, expected-byte checks, workflow for adding new symbols |
 | [Patcher & Native Shim](patcher-and-shim.md) | Extender & launcher developers | `LocalExile.Client.Patcher` CLI & library, PE32+ import patching vs. `version.dll` proxy, `nativemods_abi.h` C ABI, deferred CoreCLR boot, `DeadlockDetector` & Wine/Proton mitigations |
 | [Waypoint Integration](waypoint-integration.md) | Launcher & mod packagers | `mod.json` `nativeClient` manifest schema, `LocalExile.Client.Waypoint` API, security & trust model, `.ui` linting, stored-block bundles, install layout |
 | [Authoring Dual-Side Mods](authoring-dual-mods.md) | Mod authors | End-to-end walkthrough of `examples/DualMod.HarvestGarden/` (Server + Client + Shared + `.ui` + `.ot` GEAL script + custom opcode + hot reload + graceful degradation) |
+| [Spike R1 Proton Results](r1-proton-results.md) | Contributors, testers | Empirical `.NET 10` CoreCLR + `StateStack::PassA` live 3.29.3d Proton results (`proxy` & `import-patch` modes, VEH `0xE06D7363` coexistence, TID migration finding) |
 
 ## Architecture Overview
 
@@ -63,10 +65,13 @@ flowchart TB
 | `src/LocalExile.Client.Patcher/` | Cross-platform PE32+ patcher library and CLI (`check`, `patch`, `unpatch`, `verify`, `dump-addresses`) |
 | `src/LocalExile.Client.Sdk/` | Public versioned C# SDK that third-party client mods compile against |
 | `src/LocalExile.Client.Host/` | Managed `.NET 10` client runtime, collectible `AssemblyLoadContext` hot-reload loader, `NativeShimBridge`, and `SimulatedNativeBridge` |
-| `src/LocalExile.Client.ServerBridge/` | LocalExile Gateway-side bridge for handshake negotiation, typed messaging, and server-driven UI |
+| `src/LocalExile.Client.ServerBridge/` | LocalExile Gateway-side bridge for handshake negotiation, typed messaging, server-driven UI, and reusable Pet MTX Cosmetics `K` menu registration (`PoeContentHash`, `CustomPetMtxDefinition`, `LocalExilePetMtxRegistrar`) |
+| `src/LocalExile.Client.AssetPipeline/` | 3.29.3d asset & `.datc64` pipeline library + CLI (`.glb` → `.smd`/`.ast` v7, DX10 `.dds` + `.dds.header`, `Dat64TablePatcher` / `MaxwellDatPatcher`, `Bundles2Reader`, `AudioTranscoder`) |
 | `src/LocalExile.Client.Waypoint/` | Waypoint manifest parser, `.ui`/conflict validator, stored-block bundle packer, and installer |
 | `examples/DualMod.HarvestGarden/` | End-to-end dual-side Harvest Garden PoC mod |
-| `tests/` | Automated xUnit test suites for Patcher, SDK/Host/ServerBridge, and Waypoint/HarvestGarden E2E |
+| `examples/DualMod.MaxwellPet/` | End-to-end brand-new Pet MTX dual-side mod (`Maxwell the Cat`, Cosmetics `K` menu, `.ui` panel, looping `.ogg` audio) |
+| `scripts/` | Cross-compilation (`build-win64.sh`), Maxwell asset generator (`build-maxwell-assets.sh`), and isolated `Xvfb` Proton test runners (`run-r1-proton.sh`) |
+| `tests/` | Automated xUnit test suites for Patcher, SDK/Host/ServerBridge, AssetPipeline, MaxwellPet, and Waypoint/HarvestGarden E2E |
 | `.codexmind/` | Cross-session research findings, architecture decisions, and known regressions |
 
 ## Quickstart
@@ -84,7 +89,7 @@ dotnet build NativeMods.slnx -c Release
 dotnet test NativeMods.slnx -c Release --no-build
 ```
 
-Verified baseline: **73/73 .NET xUnit tests passing** (`LocalExile.Client.Tests`: 32, `LocalExile.Client.Waypoint.Tests`: 32, `LocalExile.Client.Patcher.Tests`: 9) with 0 warnings and 0 errors (`TreatWarningsAsErrors=true`).
+Verified baseline: **105/105 .NET xUnit tests passing** (`NativeMods.slnx`: 82 — `LocalExile.Client.Tests`: 41, `LocalExile.Client.Waypoint.Tests`: 32, `LocalExile.Client.Patcher.Tests`: 9; plus `LocalExile.Client.AssetPipeline.Tests`: 10 and `LocalExile.Client.MaxwellPet.Tests`: 13) with 0 warnings and 0 errors (`TreatWarningsAsErrors=true`).
 
 ### 2. Build and Run Native Shim Host-Side Tests (Linux / Cross-Platform)
 
@@ -94,7 +99,7 @@ cmake --build build/native-shim
 ctest --test-dir build/native-shim --output-on-failure
 ```
 
-Verified baseline: **8/8 C++20 shim tests passing** under `-Wall -Wextra -Wpedantic -Werror`.
+Verified baseline: **10/10 C++20 shim tests passing** under `-Wall -Wextra -Wpedantic -Werror`.
 
 ### 3. Inspect Addresses and Run the Patcher CLI
 
