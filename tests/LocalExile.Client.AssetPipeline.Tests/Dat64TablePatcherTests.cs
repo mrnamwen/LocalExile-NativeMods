@@ -88,7 +88,16 @@ public sealed class Dat64TablePatcherTests
 
         // Stock Kiwi rows remain intact
         Assert.Equal("Metadata/Items/Pets/Kiwi1", mtx.ReadString(0, MaxwellDatPatcher.MtxTypesIdOffset));
+        Assert.Equal("Kiwi1", mtx.ReadString(0, MaxwellDatPatcher.MtxTypesShortIdOffset));
         Assert.Equal("Metadata/Pet/Kiwi/Basic", pet.ReadString(0, MaxwellDatPatcher.PetIdOffset));
+
+        // Appended Maxwell rows have unique ShortId (__col18) and non-aliased Pet.__col7 foreignrow[]
+        Assert.Equal("MaxwellPet", mtx.ReadString(1, MaxwellDatPatcher.MtxTypesShortIdOffset));
+        Assert.Equal([1UL], pet.ReadForeignRowArray(0, MaxwellDatPatcher.PetCol7Offset));
+        Assert.Equal([1UL], pet.ReadForeignRowArray(1, MaxwellDatPatcher.PetCol7Offset));
+        ulong stockCol7Off = pet.ReadUInt64(0, MaxwellDatPatcher.PetCol7Offset + 8);
+        ulong maxwellCol7Off = pet.ReadUInt64(1, MaxwellDatPatcher.PetCol7Offset + 8);
+        Assert.NotEqual(stockCol7Off, maxwellCol7Off);
 
         // Appended Maxwell rows cross-reference cleanly
         MaxwellDatPatcher.VerifyAppendedPetMtx(mtx, gs, pet, spec, 1, 1, 1);
@@ -96,6 +105,23 @@ public sealed class Dat64TablePatcherTests
         // Appending a second time refuses duplicate IDs
         Assert.Throws<InvalidOperationException>(() =>
             MaxwellDatPatcher.AppendPetMtx(res.MtxTypesBytes, res.MtxTypeGameSpecificBytes, res.PetBytes, spec));
+
+        // Duplicate ShortId (__col18) with a distinct MtxTypeId is also rejected
+        var dupShortSpec = spec with
+        {
+            MtxTypeId = "Metadata/Items/Pets/Mods/MaxwellPet2",
+            PetId = "Metadata/Pet/Mods/Maxwell/MaxwellPet2",
+        };
+        Assert.Throws<InvalidOperationException>(() =>
+            MaxwellDatPatcher.AppendPetMtx(res.MtxTypesBytes, res.MtxTypeGameSpecificBytes, res.PetBytes, dupShortSpec));
+
+        // VerifyAppendedPetMtx explicitly rejects an aliased Pet.__col7 foreignrow[] offset
+        byte[] aliasedPetBytes = (byte[])res.PetBytes.Clone();
+        int row1Col7OffPos = 4 + (1 * MaxwellDatPatcher.PetRowStride) + MaxwellDatPatcher.PetCol7Offset + 8;
+        BinaryPrimitives.WriteUInt64LittleEndian(aliasedPetBytes.AsSpan(row1Col7OffPos, 8), stockCol7Off);
+        Dat64Table aliasedPet = Dat64Table.Parse(aliasedPetBytes);
+        Assert.Throws<InvalidDataException>(() =>
+            MaxwellDatPatcher.VerifyAppendedPetMtx(mtx, gs, aliasedPet, spec, 1, 1, 1));
     }
 
     private static byte[] BuildSyntheticTable(int rowStride, (string Id, uint Hash, int Val)[] rows)
@@ -131,12 +157,14 @@ public sealed class Dat64TablePatcherTests
         ulong idOff = AppendStr(varMs, "Metadata/Items/Pets/Kiwi1");
         ulong nameOff = AppendStr(varMs, "Kiwi Pet");
         ulong descOff = AppendStr(varMs, "Summons your pet");
+        ulong shortIdOff = AppendStr(varMs, "Kiwi1");
 
         byte[] row = new byte[MaxwellDatPatcher.MtxTypesRowStride];
         BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(MaxwellDatPatcher.MtxTypesIdOffset, 8), idOff);
         BinaryPrimitives.WriteUInt32LittleEndian(row.AsSpan(MaxwellDatPatcher.MtxTypesHash32Offset, 4), PoeHashing.Hash32("Metadata/Items/Pets/Kiwi1"));
         BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(MaxwellDatPatcher.MtxTypesNameOffset, 8), nameOff);
         BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(MaxwellDatPatcher.MtxTypesDesc1Offset, 8), descOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(MaxwellDatPatcher.MtxTypesShortIdOffset, 8), shortIdOff);
 
         return new Dat64Table(1, MaxwellDatPatcher.MtxTypesRowStride, row, varMs.ToArray()).Serialize();
     }
@@ -172,11 +200,18 @@ public sealed class Dat64TablePatcherTests
         varMs.Write(sentinel);
 
         ulong idOff = AppendStr(varMs, "Metadata/Pet/Kiwi/Basic");
+        ulong col7Off = (ulong)varMs.Length;
+        Span<byte> fr = stackalloc byte[16];
+        BinaryPrimitives.WriteUInt64LittleEndian(fr[..8], 1UL);
+        BinaryPrimitives.WriteUInt64LittleEndian(fr[8..16], 0UL);
+        varMs.Write(fr);
+
         byte[] row = new byte[MaxwellDatPatcher.PetRowStride];
         BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(MaxwellDatPatcher.PetIdOffset, 8), idOff);
         Dat64TablePatcher.WriteForeignRow(row, MaxwellDatPatcher.PetMtxGsKeyOffset, 0);
         Dat64TablePatcher.WriteUInt32(row, MaxwellDatPatcher.PetHash32Offset, 0x7C5A9464u);
         Dat64TablePatcher.WriteUInt16(row, MaxwellDatPatcher.PetHash16Offset, (ushort)0xE83E);
+        Dat64TablePatcher.WriteArrayHeader(row, MaxwellDatPatcher.PetCol7Offset, 1UL, col7Off);
 
         return new Dat64Table(1, MaxwellDatPatcher.PetRowStride, row, varMs.ToArray()).Serialize();
     }
