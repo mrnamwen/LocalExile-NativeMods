@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localexile.dev/schemas/nativemods/address-library.schema.json",
+  "title": "LocalExile NativeMods 3.29 Address Library",
+  "description": "Per-build database of reverse-engineered RVAs, struct offsets, expected bytes, and protocol constants for Path of Exile 3.29.3c / 3.29.3d.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gameVersion",
+    "imageBase",
+    "builds",
+    "symbols",
+    "offsets",
+    "constants"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "gameVersion": {
+      "type": "string",
+      "enum": ["3.29.3c", "3.29.3d"]
+    },
+    "imageBase": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]+$",
+      "description": "Nominal PE32+ ImageBase (0x140000000). Because DYNAMIC_BASE is set, runtime addresses are loadedModuleBase + rva."
+    },
+    "builds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "buildNumber",
+          "label",
+          "executableSha256",
+          "executableSize",
+          "source"
+        ],
+        "properties": {
+          "buildNumber": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "executableSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Lowercase SHA-256 of the unpatched PathOfExile.exe / PathOfExileSteam.exe."
+          },
+          "executableSize": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "steamIndexSha256": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "symbols": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "category",
+          "kind",
+          "rva",
+          "va",
+          "expectedBytes",
+          "status",
+          "source"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(\\.[a-z0-9_]+)+$"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "frame",
+              "ui",
+              "files",
+              "geal",
+              "rulesets",
+              "network",
+              "allocator",
+              "runtime",
+              "audio",
+              "stats",
+              "world",
+              "components",
+              "skills",
+              "items",
+              "patch"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["code", "data", "vtable", "import_slot", "global_ref"]
+          },
+          "rva": {
+            "type": ["string", "null"],
+            "pattern": "^0x[0-9a-fA-F]+$",
+            "description": "Relative Virtual Address from loaded image base, or null when unverified on this build."
+          },
+          "va": {
+            "type": ["string", "null"],
+            "pattern": "^0x[0-9a-fA-F]+$",
+            "description": "Nominal Virtual Address (imageBase + rva), or null when unverified on this build."
+          },
+          "expectedBytes": {
+            "type": ["string", "null"],
+            "pattern": "^([0-9a-fA-F]{2}|\\?\\?)+$",
+            "description": "Verified hex byte sequence at RVA (with '??' wildcard bytes allowed), or null if no byte signature has been verified."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "live_verified",
+              "static_verified",
+              "doc_verified",
+              "code_shared_3_29_3c",
+              "unverified_3_29_3c"
+            ]
+          },
+          "callingConvention": {
+            "type": ["string", "null"],
+            "enum": ["win64", "none", null]
+          },
+          "signature": {
+            "type": ["string", "null"]
+          },
+          "notes": {
+            "type": ["string", "null"]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "offsets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "struct",
+          "offset",
+          "type",
+          "status",
+          "source"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(\\.[a-z0-9_]+)+$"
+          },
+          "struct": {
+            "type": "string",
+            "minLength": 1
+          },
+          "offset": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]+$"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "live_verified",
+              "static_verified",
+              "doc_verified",
+              "code_shared_3_29_3c",
+              "unverified_3_29_3c"
+            ]
+          },
+          "notes": {
+            "type": ["string", "null"]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "constants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rulesetS2cOpcode",
+        "rulesetC2sOpcode",
+        "rulesetMaxPayload",
+        "rulesetSlotCount",
+        "rulesetFilledSlotCount",
+        "rulesetVtableSlotCount",
+        "rulesetBaseSize",
+        "reservedOpcodeMin",
+        "chatS2cOpcode",
+        "chatC2sOpcode",
+        "chatFallbackPrefix",
+        "gealClientBuiltinCount",
+        "gealWhileIterationCap",
+        "bundleHashSeed",
+        "bundleBlockSize",
+        "oodleStoredBlockMagic",
+        "msvcCxxExceptionCode",
+        "peHeaderSlackBytes"
+      ],
+      "properties": {
+        "rulesetS2cOpcode": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" },
+        "rulesetC2sOpcode": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" },
+        "rulesetMaxPayload": { "type": "integer" },
+        "rulesetSlotCount": { "type": "integer" },
+        "rulesetFilledSlotCount": { "type": "integer" },
+        "rulesetVtableSlotCount": { "type": "integer" },
+        "rulesetBaseSize": { "type": "integer" },
+        "reservedOpcodeMin": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" },
+        "chatS2cOpcode": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" },
+        "chatC2sOpcode": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" },
+        "chatFallbackPrefix": { "type": "string" },
+        "gealClientBuiltinCount": { "type": "integer" },
+        "gealWhileIterationCap": { "type": "integer" },
+        "bundleHashSeed": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" },
+        "bundleBlockSize": { "type": "integer" },
+        "oodleStoredBlockMagic": { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+        "msvcCxxExceptionCode": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" },
+        "peHeaderSlackBytes": { "type": "integer" }
+      }
+    }
+  }
+}

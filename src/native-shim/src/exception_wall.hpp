@@ -1,0 +1,31 @@
+#pragma once
+
+#include "nativemods_abi.h"
+
+#include <exception>
+#include <string>
+
+namespace nativemods {
+
+// Simulated MSVC C++ exception (0xE06D7363) used in Linux host-side unit tests
+// to prove the exception wall isolates game throws identically to Windows SEH.
+class SimulatedMsvcException : public std::exception {
+public:
+    explicit SimulatedMsvcException(std::string msg, uint32_t code = NM_MSVC_CXX_EXCEPTION_CODE)
+        : code_(code), message_(std::move(msg)) {}
+
+    uint32_t    code() const noexcept { return code_; }
+    const char* what() const noexcept override { return message_.c_str(); }
+
+private:
+    uint32_t    code_;
+    std::string message_;
+};
+
+nm_status_t invoke_guarded(
+    nm_guarded_fn_t      fn,
+    void*                context,
+    int64_t*             out_result,
+    nm_exception_info_t* out_exception);
+
+} // namespace nativemods
