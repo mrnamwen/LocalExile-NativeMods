@@ -182,12 +182,12 @@ public static class PoeSmdWriter
             vbuf[12] = EncodeSnorm8(v.Normal.X);
             vbuf[13] = EncodeSnorm8(v.Normal.Y);
             vbuf[14] = EncodeSnorm8(v.Normal.Z);
-            vbuf[15] = 0;
+            vbuf[15] = unchecked((byte)(sbyte)-128); // matches stock 3.29.3d Rig_*.smd (0x80 on all vertices)
 
             vbuf[16] = EncodeSnorm8(v.Tangent.X);
             vbuf[17] = EncodeSnorm8(v.Tangent.Y);
             vbuf[18] = EncodeSnorm8(v.Tangent.Z);
-            vbuf[19] = v.Handedness < 0f ? unchecked((byte)(sbyte)-128) : (byte)127;
+            vbuf[19] = v.Handedness < 0f ? unchecked((byte)(sbyte)-127) : (byte)127;
 
             BinaryPrimitives.WriteUInt16LittleEndian(vbuf[20..22], BitConverter.HalfToUInt16Bits((Half)v.Uv.X));
             BinaryPrimitives.WriteUInt16LittleEndian(vbuf[22..24], BitConverter.HalfToUInt16Bits((Half)v.Uv.Y));
