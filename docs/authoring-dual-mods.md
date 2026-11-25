@@ -1,0 +1,177 @@
+# Authoring Dual-Side Mods — Harvest Garden Tutorial
+
+This walkthrough guides you through **`examples/DualMod.HarvestGarden/`**, a complete compiling dual-side Proof-of-Concept mod demonstrating:
+
+- A shared protocol & record library (`Shared/GardenMessages.cs`)
+- An authoritative LocalExile server half with graceful chat fallback (`Server/GardenServerMod.cs`)
+- A `.NET 10` client half compiled against `LocalExile.Client.Sdk` (`Client/GardenClientMod.cs`)
+- A custom native `.ui` window using a custom `GrowthGauge` control (`client/Metadata/UI/Mods/Garden/Stockpile.ui`)
+- A custom `.ot` world object with a client-side GEAL script invoking a C#-registered `GardenRipen` built-in (`client/Metadata/MiscellaneousObjects/Mods/Garden/Plot.ot`)
+- Waypoint validation, packing, installation, collectible `AssemblyLoadContext` hot reload (`UnloadedCleanly == true`), and automated end-to-end simulation over both `HostRuleset` (`0x2c9`/`0x2ca`) and `ChatFallback` (`##NM ` / `/nm `)
+
+---
+
+## 1. Directory Structure
+
+```text
+examples/DualMod.HarvestGarden/
+├─ mod.json                                                 # Dual-side Waypoint manifest
+├─ settings.json                                            # Mod settings template (preserved on upgrade)
+├─ README.md                                                # Example overview
+├─ Shared/
+│  ├─ DualMod.HarvestGarden.Shared.csproj                   # Shared message records & constants
+│  └─ GardenMessages.cs                                     # GardenProtocol + typed records
+├─ Server/
+│  ├─ DualMod.HarvestGarden.Server.csproj                   # Produces harvest-garden.dll (ServerBridge)
+│  └─ GardenServerMod.cs                                    # Authoritative server logic + chat fallback
+├─ Client/
+│  ├─ DualMod.HarvestGarden.Client.csproj                   # Produces harvest-garden.Client.dll (Client SDK)
+│  └─ GardenClientMod.cs                                    # IClientMod, GrowthGauge, GardenRuleset
+└─ client/
+   ├─ Metadata/UI/Mods/Garden/Stockpile.ui                  # Native 3.29 .ui window layout
+   └─ Metadata/MiscellaneousObjects/Mods/Garden/Plot.ot     # Custom object + GEAL script
+```
+
+> **Collectible ALC Packaging Note:** `DualMod.HarvestGarden.Client.csproj` compiles both `Shared/*.cs` and `Client/*.cs` into a single self-contained `harvest-garden.Client.dll` so `ClientModLoader` can shadow-copy and unload the entire client mod cleanly inside one collectible `AssemblyLoadContext`.
+
+---
+
+## 2. Step 1 — Define Shared Protocol & Messages (`Shared/GardenMessages.cs`)
+
+Both the Server and Client halves compile `GardenProtocol` and the typed records so channel names, virtual paths, opcode IDs, and message schemas stay in sync:
+
+- **`GardenProtocol` constants:**
+  - `ModId = "harvest-garden"`, `ChannelName = "harvest-garden"`
+  - `StockpileUiPath = "Metadata/UI/Mods/Garden/Stockpile.ui"`
+  - `PlotObjectPath = "Metadata/MiscellaneousObjects/Mods/Garden/Plot.ot"`
+  - `GealRipenBuiltin = "GardenRipen"`, `GrowthGaugeControlType = "GrowthGauge"`
+  - Custom opcodes (matching `mod.json` `nativeClient.customOpcodes`): `OpcodePlantSeed = 1001`, `OpcodeHarvestPlot = 1002`, `OpcodeSyncState = 1003`, `OpcodeOpenWindow = 1004`
+  - Custom ruleset ID: `byte GardenRulesetId = 0xA1`
+- **Typed message records:**
+  - C→S: `PlantSeedRequest(string SeedName, bool AutoCollectLifeforce)`, `HarvestPlotRequest(int PlotIndex = -1)`
+  - S→C: `GardenPlotState`, `GardenStateSnapshot`, `GardenOpenWindowCommand(string CharacterName, GardenStateSnapshot InitialState)`
+
+---
+
+## 3. Step 2 — Write the Authoritative Server Half (`Server/GardenServerMod.cs`)
+
+`GardenServerMod : IDisposable` owns all authoritative per-character state (up to 6 plots, max growth stage 3, lifeforce accounting) and bridges over `ClientBridgeHost`:
+
+1. **`Attach()`** subscribes channel handlers on `_bridge`:
+   - `_bridge.On<PlantSeedRequest>(GardenProtocol.ChannelName, (session, req) => ...)` → verifies `session.HasClientMod(GardenProtocol.ModId)`, runs `PlantSeed(...)`, and sends the updated `GardenStateSnapshot`.
+   - `_bridge.On<HarvestPlotRequest>(GardenProtocol.ChannelName, (session, req) => ...)` → runs `HarvestPlots(...)` and sends the updated `GardenStateSnapshot`.
+2. **`HandleGardenCommandAsync(connectionId, characterName, args, cancellationToken = default)`** implements `/garden`, `/garden plant <seed>`, and `/garden harvest` with **graceful degradation**:
+   - **NativeMods client present (`session.HasNativeHost && session.HasClientMod("harvest-garden")`):** sends `GardenOpenWindowCommand` or `GardenStateSnapshot` over the mod channel to drive the native `.ui` window.
+   - **Stock 3.29 client (no NativeMods):** returns a clean chat summary (`[Harvest Garden — Chat Fallback] Lifeforce: ... | Use '/garden plant <seed>' or '/garden harvest'`) with zero protocol errors or disconnects.
+
+---
+
+## 4. Step 3 — Write the Client Half (`Client/GardenClientMod.cs`)
+
+`GardenClientMod` implements `IClientMod` against `LocalExile.Client.Sdk` (with zero `Raw` memory access):
+
+```csharp
+public sealed class GardenClientMod : IClientMod
+{
+    public void Load(IClientContext context)
+    {
+        var game = context.Game;
+
+        // 1. Register custom UI control usable directly from Stockpile.ui
+        context.TrackDisposable(game.Ui.RegisterControl<GrowthGauge>(GardenProtocol.GrowthGaugeControlType));
+
+        // 2. Register custom GEAL built-in 'GardenRipen' invoked by Plot.ot
+        context.TrackDisposable(game.GealBuiltins.Register(GardenProtocol.GealRipenBuiltin, (objectId, args) =>
+        {
+            int stage = args.Count > 0 ? args.Int(0) : 1;
+            if (_window?.Find("growth_gauge") is { } gauge)
+                gauge.SetProperty("ripen_stage", stage.ToString(CultureInfo.InvariantCulture));
+            return GealValue.FromInt(stage);
+        }));
+
+        // 3. Register per-area client ruleset (0xA1) and custom opcode handler (1003)
+        context.TrackDisposable(game.Rulesets.Register<GardenRuleset>());
+        context.TrackDisposable(game.Opcodes.RegisterHandler(
+            GardenProtocol.OpcodeSyncState,
+            payload => context.Logger.Debug($"Received raw GardenSyncState opcode ({payload.Length} bytes)."),
+            GardenProtocol.ModId));
+
+        // 4. Register append-only content declarations (BaseItemTypes + MiscObjects)
+        context.TrackDisposable(game.Content.DeclareItemBase(new ItemBaseDeclaration(
+            MetadataPath: "Metadata/Items/Mods/Garden/WildSeed",
+            Name: "Wild Seed",
+            InheritsFrom: "Metadata/Items/Currency/StackableCurrency",
+            ItemClass: "StackableCurrency",
+            ArtPath: "Art/2DItems/Mods/Garden/WildSeed.dds",
+            StackSize: 20)));
+
+        context.TrackDisposable(game.Content.DeclareWorldObject(new WorldObjectDeclaration(
+            MetadataPath: GardenProtocol.PlotObjectPath,
+            CarrierTable: "MiscObjects",
+            ScriptPath: GardenProtocol.PlotObjectPath)));
+
+        // 5. Subscribe to server-pushed commands & snapshots
+        context.TrackDisposable(context.Net.On<GardenOpenWindowCommand>(cmd =>
+        {
+            EnsureWindowLoaded();
+            ApplySnapshot(cmd.InitialState);
+        }));
+        context.TrackDisposable(context.Net.On<GardenStateSnapshot>(ApplySnapshot));
+
+        // 6. Per-frame update on the game thread
+        game.Frame += OnFrame;
+    }
+}
+```
+
+- **`GrowthGauge : ICustomUiControl`** implements `ControlTypeName`, `OnInitialize(IUiControl)`, `OnPropertyChanged(string, string)` (handling `"progress"` and `"ripen_stage"`), `OnFrame(float)` (smooth interpolation updating `"rendered_progress"`), and `OnDestroy()`.
+- **`GardenRuleset : IClientRuleset`** implements `byte RulesetId => 0xA1`, `OnAreaEntered`, `OnRulesetUpdate`, `OnFrame`, and `OnAreaLeft`.
+- **`EnsureWindowLoaded()`** calls `game.Ui.Load(GardenProtocol.StockpileUiPath, "harvest_garden_stockpile")` and binds `seed_box` (`ITextBox`), `auto_collect` (`ICheckBox`), `plant_button` / `harvest_button` / `close_button` (`IButton`), `lifeforce_label` / `status_label` (`ILabel`), and `growth_gauge`.
+- **`Unload()`** unsubscribes `game.Frame` and closes `_window`, while `ClientModLoader` automatically disposes every handle passed to `context.TrackDisposable(...)`.
+
+---
+
+## 5. Step 4 — Author `.ui` Layout & `.ot` GEAL Script
+
+### `client/Metadata/UI/Mods/Garden/Stockpile.ui`
+
+Follows all verified 3.29.3d `.ui` constraints (checked by `UiLayoutLinter`):
+
+- Starts with comments/blank line before `<DEFINITIONS>` (avoids `UI002` fatal parser error).
+- Uses unique sibling `id`s under every container (`garden_stockpile_window`, `body`, `title_label`, `header_divider`, `divider_spacer`, `lifeforce_label`, `growth_gauge`, `status_label`, `seed_row`, `auto_collect`, `button_row`, `plant_button`, `harvest_button`, `close_button`) — avoids `UI016` crash.
+- Uses a spacer `Frame` (`divider_spacer`) after `header_divider` (`Picture`) inside `StackLayout` instead of setting `margin` on the `Picture` — avoids the `UI008` 100% CPU hang.
+- Instantiates the mod's custom `begin GrowthGauge` control (declared in `mod.json` `nativeClient.customControls`).
+
+### `client/Metadata/MiscellaneousObjects/Mods/Garden/Plot.ot`
+
+Uses verified `.ot` syntax (`version 2`, `extends "Metadata/MiscellaneousObjects/MiscellaneousObject"`, `Animated`, `StateMachine`, `client { Functions { on_growth_changed = { ... } } }`), invoking only client-callable built-ins (`PlayAnimation`, `IfState`, `AddEffectPack`, `Delay`, `PlayAudio`) alongside the mod's custom `GardenRipen( stage )` built-in.
+
+---
+
+## 6. Step 5 — Validate, Pack, Install & Hot Reload
+
+1. **Validate `mod.json` and lint `Stockpile.ui`:**
+   ```csharp
+   var report = DualModPackageValidator.ValidatePackageDirectory(packageDir, SemVer.Parse("0.1.0-poc"));
+   ```
+   Confirms SDK compatibility (`>=0.1.0-poc <2.0.0`), `Mods/Garden/` namespacing, appendable table eligibility (`BaseItemTypes`, `MiscObjects`), zero `UI001`–`UI017` errors, and zero cross-mod collisions via `DualModPackageValidator.DetectConflicts(...)`.
+2. **Pack into a deterministic stored-block bundle:**
+   ```csharp
+   var packed = ModBundlePacker.Pack("harvest-garden", "1.0.0", clientDir, outputDir);
+   ```
+   Produces `harvest-garden-<shortHash12>.bundle.bin` (`NMB1`, `0xCC 0x06` stored blocks, UTF-16LE BOM CRLF text) + `manifest.json`.
+3. **Install via `WaypointModInstaller`:**
+   - Generates an `InstallAuditReport` (`RawAccessRequested = false`, `ReplacedStockPaths = []`).
+   - Deploys `Mods/Binaries/harvest-garden/` (server DLL + `mod.json` + `settings.json`), `Mods/Client/harvest-garden/` (client DLL + UTF-16LE BOM CRLF `files/` + packed bundle), updates `Mods/Binaries/mod-state.txt`, and records `Mods/Client/.nativemods-ledger.json`.
+4. **Hot Reload:**
+   - Replacing `harvest-garden.Client.dll` under `Mods/Client/harvest-garden/` triggers `ClientModLoader` to call `Unload()`, dispose tracked registrations, collect the old `AssemblyLoadContext` (`UnloadedCleanly == true`, enabled by `CollectibleJsonCodec`), shadow-copy the updated DLL, and invoke `Load()` without restarting the client.
+
+---
+
+## 7. Step 6 — Run Automated E2E Tests
+
+`tests/LocalExile.Client.Waypoint.Tests/HarvestGardenEndToEndTests.cs` runs the complete Harvest Garden lifecycle end-to-end (install → dynamic collectible ALC load → handshake → `/garden` → `Stockpile.ui` → button clicks → authoritative server sync → `GardenRipen` GEAL → frame ticks → vanilla chat fallback → `UnloadedCleanly == true` → clean uninstall) over both `HostRuleset` (`0x2c9`/`0x2ca`) and `ChatFallback` (`##NM ` / `/nm `):
+
+```bash
+dotnet test tests/LocalExile.Client.Waypoint.Tests -c Release
+```
