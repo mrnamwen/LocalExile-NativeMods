@@ -68,6 +68,58 @@ public sealed class ModLoaderAndIsolationTests
     }
 
     [Fact]
+    public async Task CollectibleAlc_TypedNetSendAndReceiveWithModDefinedMessage_UnloadsCleanly()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"nm-mod-json-unload-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        string dllPath = Path.Combine(tempDir, "netmod.Client.dll");
+        string manifestPath = Path.Combine(tempDir, "mod.json");
+
+        try
+        {
+            File.WriteAllText(manifestPath, """
+                {
+                  "id": "netmod",
+                  "name": "Networked Collectible Mod",
+                  "version": "1.0.0",
+                  "nativeClient": {
+                    "sdkVersionRange": ">=0.1.0-poc <0.2.0",
+                    "assembly": "netmod.Client.dll"
+                  }
+                }
+                """);
+
+            // Emit a collectible mod DLL that defines its own message type ModPing { int Value; }
+            // and both sends (Serialize) and receives (Deserialize) it through context.Net!
+            EmitNetworkedClientModAssembly(dllPath, "NetModAsm");
+
+            using var bridge = new SimulatedNativeBridge();
+            byte[]? capturedWireEnvelope = null;
+            bridge.OnOutgoingRulesetPacket = (_, payload) => capturedWireEnvelope = payload.ToArray();
+
+            using var host = new ClientHostRuntime(bridge);
+            host.Start();
+
+            LoadedClientMod loaded = host.Loader.LoadModFromDirectory(tempDir);
+            Assert.Equal("netmod", loaded.Manifest.Id);
+            Assert.NotNull(capturedWireEnvelope);
+
+            // Echo the exact encoded ModPing envelope back into the client host so DeserializePayload<ModPing> runs!
+            Assert.True(bridge.SimulateIncomingRulesetPacket(Sdk.Extend.IRulesetRegistry.DefaultHostChannelRulesetId, capturedWireEnvelope!));
+            Assert.Equal(77, host.Stats.GetStat("netmod_received"));
+
+            // Unloading MUST collect the mod's AssemblyLoadContext (JsonSerializerOptions must NOT pin ModPing!).
+            ModUnloadResult unload = await host.Loader.UnloadModAsync("netmod");
+            Assert.True(unload.WasLoaded);
+            Assert.True(unload.UnloadedCleanly);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
     public async Task RawAccessPermission_BlocksUnauthorizedModAndAllowsAuthorizedMod()
     {
         using var bridge = new SimulatedNativeBridge();
@@ -171,6 +223,101 @@ public sealed class ModLoaderAndIsolationTests
 
         tb.DefineMethodOverride(loadMethod, loadInterfaceMethod);
         tb.CreateType();
+        ab.Save(outputDllPath);
+    }
+
+    private static void EmitNetworkedClientModAssembly(string outputDllPath, string assemblyName)
+    {
+        var ab = new PersistedAssemblyBuilder(new AssemblyName(assemblyName), typeof(object).Assembly);
+        ModuleBuilder mb = ab.DefineDynamicModule(assemblyName);
+
+        // Define public sealed class ModPing { public int Value { get; set; } } inside the collectible assembly.
+        TypeBuilder msgTb = mb.DefineType($"{assemblyName}.ModPing", TypeAttributes.Public | TypeAttributes.Sealed | TypeAttributes.Class);
+        msgTb.DefineDefaultConstructor(MethodAttributes.Public);
+        FieldBuilder valField = msgTb.DefineField("_value", typeof(int), FieldAttributes.Private);
+        PropertyBuilder valProp = msgTb.DefineProperty("Value", PropertyAttributes.None, typeof(int), null);
+        MethodBuilder getVal = msgTb.DefineMethod("get_Value", MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.HideBySig, typeof(int), Type.EmptyTypes);
+        ILGenerator getIl = getVal.GetILGenerator();
+        getIl.Emit(OpCodes.Ldarg_0);
+        getIl.Emit(OpCodes.Ldfld, valField);
+        getIl.Emit(OpCodes.Ret);
+        MethodBuilder setVal = msgTb.DefineMethod("set_Value", MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.HideBySig, typeof(void), [typeof(int)]);
+        ILGenerator setIl = setVal.GetILGenerator();
+        setIl.Emit(OpCodes.Ldarg_0);
+        setIl.Emit(OpCodes.Ldarg_1);
+        setIl.Emit(OpCodes.Stfld, valField);
+        setIl.Emit(OpCodes.Ret);
+        valProp.SetGetMethod(getVal);
+        valProp.SetSetMethod(setVal);
+        Type msgType = msgTb.CreateType();
+
+        // Define public sealed class NetworkedMod : IClientMod
+        TypeBuilder modTb = mb.DefineType(
+            $"{assemblyName}.NetworkedMod",
+            TypeAttributes.Public | TypeAttributes.Sealed | TypeAttributes.Class,
+            typeof(object),
+            [typeof(IClientMod)]);
+        modTb.DefineDefaultConstructor(MethodAttributes.Public);
+        FieldBuilder statsField = modTb.DefineField("_stats", typeof(IStatsService), FieldAttributes.Private);
+
+        // private void OnPing(ModPing msg) => _stats.SetLocalStat("netmod_received", msg.Value);
+        MethodBuilder onPingMethod = modTb.DefineMethod("OnPing", MethodAttributes.Private, typeof(void), [msgType]);
+        ILGenerator onPingIl = onPingMethod.GetILGenerator();
+        onPingIl.Emit(OpCodes.Ldarg_0);
+        onPingIl.Emit(OpCodes.Ldfld, statsField);
+        onPingIl.Emit(OpCodes.Ldstr, "netmod_received");
+        onPingIl.Emit(OpCodes.Ldarg_1);
+        onPingIl.Emit(OpCodes.Callvirt, getVal);
+        onPingIl.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat))!);
+        onPingIl.Emit(OpCodes.Ret);
+
+        MethodInfo loadInterfaceMethod = typeof(IClientMod).GetMethod(nameof(IClientMod.Load))!;
+        MethodBuilder loadMethod = modTb.DefineMethod(
+            nameof(IClientMod.Load),
+            MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Final | MethodAttributes.HideBySig | MethodAttributes.NewSlot,
+            typeof(void),
+            [typeof(IClientContext)]);
+
+        ILGenerator il = loadMethod.GetILGenerator();
+        // _stats = context.Game.Stats;
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Callvirt, typeof(IClientContext).GetProperty(nameof(IClientContext.Game))!.GetGetMethod()!);
+        il.Emit(OpCodes.Callvirt, typeof(IGameServices).GetProperty(nameof(IGameServices.Stats))!.GetGetMethod()!);
+        il.Emit(OpCodes.Stfld, statsField);
+
+        // context.Net.On<ModPing>(new Action<ModPing>(this.OnPing), null);
+        Type actionOfMsg = typeof(Action<>).MakeGenericType(msgType);
+        ConstructorInfo openActionCtor = typeof(Action<>).GetConstructor([typeof(object), typeof(nint)])!;
+        ConstructorInfo actionCtor = TypeBuilder.GetConstructor(actionOfMsg, openActionCtor);
+        MethodInfo onGeneric = typeof(INetChannel).GetMethod(nameof(INetChannel.On))!.MakeGenericMethod(msgType);
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Callvirt, typeof(IClientContext).GetProperty(nameof(IClientContext.Net))!.GetGetMethod()!);
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldftn, onPingMethod);
+        il.Emit(OpCodes.Newobj, actionCtor);
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Callvirt, onGeneric);
+        il.Emit(OpCodes.Pop);
+
+        // var ping = new ModPing { Value = 77 }; context.Net.Send<ModPing>(ping, null);
+        MethodInfo sendGeneric = typeof(INetChannel).GetMethod(nameof(INetChannel.Send))!.MakeGenericMethod(msgType);
+        LocalBuilder pingLocal = il.DeclareLocal(msgType);
+        il.Emit(OpCodes.Newobj, msgType.GetConstructor(Type.EmptyTypes)!);
+        il.Emit(OpCodes.Stloc, pingLocal);
+        il.Emit(OpCodes.Ldloc, pingLocal);
+        il.Emit(OpCodes.Ldc_I4, 77);
+        il.Emit(OpCodes.Callvirt, setVal);
+
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Callvirt, typeof(IClientContext).GetProperty(nameof(IClientContext.Net))!.GetGetMethod()!);
+        il.Emit(OpCodes.Ldloc, pingLocal);
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Callvirt, sendGeneric);
+        il.Emit(OpCodes.Ret);
+
+        modTb.DefineMethodOverride(loadMethod, loadInterfaceMethod);
+        modTb.CreateType();
         ab.Save(outputDllPath);
     }
 

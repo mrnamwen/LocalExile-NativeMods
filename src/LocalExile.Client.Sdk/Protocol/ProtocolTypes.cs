@@ -1,6 +1,9 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using LocalExile.Client.Sdk.Addresses;
 using LocalExile.Client.Sdk.Engine;
 using LocalExile.Client.Sdk.Extend;
@@ -134,20 +137,76 @@ public static class MessageCodec
     /// <summary>Maximum payload length accepted by the 3.29 client ruleset filter (<c>0x2c9</c>).</summary>
     public const int MaxRulesetPayloadBytes = 0xFFFF;
 
-    /// <summary>Shared JSON serializer options used by SDK and ServerBridge.</summary>
-    public static JsonSerializerOptions JsonOptions { get; } = new()
+    /// <summary>Shared JSON serializer options used by SDK and ServerBridge for non-collectible types.</summary>
+    public static JsonSerializerOptions JsonOptions { get; } = CreateJsonOptions();
+
+    // Ephemeron table isolating System.Text.Json's JsonTypeInfo cache per collectible AssemblyLoadContext
+    // so serializing/deserializing mod-defined message records never pins a client mod's ALC on hot reload / unload.
+    private static readonly ConditionalWeakTable<AssemblyLoadContext, JsonSerializerOptions> CollectibleJsonOptions = [];
+
+    private static JsonSerializerOptions CreateJsonOptions() => new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
         WriteIndented = false,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
     };
+
+    /// <summary>
+    /// Returns a <see cref="JsonSerializerOptions"/> instance safe for <paramref name="type"/>:
+    /// collectible <see cref="AssemblyLoadContext"/> types get a dedicated <see cref="DefaultJsonTypeInfoResolver"/>
+    /// scoped to that load context so unloading a client mod releases all cached metadata cleanly.
+    /// </summary>
+    public static JsonSerializerOptions GetJsonOptionsForType(Type type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        AssemblyLoadContext? collectibleAlc = FindCollectibleLoadContext(type);
+        return collectibleAlc is not null
+            ? CollectibleJsonOptions.GetValue(collectibleAlc, static _ => CreateJsonOptions())
+            : JsonOptions;
+    }
+
+    private static AssemblyLoadContext? FindCollectibleLoadContext(Type type)
+    {
+        AssemblyLoadContext? alc = AssemblyLoadContext.GetLoadContext(type.Assembly);
+        if (alc is not null && alc.IsCollectible)
+        {
+            return alc;
+        }
+
+        if (type.HasElementType && type.GetElementType() is { } elemType)
+        {
+            AssemblyLoadContext? elemAlc = FindCollectibleLoadContext(elemType);
+            if (elemAlc is not null)
+            {
+                return elemAlc;
+            }
+        }
+
+        if (type.IsGenericType)
+        {
+            foreach (Type arg in type.GetGenericArguments())
+            {
+                AssemblyLoadContext? argAlc = FindCollectibleLoadContext(arg);
+                if (argAlc is not null)
+                {
+                    return argAlc;
+                }
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>Creates a <see cref="ModEnvelope"/> containing the JSON serialization of <paramref name="payload"/>.</summary>
     public static ModEnvelope CreateTypedEnvelope<T>(string channel, T payload, string? messageType = null, long sequence = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
         string typeName = string.IsNullOrWhiteSpace(messageType) ? typeof(T).Name : messageType;
-        string json = JsonSerializer.Serialize(payload, JsonOptions);
+        Type runtimeType = payload is not null ? payload.GetType() : typeof(T);
+        string json = FindCollectibleLoadContext(runtimeType) is not null
+            ? CollectibleJsonCodec.Serialize(payload, runtimeType)
+            : JsonSerializer.Serialize(payload, JsonOptions);
         return new ModEnvelope(channel, typeName, json, SdkVersion.ProtocolVersion, sequence);
     }
 
@@ -155,7 +214,9 @@ public static class MessageCodec
     public static T DeserializePayload<T>(ModEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        T? value = JsonSerializer.Deserialize<T>(envelope.PayloadJson, JsonOptions);
+        T? value = FindCollectibleLoadContext(typeof(T)) is not null
+            ? (T?)CollectibleJsonCodec.Deserialize(envelope.PayloadJson, typeof(T))
+            : JsonSerializer.Deserialize<T>(envelope.PayloadJson, JsonOptions);
         return value is not null
             ? value
             : throw new InvalidDataException($"Failed to deserialize envelope payload for '{envelope.Channel}/{envelope.MessageType}' into {typeof(T).Name}.");
