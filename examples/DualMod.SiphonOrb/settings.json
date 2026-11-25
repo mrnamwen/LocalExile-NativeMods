@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "settings": {
+    "defaultGrantCount": {
+      "type": "number",
+      "default": 5,
+      "min": 1,
+      "max": 20,
+      "label": "Default /siphon give Count",
+      "description": "Number of empty Orbs of Siphoning granted by '/siphon give' when no explicit count is provided."
+    },
+    "allowCrossSlotReplacement": {
+      "type": "bool",
+      "default": true,
+      "label": "Allow Cross-Slot Replacement When Capacity Permits",
+      "description": "When true, a stored Prefix may replace a Suffix (or vice versa) if the target item still stays within its Prefix/Suffix caps."
+    },
+    "preserveExactRolledValues": {
+      "type": "bool",
+      "default": true,
+      "label": "Preserve Exact Rolled Values",
+      "description": "Keep the exact integer stat values stolen from the source item when imbuing the target item."
+    }
+  }
+}

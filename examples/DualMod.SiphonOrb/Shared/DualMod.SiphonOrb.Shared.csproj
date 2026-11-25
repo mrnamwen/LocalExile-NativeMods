@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.SiphonOrb.Shared</RootNamespace>
+    <AssemblyName>DualMod.SiphonOrb.Shared</AssemblyName>
+  </PropertyGroup>
+</Project>
