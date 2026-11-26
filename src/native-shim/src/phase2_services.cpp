@@ -1055,14 +1055,13 @@ nm_status_t Phase2Services::world_create_client_object(
     struct Ctx {
         nm_build_id_t  bid;
         uint64_t       base;
-        GameAllocator* alloc;
         const wchar_t* meta_ptr;
         uint64_t       meta_len;
         float          x;
         float          y;
         float          z;
         void*          created = nullptr;
-    } ctx{build_id_, image_base_, allocator_, meta_w.c_str(), static_cast<uint64_t>(meta_w.size()), x, y, z, nullptr};
+    } ctx{build_id_, image_base_, meta_w.c_str(), static_cast<uint64_t>(meta_w.size()), x, y, z, nullptr};
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<Ctx*>(raw);
@@ -1072,7 +1071,9 @@ nm_status_t Phase2Services::world_create_client_object(
         const uint64_t fn_rm_inst = sym_addr(c->bid, c->base, "world.resource_mgr_instance");
         const uint64_t fn_rm_get  = sym_addr(c->bid, c->base, "world.resource_mgr_get_ot");
         const uint64_t fn_ctor    = sym_addr(c->bid, c->base, "world.create_client_object");
-        if (fn_rm_inst == 0 || fn_rm_get == 0 || fn_ctor == 0) return -2;
+        const uint64_t fn_alloc   = sym_addr(c->bid, c->base, "allocator.alloc");
+        const uint64_t fn_free    = sym_addr(c->bid, c->base, "allocator.free");
+        if (fn_rm_inst == 0 || fn_rm_get == 0 || fn_ctor == 0 || fn_alloc == 0) return -2;
 
         using RmInstFn = void*(NM_CALL*)();
         void* rm = reinterpret_cast<RmInstFn>(static_cast<uintptr_t>(fn_rm_inst))();
@@ -1083,8 +1084,12 @@ nm_status_t Phase2Services::world_create_client_object(
         void* ot_slot = reinterpret_cast<RmGetOtFn>(static_cast<uintptr_t>(fn_rm_get))(rm, &wsv, &wsv);
         if (!ot_slot) return -3;
 
-        void* mem = nullptr;
-        if (c->alloc->alloc(0x248u, 16u, NM_DEFAULT_ALLOC_TAG, &mem) != NM_OK || !mem) return -4;
+        // ClientEntity's scalar deleting dtor (vtable[0] = 0x141558a50) calls operator delete(ent, 0x248)
+        // -> allocator.free (0x142c8ca30, mimalloc mi_free) directly on the entity pointer with NO -16 header.
+        // Allocate directly via allocator.alloc(0x248, 16) so mem is the true mimalloc slab block base.
+        auto raw_alloc = reinterpret_cast<GameAllocator::RawAllocFn>(static_cast<uintptr_t>(fn_alloc));
+        void* mem = raw_alloc(0x248u, 16u);
+        if (!mem) return -4;
         std::memset(mem, 0, 0x248u);
 
         void* slot_handle = ot_slot;
@@ -1092,7 +1097,10 @@ nm_status_t Phase2Services::world_create_client_object(
         void* ent = reinterpret_cast<CreateObjFn>(static_cast<uintptr_t>(fn_ctor))(
             mem, &slot_handle, ig.client_world, 0u, 1u);
         if (!ent) {
-            (void)c->alloc->free(mem, 16u);
+            if (fn_free != 0) {
+                auto raw_free = reinterpret_cast<GameAllocator::RawFreeFn>(static_cast<uintptr_t>(fn_free));
+                raw_free(mem);
+            }
             return -5;
         }
 
@@ -1685,9 +1693,12 @@ nm_status_t Phase2Services::camera_world_to_screen(
     float off_y = 0.0f;
     const uint64_t vp_off_addr = sym_addr(build_id_, image_base_, "ui.viewport_offset_x");
     if (vp_off_addr != 0) {
+        // ui.viewport_offset_x (0x1445998f0) and +4 (offset_y) are int32_t pixel offsets (cvtsi2ss at 0x140ca61be).
         const void* p = reinterpret_cast<const void*>(static_cast<uintptr_t>(vp_off_addr));
-        (void)read_mem(p, 0x0u, off_x);
-        (void)read_mem(p, 0x4u, off_y);
+        int32_t ix = 0;
+        int32_t iy = 0;
+        if (read_mem(p, 0x0u, ix)) off_x = static_cast<float>(ix);
+        if (read_mem(p, 0x4u, iy)) off_y = static_cast<float>(iy);
     }
 
     (void)project_world_to_screen(
