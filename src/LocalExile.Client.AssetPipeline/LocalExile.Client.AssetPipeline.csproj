@@ -12,5 +12,6 @@
 
   <ItemGroup>
     <PackageReference Include="OozSharp" Version="3.1.0" />
+    <EmbeddedResource Include="../../data/schemas/poe-3.29-dat-schema.json" LogicalName="LocalExile.Client.AssetPipeline.Schemas.poe-3.29-dat-schema.json" />
   </ItemGroup>
 </Project>

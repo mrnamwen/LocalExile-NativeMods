@@ -13,6 +13,7 @@ public sealed class Dat64Table
 {
     public const ulong Sentinel = 0xBBBB_BBBB_BBBB_BBBBUL;
     public const ulong NullForeignRow = 0xFEFE_FEFE_FEFE_FEFEUL;
+    public const uint NullEnumRow = 0xFEFE_FEFEu;
     public const int SentinelLength = 8;
 
     private readonly byte[] _fixedRows;
@@ -110,6 +111,11 @@ public sealed class Dat64Table
 
     public byte ReadByte(int rowIndex, int columnOffset) => GetRowSpan(rowIndex)[columnOffset];
 
+    public bool ReadBool(int rowIndex, int columnOffset) => GetRowSpan(rowIndex)[columnOffset] != 0;
+
+    public short ReadInt16(int rowIndex, int columnOffset) =>
+        BinaryPrimitives.ReadInt16LittleEndian(GetRowSpan(rowIndex).Slice(columnOffset, 2));
+
     public ushort ReadUInt16(int rowIndex, int columnOffset) =>
         BinaryPrimitives.ReadUInt16LittleEndian(GetRowSpan(rowIndex).Slice(columnOffset, 2));
 
@@ -119,8 +125,23 @@ public sealed class Dat64Table
     public uint ReadUInt32(int rowIndex, int columnOffset) =>
         BinaryPrimitives.ReadUInt32LittleEndian(GetRowSpan(rowIndex).Slice(columnOffset, 4));
 
+    public float ReadSingle(int rowIndex, int columnOffset) =>
+        BitConverter.Int32BitsToSingle(ReadInt32(rowIndex, columnOffset));
+
     public ulong ReadUInt64(int rowIndex, int columnOffset) =>
         BinaryPrimitives.ReadUInt64LittleEndian(GetRowSpan(rowIndex).Slice(columnOffset, 8));
+
+    public ulong? ReadRow(int rowIndex, int columnOffset)
+    {
+        ulong value = ReadUInt64(rowIndex, columnOffset);
+        return value == NullForeignRow ? null : value;
+    }
+
+    public uint? ReadEnumRow(int rowIndex, int columnOffset)
+    {
+        uint value = ReadUInt32(rowIndex, columnOffset);
+        return value == NullEnumRow ? null : value;
+    }
 
     public ulong? ReadForeignRow(int rowIndex, int columnOffset)
     {
@@ -181,6 +202,108 @@ public sealed class Dat64Table
         for (int i = 0; i < n; i++)
         {
             result[i] = BinaryPrimitives.ReadInt32LittleEndian(_variableSection.AsSpan(start + (i * 4), 4));
+        }
+
+        return result;
+    }
+
+    public float[] ReadSingleArray(int rowIndex, int columnOffset)
+    {
+        ulong count = ReadUInt64(rowIndex, columnOffset);
+        ulong varOffset = ReadUInt64(rowIndex, columnOffset + 8);
+        if (count == 0)
+        {
+            return [];
+        }
+
+        int n = checked((int)count);
+        int start = checked((int)varOffset);
+        if (start < 0 || start + checked(n * 4) > _variableSection.Length)
+        {
+            throw new InvalidDataException($"Float array (count={n}, offset={start}) exceeds variable section length {_variableSection.Length}.");
+        }
+
+        float[] result = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            int bits = BinaryPrimitives.ReadInt32LittleEndian(_variableSection.AsSpan(start + (i * 4), 4));
+            result[i] = BitConverter.Int32BitsToSingle(bits);
+        }
+
+        return result;
+    }
+
+    public uint[] ReadEnumRowArray(int rowIndex, int columnOffset)
+    {
+        ulong count = ReadUInt64(rowIndex, columnOffset);
+        ulong varOffset = ReadUInt64(rowIndex, columnOffset + 8);
+        if (count == 0)
+        {
+            return [];
+        }
+
+        int n = checked((int)count);
+        int start = checked((int)varOffset);
+        if (start < 0 || start + checked(n * 4) > _variableSection.Length)
+        {
+            throw new InvalidDataException($"EnumRow array (count={n}, offset={start}) exceeds variable section length {_variableSection.Length}.");
+        }
+
+        uint[] result = new uint[n];
+        for (int i = 0; i < n; i++)
+        {
+            result[i] = BinaryPrimitives.ReadUInt32LittleEndian(_variableSection.AsSpan(start + (i * 4), 4));
+        }
+
+        return result;
+    }
+
+    public ulong[] ReadRowArray(int rowIndex, int columnOffset)
+    {
+        ulong count = ReadUInt64(rowIndex, columnOffset);
+        ulong varOffset = ReadUInt64(rowIndex, columnOffset + 8);
+        if (count == 0)
+        {
+            return [];
+        }
+
+        int n = checked((int)count);
+        int start = checked((int)varOffset);
+        if (start < 0 || start + checked(n * 8) > _variableSection.Length)
+        {
+            throw new InvalidDataException($"Row array (count={n}, offset={start}) exceeds variable section length {_variableSection.Length}.");
+        }
+
+        ulong[] result = new ulong[n];
+        for (int i = 0; i < n; i++)
+        {
+            result[i] = BinaryPrimitives.ReadUInt64LittleEndian(_variableSection.AsSpan(start + (i * 8), 8));
+        }
+
+        return result;
+    }
+
+    public string[] ReadStringArray(int rowIndex, int columnOffset)
+    {
+        ulong count = ReadUInt64(rowIndex, columnOffset);
+        ulong varOffset = ReadUInt64(rowIndex, columnOffset + 8);
+        if (count == 0)
+        {
+            return [];
+        }
+
+        int n = checked((int)count);
+        int start = checked((int)varOffset);
+        if (start < 0 || start + checked(n * 8) > _variableSection.Length)
+        {
+            throw new InvalidDataException($"String array (count={n}, offset={start}) exceeds variable section length {_variableSection.Length}.");
+        }
+
+        string[] result = new string[n];
+        for (int i = 0; i < n; i++)
+        {
+            ulong strOffset = BinaryPrimitives.ReadUInt64LittleEndian(_variableSection.AsSpan(start + (i * 8), 8));
+            result[i] = ReadStringAtOffset(strOffset);
         }
 
         return result;

@@ -34,6 +34,7 @@ public static class Program
                 "convert-glb" => RunConvertGlb(opts),
                 "convert-audio" => RunConvertAudio(opts),
                 "patch-dat" => RunPatchDat(opts),
+                "merge-dat-patches" => RunMergeDatPatches(opts),
                 _ => UnknownCommand(cmd),
             };
         }
@@ -500,6 +501,64 @@ public static class Program
         return 0;
     }
 
+    private static int RunMergeDatPatches(Dictionary<string, string> opts)
+    {
+        string clientDir = RequireOption(opts, "--client");
+        string patchesArg = RequireOption(opts, "--patches");
+        string outDir = RequireOption(opts, "--out");
+        string? schemaPath = opts.GetValueOrDefault("--schema");
+
+        List<string> patchFiles = ResolvePatchFiles(patchesArg);
+        if (patchFiles.Count == 0)
+        {
+            throw new InvalidOperationException($"No .datpatch.json files found in '{patchesArg}'.");
+        }
+
+        List<DatPatchDocument> docs = patchFiles.Select(DatPatchDocument.LoadFromFile).ToList();
+        Dat64SchemaRegistry schema = string.IsNullOrWhiteSpace(schemaPath)
+            ? Dat64SchemaRegistry.LoadDefault329()
+            : Dat64SchemaRegistry.LoadFromFile(schemaPath);
+
+        using var source = new DirectoryDat64Source(clientDir);
+        DatPatchMergeResult result = DatPatchMerger.Merge(source, docs, schema, outDir);
+
+        Console.WriteLine($"Merged {docs.Count} mod patch(es) into '{outDir}' (digest={result.RowMap.Digest}):");
+        foreach (var (tableName, tbl) in result.RowMap.Tables)
+        {
+            Console.WriteLine($"  Data/{tableName}.datc64: {tbl.StockRowCount} -> {tbl.MergedRowCount} rows ({tbl.Entries.Count} mapped entries, sha256={tbl.TableSha256[..12]}...)");
+        }
+
+        foreach (GeneratedOverlayEntry ov in result.RowMap.GeneratedOverlays)
+        {
+            Console.WriteLine($"  Overlay {ov.VirtualPath} (sha256={ov.Sha256[..12]}...)");
+        }
+
+        return 0;
+    }
+
+    private static List<string> ResolvePatchFiles(string patchesArg)
+    {
+        var files = new List<string>();
+        foreach (string token in patchesArg.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (Directory.Exists(token))
+            {
+                files.AddRange(Directory.EnumerateFiles(token, "*.datpatch.json", SearchOption.AllDirectories)
+                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
+            }
+            else if (File.Exists(token))
+            {
+                files.Add(token);
+            }
+            else
+            {
+                throw new FileNotFoundException($"Patch file or directory not found: '{token}'.", token);
+            }
+        }
+
+        return files;
+    }
+
     private static (byte[] MtxTypes, byte[] MtxTypeGameSpecific, byte[] Pet) LoadStockDatTables(string clientOrDatDir)
     {
         // Support either a loose baseline folder containing Data/*.datc64 (or *.datc64 directly) OR a PoE Steam Client folder with Bundles2/_.index.bin!
@@ -686,7 +745,8 @@ public static class Program
         Console.WriteLine("  build-siphon   --empty-icon <empty.png> --charged-icon <charged.png> --client <PoE Client or Dat dir> --out <outDir> [--base-overlay <dir>] [--icon-size 78]");
         Console.WriteLine("  verify-siphon  --dir <outDir>");
         Console.WriteLine("  build-currency --spec <currency-specs.json> --client <PoE Client or Dat dir> --out <outDir> [--base-overlay <dir>] [--icon-size 78]");
-        Console.WriteLine("  patch-dat      --client <PoE Client or Dat dir> --out <outDir>");
+        Console.WriteLine("  patch-dat          --client <PoE Client or Dat dir> --out <outDir>");
+        Console.WriteLine("  merge-dat-patches  --client <PoE Client or Dat dir> --patches <dir-or-files> --out <outDir> [--schema <schema.min.json>]");
         Console.WriteLine("  convert-glb    --in <model.glb> --out <outDir>");
         Console.WriteLine("  convert-dds    --in <image> --out <file.dds> [--format bc1|bc3|rgba8]");
         Console.WriteLine("  convert-audio  --in <audio> --out <file.ogg>");
