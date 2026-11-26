@@ -199,6 +199,12 @@ public sealed class DualModManifestAndSemVerTests
     [InlineData("HideoutDoodads")]
     [InlineData("ExecuteGEAL")]
     [InlineData("ClientStrings")]
+    [InlineData("Mods")]
+    [InlineData("mods")]
+    [InlineData("ModType")]
+    [InlineData("modtype")]
+    [InlineData("BuffDefinitions")]
+    [InlineData("buffdefinitions")]
     [InlineData("currencyitems")]
     [InlineData("itemvisualidentity")]
     public void ValidateManifest_AcceptsAllVerifiedAppendableRegistryTablesWithoutNc018(string tableName)
@@ -220,6 +226,56 @@ public sealed class DualModManifestAndSemVerTests
 
         Assert.True(report.IsValid, string.Join("; ", report.Errors.Select(e => $"{e.Code}: {e.Message}")));
         Assert.DoesNotContain(report.Warnings, w => w.Code == "NC018");
+    }
+
+    [Fact]
+    public void AppendableRegistryTables_ContainsAll18LiveVerifiedTables_AndLeavesStatsUnclosed()
+    {
+        string[] expected =
+        [
+            "BaseItemTypes",
+            "ItemVisualIdentity",
+            "CurrencyItems",
+            "MtxTypes",
+            "MtxTypeGameSpecific",
+            "Pet",
+            "MonsterVarieties",
+            "NPCs",
+            "Chests",
+            "Projectiles",
+            "MiscObjects",
+            "MiscAnimated",
+            "HideoutDoodads",
+            "ExecuteGEAL",
+            "ClientStrings",
+            "Mods",
+            "ModType",
+            "BuffDefinitions"
+        ];
+
+        Assert.Equal(18, DualModPackageValidator.AppendableRegistryTables.Count);
+        foreach (string table in expected)
+        {
+            Assert.Contains(table, DualModPackageValidator.AppendableRegistryTables, StringComparer.OrdinalIgnoreCase);
+        }
+
+        Assert.DoesNotContain("Stats", DualModPackageValidator.ClosedRegistryTables, StringComparer.OrdinalIgnoreCase);
+        var statsManifest = new DualModManifest
+        {
+            Id = "stats-probe",
+            Version = "1.0.0",
+            CompatibleClientVersions = ["0.5.2-beta"],
+            NativeClient = new NativeClientManifest
+            {
+                SdkVersionRange = ">=0.1.0-poc <2.0.0",
+                SupportedBuilds = ["3.29.3d"],
+                ContentRegistries = [new("Stats", "custom_probe_stat", "append")]
+            }
+        };
+        var report = DualModPackageValidator.ValidateManifest(statsManifest);
+        Assert.True(report.IsValid);
+        Assert.DoesNotContain(report.Errors, e => e.Code == "NC016");
+        Assert.Contains(report.Warnings, w => w.Code == "NC017");
     }
 
     [Fact]

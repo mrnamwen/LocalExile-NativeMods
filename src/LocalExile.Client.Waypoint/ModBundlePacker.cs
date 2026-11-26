@@ -62,6 +62,15 @@ public static class ModBundlePacker
     };
 
     /// <summary>
+    /// Normalized virtual paths whose extension normally uses UTF-16LE BOM (e.g. <c>.txt</c>)
+    /// but which Path of Exile 3.29 requires to be emitted without a BOM.
+    /// </summary>
+    private static readonly HashSet<string> ClientTextNoBomPaths = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "art/uiimages1.txt"
+    };
+
+    /// <summary>
     /// Encodes a UTF-8 or UTF-16 text file to Path of Exile 3.29's expected BOM text format:
     /// UTF-16LE with BOM (<c>FF FE</c>) and CRLF line endings (matching <c>spikes/encode-overlay.py</c>).
     /// </summary>
@@ -95,20 +104,41 @@ public static class ModBundlePacker
     {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(virtualPath);
-        string ext = Path.GetExtension(virtualPath);
-        if (ClientTextNoBomExtensions.Contains(ext))
+        if (IsClientTextNoBomPath(virtualPath))
             return EncodeClientTextNoBom(text);
+        string ext = Path.GetExtension(DualModPackageValidator.NormalizeVirtualPath(virtualPath));
         if (ClientTextBomExtensions.Contains(ext))
             return EncodeClientText(text);
         return Encoding.UTF8.GetBytes(text);
     }
 
+    /// <summary>
+    /// Returns true if <paramref name="virtualPath"/> must be encoded as BOM-less UTF-16LE CRLF
+    /// (either by extension such as <c>.sm</c>/<c>.mat</c>/<c>.amd</c>, or by normalized path exception such as <c>art/uiimages1.txt</c>).
+    /// </summary>
+    public static bool IsClientTextNoBomPath(string virtualPath)
+    {
+        if (string.IsNullOrWhiteSpace(virtualPath))
+            return false;
+
+        string normalized = DualModPackageValidator.NormalizeVirtualPath(virtualPath);
+        return ClientTextNoBomPaths.Contains(normalized)
+            || ClientTextNoBomExtensions.Contains(Path.GetExtension(normalized));
+    }
+
     public static bool IsClientTextNoBomExtension(string virtualPath) =>
-        ClientTextNoBomExtensions.Contains(Path.GetExtension(virtualPath));
+        IsClientTextNoBomPath(virtualPath);
 
     public static bool IsClientTextExtension(string virtualPath)
     {
-        string ext = Path.GetExtension(virtualPath);
+        if (string.IsNullOrWhiteSpace(virtualPath))
+            return false;
+
+        string normalized = DualModPackageValidator.NormalizeVirtualPath(virtualPath);
+        if (ClientTextNoBomPaths.Contains(normalized))
+            return true;
+
+        string ext = Path.GetExtension(normalized);
         return ClientTextBomExtensions.Contains(ext) || ClientTextNoBomExtensions.Contains(ext);
     }
 

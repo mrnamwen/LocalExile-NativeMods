@@ -326,4 +326,82 @@ public sealed class ModBundlePackerTests
             Directory.Delete(work, recursive: true);
         }
     }
+
+    [Fact]
+    public void PackAndEncodeClientText_EmitsArtUiImages1TxtWithoutBom_WhileKeepingBomForOtherTxtFiles()
+    {
+        foreach (string variant in new[] { "art/uiimages1.txt", "Art/UIImages1.txt", "ART\\UIImages1.TXT", "/Art/UIImages1.txt" })
+        {
+            Assert.True(ModBundlePacker.IsClientTextExtension(variant), variant);
+            Assert.True(ModBundlePacker.IsClientTextNoBomPath(variant), variant);
+            Assert.True(ModBundlePacker.IsClientTextNoBomExtension(variant), variant);
+
+            byte[] encoded = ModBundlePacker.EncodeClientText("\uFEFFArt/2DArt/UIImages/InGame/Icon 0 0 32 32\n", variant);
+            Assert.True(encoded.Length >= 2 && (encoded.Length & 1) == 0, variant);
+            Assert.False(encoded[0] == 0xFF && encoded[1] == 0xFE, $"Unexpected UTF-16LE BOM for {variant}");
+            Assert.Equal("Art/2DArt/UIImages/InGame/Icon 0 0 32 32\r\n", Encoding.Unicode.GetString(encoded));
+        }
+
+        foreach (string otherTxt in new[] { "Metadata/Mods/Demo/notes.txt", "Art/Other/UIImages1.txt", "art/uiimages2.txt" })
+        {
+            Assert.True(ModBundlePacker.IsClientTextExtension(otherTxt), otherTxt);
+            Assert.False(ModBundlePacker.IsClientTextNoBomPath(otherTxt), otherTxt);
+            Assert.False(ModBundlePacker.IsClientTextNoBomExtension(otherTxt), otherTxt);
+
+            byte[] encoded = ModBundlePacker.EncodeClientText("hello\nworld\n", otherTxt);
+            Assert.True(encoded.Length >= 4, otherTxt);
+            Assert.Equal(0xFF, encoded[0]);
+            Assert.Equal(0xFE, encoded[1]);
+            Assert.Equal("hello\r\nworld\r\n", Encoding.Unicode.GetString(encoded, 2, encoded.Length - 2));
+        }
+
+        string work = Path.Combine(Path.GetTempPath(), "nm-uiimages-bom-test-" + Guid.NewGuid().ToString("N"));
+        string src = Path.Combine(work, "client");
+        string outDir = Path.Combine(work, "out");
+        Directory.CreateDirectory(Path.Combine(src, "Art", "Other"));
+        Directory.CreateDirectory(Path.Combine(src, "Metadata", "Mods", "Demo"));
+
+        try
+        {
+            // Seed Art/UIImages1.txt with a UTF-16LE BOM on disk to prove Pack strips it cleanly.
+            File.WriteAllBytes(
+                Path.Combine(src, "Art", "UIImages1.txt"),
+                [0xFF, 0xFE, .. Encoding.Unicode.GetBytes("Art/2DArt/UIImages/InGame/CustomIcon 0 0 64 64\n")]);
+            File.WriteAllText(
+                Path.Combine(src, "Art", "Other", "UIImages1.txt"),
+                "other nested txt\n",
+                new UTF8Encoding(false));
+            File.WriteAllText(
+                Path.Combine(src, "Metadata", "Mods", "Demo", "notes.txt"),
+                "mod notes\n",
+                new UTF8Encoding(false));
+
+            var packed = ModBundlePacker.Pack("uiimages-bom", "1.0.0", src, outDir);
+
+            var uiImagesEntry = Assert.Single(packed.Manifest.Files, f => f.VirtualPath == "art/uiimages1.txt");
+            Assert.Equal("utf-16le-nobom-crlf", uiImagesEntry.Encoding);
+            byte[] uiImagesBytes = ModBundlePacker.ReadEntry(packed.BundlePath, packed.ManifestPath, "Art/UIImages1.txt");
+            Assert.True(uiImagesBytes.Length >= 2 && (uiImagesBytes.Length & 1) == 0);
+            Assert.False(uiImagesBytes[0] == 0xFF && uiImagesBytes[1] == 0xFE);
+            Assert.Equal("Art/2DArt/UIImages/InGame/CustomIcon 0 0 64 64\r\n", Encoding.Unicode.GetString(uiImagesBytes));
+
+            var nestedEntry = Assert.Single(packed.Manifest.Files, f => f.VirtualPath == "art/other/uiimages1.txt");
+            Assert.Equal("utf-16le-bom-crlf", nestedEntry.Encoding);
+            byte[] nestedBytes = ModBundlePacker.ReadEntry(packed.BundlePath, packed.ManifestPath, "Art/Other/UIImages1.txt");
+            Assert.Equal(0xFF, nestedBytes[0]);
+            Assert.Equal(0xFE, nestedBytes[1]);
+            Assert.Equal("other nested txt\r\n", Encoding.Unicode.GetString(nestedBytes, 2, nestedBytes.Length - 2));
+
+            var notesEntry = Assert.Single(packed.Manifest.Files, f => f.VirtualPath == "metadata/mods/demo/notes.txt");
+            Assert.Equal("utf-16le-bom-crlf", notesEntry.Encoding);
+            byte[] notesBytes = ModBundlePacker.ReadEntry(packed.BundlePath, packed.ManifestPath, "Metadata/Mods/Demo/notes.txt");
+            Assert.Equal(0xFF, notesBytes[0]);
+            Assert.Equal(0xFE, notesBytes[1]);
+            Assert.Equal("mod notes\r\n", Encoding.Unicode.GetString(notesBytes, 2, notesBytes.Length - 2));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
 }

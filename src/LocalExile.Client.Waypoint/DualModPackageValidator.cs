@@ -36,7 +36,7 @@ public static class DualModPackageValidator
         "3.29.3d", "3.29.3c"
     };
 
-    /// <summary>Tables verified appendable in 10-verification.md §5 and live 3.29.3d testing.</summary>
+    /// <summary>Tables verified appendable in 10-verification.md §5 and live 3.29.3c/3.29.3d testing.</summary>
     public static readonly IReadOnlySet<string> AppendableRegistryTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "BaseItemTypes",
@@ -53,7 +53,10 @@ public static class DualModPackageValidator
         "MiscAnimated",
         "HideoutDoodads",
         "ExecuteGEAL",
-        "ClientStrings"
+        "ClientStrings",
+        "Mods",
+        "ModType",
+        "BuffDefinitions"
     };
 
     /// <summary>Tables bound to compiled enums/code in 10-verification.md §5 that cannot safely accept appended rows.</summary>

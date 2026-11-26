@@ -97,9 +97,10 @@ public sealed class Phase0E2EIntegrationTests
     [Fact]
     public void SdkAndAbi_AreBumpedTo020()
     {
-        Assert.StartsWith("0.2.0", SdkVersion.Current, StringComparison.Ordinal);
-        Assert.Equal(new Version(0, 2, 0), SdkVersion.Parsed);
-        Assert.Equal(0x00000200u, NativeShimConstants.AbiVersion);
+        Assert.True(SdkVersion.Parsed >= new Version(0, 2, 0), $"Expected SDK >= 0.2.0, got {SdkVersion.Parsed}.");
+        Assert.StartsWith("0.3.0", SdkVersion.Current, StringComparison.Ordinal);
+        Assert.Equal(new Version(0, 3, 0), SdkVersion.Parsed);
+        Assert.Equal(0x00000300u, NativeShimConstants.AbiVersion);
         Assert.True(SdkVersion.IsCompatible(">=0.2.0 <2.0.0"));
         Assert.False(SdkVersion.IsCompatible("=0.1.0-poc"));
     }
