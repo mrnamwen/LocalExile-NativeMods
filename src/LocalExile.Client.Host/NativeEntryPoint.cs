@@ -184,9 +184,11 @@ public static class NativeEntryPoint
                 WriteLog("INFO", "bootstrap", $"NativeShimBridge attached (build={bridge.BuildVersion}, imageBase=0x{(ulong)bridge.ImageBase:X}, sha256={bridge.ExecutableSha256 ?? "<none>"}).");
 
                 JsonAddressLibrary? addressLib = TryDiscoverAddressLibrary(hostDir, bridge, WriteLog);
+                string modsDir = Environment.GetEnvironmentVariable("NATIVEMODS_MODS_DIR") ?? Path.Combine(hostDir, "Mods", "Client");
                 var options = new ClientHostOptions
                 {
                     AddressLibrary = addressLib,
+                    ModsRootDirectory = modsDir,
                     LogSink = WriteLog,
                 };
 

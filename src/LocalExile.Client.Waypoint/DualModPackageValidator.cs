@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Text.Json;
+using LocalExile.Client.AssetPipeline.Dat64;
 
 namespace LocalExile.Client.Waypoint;
 
@@ -305,10 +307,10 @@ public static class DualModPackageValidator
                 actualPayloadFiles[virtualPath] = file;
             }
         }
-        else if (nc.Overlays.Count > 0 || nc.Replaces.Count > 0)
+        else if (nc.Overlays.Count > 0 || nc.Replaces.Count > 0 || nc.DatPatches.Count > 0)
         {
             diagnostics.Add(new(DiagnosticSeverity.Error, "PAY002",
-                $"Manifest declares overlays/replaces but payload directory '{payloadDirRel}/' does not exist."));
+                $"Manifest declares overlays/replaces/datPatches but payload directory '{payloadDirRel}/' does not exist."));
         }
 
         var declaredReplaces = new HashSet<string>(
@@ -319,14 +321,19 @@ public static class DualModPackageValidator
             nc.Overlays.Select(NormalizeVirtualPath),
             StringComparer.OrdinalIgnoreCase);
 
-        // Enforce path namespace rule: every file in client/ MUST either be under a Mods/<namespace>/ segment
-        // OR be explicitly declared in nativeClient.replaces!
+        var declaredDatPatches = new HashSet<string>(
+            nc.DatPatches.Select(NormalizeVirtualPath),
+            StringComparer.OrdinalIgnoreCase);
+
+        // Enforce path namespace rule: every file in client/ MUST either be under a Mods/<namespace>/ segment,
+        // be explicitly declared in nativeClient.replaces, or be a declared nativeClient.datPatches file!
         foreach (string virtualPath in actualPayloadFiles.Keys.Order(StringComparer.OrdinalIgnoreCase))
         {
             bool isNamespaced = IsModNamespacedPath(virtualPath, manifest.Id);
             bool isDeclaredReplace = declaredReplaces.Contains(virtualPath);
+            bool isDeclaredDatPatch = declaredDatPatches.Contains(virtualPath);
 
-            if (!isNamespaced && !isDeclaredReplace)
+            if (!isNamespaced && !isDeclaredReplace && !isDeclaredDatPatch)
             {
                 diagnostics.Add(new(
                     DiagnosticSeverity.Error,
@@ -369,6 +376,45 @@ public static class DualModPackageValidator
                     $"Declared nativeClient.overlays path '{ov}' was not found under '{payloadDirRel}/'.",
                     ov));
             }
+        }
+
+        // Check declared datPatches exist in client/ and validate their JSON syntax, schema tables, & dead-stat slots.
+        var parsedModPatches = new List<DatPatchDocument>();
+        foreach (string patchPath in declaredDatPatches.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!actualPayloadFiles.TryGetValue(patchPath, out string? fullPatchPath))
+            {
+                diagnostics.Add(new(
+                    DiagnosticSeverity.Error,
+                    "PAY007",
+                    $"Declared nativeClient.datPatches path '{patchPath}' was not found under '{payloadDirRel}/'.",
+                    patchPath));
+                continue;
+            }
+
+            try
+            {
+                string json = File.ReadAllText(fullPatchPath);
+                DatPatchDocument? doc = ValidateDatPatchJsonCore(json, manifest.Id, patchPath, diagnostics);
+                if (doc is not null)
+                {
+                    parsedModPatches.Add(doc);
+                }
+            }
+            catch (IOException ex)
+            {
+                diagnostics.Add(new(
+                    DiagnosticSeverity.Error,
+                    "DAT001",
+                    $"Failed to read .datpatch.json '{patchPath}': {ex.Message}",
+                    patchPath));
+            }
+        }
+
+        // Detect duplicate (table, entryKey) or dead-stat slot collisions across multiple .datpatch.json files within the same mod.
+        if (parsedModPatches.Count > 1)
+        {
+            ValidateIntraModDatPatchCollisions(manifest.Id, parsedModPatches, diagnostics);
         }
 
         // Lint every .ui file in the payload
@@ -520,6 +566,369 @@ public static class DualModPackageValidator
         }
 
         return conflicts;
+    }
+
+    /// <summary>
+    /// Validates a standalone <c>.datpatch.json</c> payload (JSON syntax, schema table membership,
+    /// 18 verified <see cref="AppendableRegistryTables"/> for <c>append</c>, hard rejection of closed
+    /// <c>Stats</c>/<c>ItemClasses</c> tables for <c>append</c>, and valid <c>allocateDeadStat</c> slots).
+    /// </summary>
+    public static ValidationReport ValidateDatPatchJson(
+        string json,
+        string? expectedModId = null,
+        string? filePath = null)
+    {
+        var diagnostics = new List<ValidationDiagnostic>();
+        ValidateDatPatchJsonCore(json, expectedModId, filePath, diagnostics);
+        return new ValidationReport(diagnostics);
+    }
+
+    /// <summary>
+    /// Detects cross-mod collisions across declarative <c>.datpatch.json</c> documents.
+    /// Two mods appending distinct entry keys to the SAME <c>.datc64</c> table produce ZERO conflicts;
+    /// conflicts are reported only for duplicate <c>(table, entryKey)</c> keys, colliding explicit
+    /// <c>allocateDeadStat.preferredSlot</c> assignments, or exceeding the 30-slot dead-stat pool.
+    /// </summary>
+    public static IReadOnlyList<CrossModConflict> DetectDatPatchConflicts(IEnumerable<DatPatchDocument> patches)
+    {
+        ArgumentNullException.ThrowIfNull(patches);
+
+        Dat64SchemaRegistry schemaRegistry = Dat64SchemaRegistry.LoadDefault329();
+        var conflicts = new List<CrossModConflict>();
+        var entryOwners = new Dictionary<(string Table, string Key), string>(TableKeyComparer.Instance);
+        var deadSlotOwners = new Dictionary<int, (string ModId, string Key)>();
+        int totalDeadStats = 0;
+        string? firstDeadStatMod = null;
+
+        foreach (DatPatchDocument patch in patches)
+        {
+            if (patch is null)
+            {
+                continue;
+            }
+
+            foreach (var (rawTableName, tablePatch) in patch.Tables)
+            {
+                if (tablePatch is null || tablePatch.Append.Count == 0)
+                {
+                    continue;
+                }
+
+                string canonicalTable = schemaRegistry.TryGetTable(rawTableName, out Dat64TableSchema? schema) && schema is not null
+                    ? schema.Name
+                    : rawTableName.Trim();
+
+                foreach (DatAppendEntry entry in tablePatch.Append)
+                {
+                    if (string.IsNullOrWhiteSpace(entry.Key))
+                    {
+                        continue;
+                    }
+
+                    string trimmedKey = entry.Key.Trim();
+                    var tuple = (canonicalTable, trimmedKey);
+                    if (entryOwners.TryGetValue(tuple, out string? existingMod))
+                    {
+                        conflicts.Add(new CrossModConflict(
+                            "CNF007",
+                            "DatPatchEntry",
+                            $"{canonicalTable}:{trimmedKey}",
+                            existingMod,
+                            patch.ModId,
+                            $"Duplicate .datpatch.json entry ('{canonicalTable}', '{trimmedKey}') is declared by both '{existingMod}' and '{patch.ModId}'."));
+                    }
+                    else
+                    {
+                        entryOwners[tuple] = patch.ModId;
+                    }
+                }
+            }
+
+            foreach (DeadStatAllocationSpec deadSpec in patch.AllocateDeadStat)
+            {
+                totalDeadStats++;
+                firstDeadStatMod ??= patch.ModId;
+
+                if (!string.IsNullOrWhiteSpace(deadSpec.Key))
+                {
+                    string trimmedKey = deadSpec.Key.Trim();
+                    var tuple = ("Stats", trimmedKey);
+                    if (entryOwners.TryGetValue(tuple, out string? existingMod))
+                    {
+                        conflicts.Add(new CrossModConflict(
+                            "CNF007",
+                            "DatPatchEntry",
+                            $"Stats:{trimmedKey}",
+                            existingMod,
+                            patch.ModId,
+                            $"Duplicate dead-stat entry ('Stats', '{trimmedKey}') is declared by both '{existingMod}' and '{patch.ModId}'."));
+                    }
+                    else
+                    {
+                        entryOwners[tuple] = patch.ModId;
+                    }
+                }
+
+                if (deadSpec.PreferredSlot is int slot)
+                {
+                    if (deadSlotOwners.TryGetValue(slot, out var existingSlot))
+                    {
+                        conflicts.Add(new CrossModConflict(
+                            "CNF008",
+                            "DeadStatSlot",
+                            $"Stats[{slot}]",
+                            existingSlot.ModId,
+                            patch.ModId,
+                            $"Dead-stat preferredSlot {slot} collides between '{existingSlot.ModId}' ('{existingSlot.Key}') and '{patch.ModId}' ('{deadSpec.Key}')."));
+                    }
+                    else
+                    {
+                        deadSlotOwners[slot] = (patch.ModId, deadSpec.Key);
+                    }
+                }
+            }
+
+            if (totalDeadStats > Dat64SchemaRegistry.DeadStatSlots.Count && firstDeadStatMod is not null)
+            {
+                conflicts.Add(new CrossModConflict(
+                    "CNF009",
+                    "DeadStatPool",
+                    "Stats",
+                    firstDeadStatMod,
+                    patch.ModId,
+                    $"Combined allocateDeadStat requests ({totalDeadStats}) exceed the {Dat64SchemaRegistry.DeadStatSlots.Count} verified dead Stats stock slots."));
+                break;
+            }
+        }
+
+        return conflicts;
+    }
+
+    private static DatPatchDocument? ValidateDatPatchJsonCore(
+        string json,
+        string? expectedModId,
+        string? filePath,
+        List<ValidationDiagnostic> diagnostics)
+    {
+        DatPatchDocument doc;
+        try
+        {
+            doc = DatPatchDocument.Parse(json);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or ArgumentException)
+        {
+            diagnostics.Add(new(
+                DiagnosticSeverity.Error,
+                "DAT001",
+                $"Invalid .datpatch.json syntax or schema: {ex.Message}",
+                filePath));
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expectedModId) &&
+            !doc.ModId.Equals(expectedModId, StringComparison.OrdinalIgnoreCase))
+        {
+            diagnostics.Add(new(
+                DiagnosticSeverity.Error,
+                "DAT002",
+                $".datpatch.json modId '{doc.ModId}' does not match manifest id '{expectedModId}'.",
+                filePath));
+        }
+
+        Dat64SchemaRegistry schemaRegistry = Dat64SchemaRegistry.LoadDefault329();
+        var seenEntries = new HashSet<(string Table, string Key)>(TableKeyComparer.Instance);
+        var usedPreferredSlots = new HashSet<int>();
+
+        foreach (var (rawTableName, tablePatch) in doc.Tables)
+        {
+            if (tablePatch is null)
+            {
+                continue;
+            }
+
+            if (!schemaRegistry.TryGetTable(rawTableName, out Dat64TableSchema? tableSchema) || tableSchema is null)
+            {
+                diagnostics.Add(new(
+                    DiagnosticSeverity.Error,
+                    "DAT003",
+                    $".datpatch.json references unknown 3.29 .datc64 table '{rawTableName}'.",
+                    filePath));
+                continue;
+            }
+
+            string canonicalName = tableSchema.Name;
+
+            if (tablePatch.Append.Count > 0)
+            {
+                if (ClosedRegistryTables.Contains(canonicalName))
+                {
+                    string closedMessage = canonicalName.Equals("Stats", StringComparison.OrdinalIgnoreCase)
+                        ? "Table 'Stats' is closed in 3.29 (fixed 23,362 / 0x5b42 rows) and cannot accept 'append' entries. Use 'allocateDeadStat' (30 verified dead stock rows) or high-ID StatsComponent instead."
+                        : $"Table '{canonicalName}' is closed (compiled enum in 3.29) and cannot accept 'append' entries.";
+                    diagnostics.Add(new(DiagnosticSeverity.Error, "DAT004", closedMessage, filePath));
+                }
+                else if (!AppendableRegistryTables.Contains(canonicalName))
+                {
+                    diagnostics.Add(new(
+                        DiagnosticSeverity.Error,
+                        "DAT005",
+                        $"Table '{canonicalName}' is not in the {AppendableRegistryTables.Count} verified AppendableRegistryTables and cannot accept 'append' entries.",
+                        filePath));
+                }
+
+                foreach (DatAppendEntry entry in tablePatch.Append)
+                {
+                    if (string.IsNullOrWhiteSpace(entry.Key))
+                    {
+                        diagnostics.Add(new(
+                            DiagnosticSeverity.Error,
+                            "DAT006",
+                            $"Append entry on table '{canonicalName}' must declare a non-empty 'key'.",
+                            filePath));
+                        continue;
+                    }
+
+                    if (!seenEntries.Add((canonicalName, entry.Key.Trim())))
+                    {
+                        diagnostics.Add(new(
+                            DiagnosticSeverity.Error,
+                            "DAT007",
+                            $"Duplicate append entry key ('{canonicalName}', '{entry.Key}') in mod '{doc.ModId}'.",
+                            filePath));
+                    }
+                }
+            }
+
+            if (tablePatch.Modify.Count > 0 && canonicalName.Equals("Stats", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (DatModifyEntry modEntry in tablePatch.Modify)
+                {
+                    if (modEntry.RowIndex == Dat64SchemaRegistry.ForbiddenDummyStatRow)
+                    {
+                        diagnostics.Add(new(
+                            DiagnosticSeverity.Error,
+                            "DAT008",
+                            $"Modifying forbidden Stats row {Dat64SchemaRegistry.ForbiddenDummyStatRow} ('dummy_stat_display_nothing') is disallowed.",
+                            filePath));
+                    }
+
+                    foreach (string colName in modEntry.Fields.Keys)
+                    {
+                        if (colName.Equals("Id", StringComparison.OrdinalIgnoreCase) ||
+                            colName.Equals("HASH32", StringComparison.OrdinalIgnoreCase))
+                        {
+                            diagnostics.Add(new(
+                                DiagnosticSeverity.Error,
+                                "DAT008",
+                                $"Modifying 'Stats.{colName}' is forbidden because stock Stats IDs/HASH32 must remain intact for Stat.Checksum compatibility.",
+                                filePath));
+                        }
+                    }
+                }
+            }
+        }
+
+        if (doc.AllocateDeadStat.Count > Dat64SchemaRegistry.DeadStatSlots.Count)
+        {
+            diagnostics.Add(new(
+                DiagnosticSeverity.Error,
+                "DAT009",
+                $"Mod '{doc.ModId}' requests {doc.AllocateDeadStat.Count} allocateDeadStat entries, exceeding the {Dat64SchemaRegistry.DeadStatSlots.Count} verified dead stock slots.",
+                filePath));
+        }
+
+        foreach (DeadStatAllocationSpec deadSpec in doc.AllocateDeadStat)
+        {
+            if (string.IsNullOrWhiteSpace(deadSpec.Key))
+            {
+                diagnostics.Add(new(
+                    DiagnosticSeverity.Error,
+                    "DAT006",
+                    "allocateDeadStat entry must declare a non-empty 'key'.",
+                    filePath));
+            }
+            else if (!seenEntries.Add(("Stats", deadSpec.Key.Trim())))
+            {
+                diagnostics.Add(new(
+                    DiagnosticSeverity.Error,
+                    "DAT007",
+                    $"Duplicate allocateDeadStat key ('Stats', '{deadSpec.Key}') in mod '{doc.ModId}'.",
+                    filePath));
+            }
+
+            if (deadSpec.PreferredSlot is int slot)
+            {
+                if (slot == Dat64SchemaRegistry.ForbiddenDummyStatRow)
+                {
+                    diagnostics.Add(new(
+                        DiagnosticSeverity.Error,
+                        "DAT009",
+                        $"allocateDeadStat '{deadSpec.Key}' requests forbidden Stats row {Dat64SchemaRegistry.ForbiddenDummyStatRow} ('dummy_stat_display_nothing').",
+                        filePath));
+                }
+                else if (!Dat64SchemaRegistry.DeadStatSlotSet.Contains(slot))
+                {
+                    diagnostics.Add(new(
+                        DiagnosticSeverity.Error,
+                        "DAT009",
+                        $"allocateDeadStat '{deadSpec.Key}' requests Stats row {slot}, which is not in the {Dat64SchemaRegistry.DeadStatSlots.Count} live-verified dead stock slots.",
+                        filePath));
+                }
+                else if (!usedPreferredSlots.Add(slot))
+                {
+                    diagnostics.Add(new(
+                        DiagnosticSeverity.Error,
+                        "DAT009",
+                        $"Duplicate allocateDeadStat preferredSlot {slot} within mod '{doc.ModId}'.",
+                        filePath));
+                }
+            }
+
+            foreach (string colName in deadSpec.Fields.Keys)
+            {
+                if (colName.Equals("Id", StringComparison.OrdinalIgnoreCase) ||
+                    colName.Equals("HASH32", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagnostics.Add(new(
+                        DiagnosticSeverity.Error,
+                        "DAT008",
+                        $"allocateDeadStat '{deadSpec.Key}' cannot override 'Stats.{colName}'; stock Stats.Id must remain intact.",
+                        filePath));
+                }
+            }
+        }
+
+        return doc;
+    }
+
+    private static void ValidateIntraModDatPatchCollisions(
+        string modId,
+        IReadOnlyList<DatPatchDocument> modPatches,
+        List<ValidationDiagnostic> diagnostics)
+    {
+        IReadOnlyList<CrossModConflict> internalConflicts = DetectDatPatchConflicts(modPatches);
+        foreach (CrossModConflict conflict in internalConflicts)
+        {
+            string code = conflict.Code == "CNF007" ? "DAT007" : "DAT009";
+            diagnostics.Add(new(
+                DiagnosticSeverity.Error,
+                code,
+                $"Intra-mod .datpatch.json collision in '{modId}': {conflict.Message}"));
+        }
+    }
+
+    private sealed class TableKeyComparer : IEqualityComparer<(string Table, string Key)>
+    {
+        public static readonly TableKeyComparer Instance = new();
+
+        public bool Equals((string Table, string Key) x, (string Table, string Key) y) =>
+            string.Equals(x.Table, y.Table, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.Key, y.Key, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Table, string Key) obj) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Table),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Key));
     }
 
     /// <summary>
@@ -726,6 +1135,19 @@ public static class DualModPackageValidator
         {
             if (!IsSafeRelativeVirtualPath(path))
                 diagnostics.Add(new(DiagnosticSeverity.Error, "NC011", $"Unsafe replaces virtual path '{path}'.", path));
+        }
+
+        foreach (string patchPath in nc.DatPatches)
+        {
+            if (!IsSafeRelativeVirtualPath(patchPath))
+            {
+                diagnostics.Add(new(DiagnosticSeverity.Error, "NC022", $"Unsafe datPatches relative path '{patchPath}'.", patchPath));
+            }
+            else if (!patchPath.EndsWith(".datpatch.json", StringComparison.OrdinalIgnoreCase))
+            {
+                diagnostics.Add(new(DiagnosticSeverity.Error, "NC023",
+                    $"Invalid datPatches entry '{patchPath}'. Declared dat patches must use the '.datpatch.json' extension.", patchPath));
+            }
         }
 
         var seenOpcodes = new HashSet<ushort>();

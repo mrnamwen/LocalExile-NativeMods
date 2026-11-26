@@ -4,6 +4,12 @@
     <AssemblyName>LocalExile.Client.Sdk</AssemblyName>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+    <PackageId>LocalExile.Client.Sdk</PackageId>
+    <Title>LocalExile NativeMods Client SDK</Title>
     <Description>Public versioned modding API for LocalExile 3.29 client mods.</Description>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 </Project>

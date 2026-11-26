@@ -3,7 +3,13 @@
     <RootNamespace>LocalExile.Client.ServerBridge</RootNamespace>
     <AssemblyName>LocalExile.Client.ServerBridge</AssemblyName>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+    <PackageId>LocalExile.Client.ServerBridge</PackageId>
+    <Title>LocalExile NativeMods ServerBridge</Title>
     <Description>LocalExile Gateway server-side bridge for communicating with NativeMods client hosts and mods.</Description>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
   <ItemGroup>

@@ -13,13 +13,13 @@ namespace LocalExile.Client.Sdk;
 public static class SdkVersion
 {
     /// <summary>The current semantic version string of the Client SDK.</summary>
-    public const string Current = "0.4.0";
+    public const string Current = "1.0.0";
 
     /// <summary>The current binary/envelope wire protocol version.</summary>
     public const int ProtocolVersion = 1;
 
     /// <summary>The parsed major.minor.patch version of the Client SDK.</summary>
-    public static Version Parsed { get; } = new(0, 4, 0);
+    public static Version Parsed { get; } = new(1, 0, 0);
 
     /// <summary>
     /// Evaluates whether <see cref="Current"/> satisfies a simplified SemVer range string
@@ -198,6 +198,7 @@ public interface IClientMod
 /// <param name="PayloadHash">Optional SHA-256 digest of the managed client mod assembly DLL (<c>payloadHash</c>/<c>assemblyPayloadHash</c>/<c>assemblySha256</c>).</param>
 /// <param name="Enabled">Whether the mod is enabled by default.</param>
 /// <param name="BundleSha256">Optional SHA-256 digest of the packed client <c>.bundle.bin</c> asset archive (<c>bundleSha256</c>/<c>integrity.packageSha256</c>).</param>
+/// <param name="DatPatches">Optional list of declarative <c>.datpatch.json</c> relative paths under the mod's client payload.</param>
 public sealed record ClientModManifest(
     string Id,
     string Name,
@@ -213,13 +214,17 @@ public sealed record ClientModManifest(
     string? RawAccessJustification = null,
     string? PayloadHash = null,
     bool Enabled = true,
-    string? BundleSha256 = null)
+    string? BundleSha256 = null,
+    IReadOnlyList<string>? DatPatches = null)
 {
     /// <summary>Gets the non-null dependency list.</summary>
     public IReadOnlyList<string> EffectiveDepends => Depends ?? [];
 
     /// <summary>Gets the non-null list of replaced stock paths.</summary>
     public IReadOnlyList<string> EffectiveReplaces => Replaces ?? [];
+
+    /// <summary>Gets the non-null list of declarative <c>.datpatch.json</c> paths.</summary>
+    public IReadOnlyList<string> EffectiveDatPatches => DatPatches ?? [];
 
     /// <summary>
     /// Reads and parses a <see cref="ClientModManifest"/> from a JSON file on disk.
@@ -302,6 +307,12 @@ public sealed record ClientModManifest(
         {
             bundleSha256 = GetString(integrityElem, "packageSha256");
         }
+        List<string> datPatches = GetStringList(clientSection, "datPatches");
+        if (datPatches.Count == 0)
+        {
+            datPatches = GetStringList(root, "datPatches");
+        }
+
         bool enabled = (GetBool(root, "enabled") ?? true) && (GetBool(clientSection, "enabled") ?? true);
 
         return new ClientModManifest(
@@ -319,7 +330,8 @@ public sealed record ClientModManifest(
             RawAccessJustification: rawJustification,
             PayloadHash: payloadHash,
             Enabled: enabled,
-            BundleSha256: bundleSha256);
+            BundleSha256: bundleSha256,
+            DatPatches: datPatches);
     }
 
     private static string? GetString(JsonElement element, string propertyName)

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -15,6 +16,21 @@ using LocalExile.Client.Sdk.Raw;
 namespace LocalExile.Client.Host.Services;
 
 /// <summary>
+/// Result of mounting a Waypoint-built <c>Mods/Client/.merged-cache/</c> directory into <see cref="FileOverlayService"/>
+/// and <see cref="ContentRegistry"/> at <c>t=0</c> startup.
+/// </summary>
+public sealed record MergedCacheMountResult(
+    bool Mounted,
+    string MergedCacheDirectory,
+    IReadOnlyList<string> MountedVirtualPaths,
+    ContentRowMap? RowMap,
+    IDisposable? OverlayHandle)
+{
+    /// <summary>SHA-256 digest of the mounted <see cref="RowMap"/>, if loaded.</summary>
+    public string? ContentRowMapDigest => RowMap?.Digest;
+}
+
+/// <summary>
 /// Layered file overlay service supporting virtual files, loose directories, and packed bundle overlays
 /// with deterministic priority ordering, automatic UTF-16LE CRLF encoding for client text files,
 /// and asset invalidation.
@@ -22,7 +38,7 @@ namespace LocalExile.Client.Host.Services;
 public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
 {
     private sealed record VirtualFileLayer(long Id, string NormalizedPath, byte[] Bytes, string OwnerModId, int Priority);
-    private sealed record DirectoryLayer(long Id, string RootDirectory, string OwnerModId, int Priority, Dictionary<string, string> IndexedFiles);
+    private sealed record DirectoryLayer(long Id, string RootDirectory, string OwnerModId, int Priority, Dictionary<string, string> IndexedFiles, IReadOnlySet<string>? ExcludedNormalizedPaths = null);
     private sealed record BundleEntrySlice(
         string NormalizedPath,
         long Offset,
@@ -54,13 +70,20 @@ public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
     public IDisposable RegisterDirectory(string rootDirectory, int priority = 0) =>
         RegisterDirectoryForMod("host", rootDirectory, priority);
 
-    internal IDisposable RegisterDirectoryForMod(string ownerModId, string rootDirectory, int priority)
+    internal IDisposable RegisterDirectoryForMod(string ownerModId, string rootDirectory, int priority) =>
+        RegisterDirectoryForMod(ownerModId, rootDirectory, priority, excludedNormalizedPaths: null);
+
+    internal IDisposable RegisterDirectoryForMod(
+        string ownerModId,
+        string rootDirectory,
+        int priority,
+        IReadOnlySet<string>? excludedNormalizedPaths)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         string full = Path.GetFullPath(rootDirectory);
-        Dictionary<string, string> indexed = IndexDirectory(full);
+        Dictionary<string, string> indexed = IndexDirectory(full, excludedNormalizedPaths);
         long id = Interlocked.Increment(ref _nextLayerId);
-        var layer = new DirectoryLayer(id, full, ownerModId, priority, indexed);
+        var layer = new DirectoryLayer(id, full, ownerModId, priority, indexed, excludedNormalizedPaths);
         string[] knownPaths;
         lock (_gate)
         {
@@ -81,6 +104,69 @@ public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
 
             _bridge.SetFileOverlayKnownPaths(updated);
         });
+    }
+
+    /// <summary>
+    /// Detects and mounts a <c>Mods/Client/.merged-cache/</c> directory at <c>t=0</c>: registers all merged
+    /// <c>.datc64</c> tables and Route A <c>Metadata/StatDescriptions/*.txt</c> overlays (excluding metadata
+    /// <c>content-row-map.json</c> from game file overlays) and parses <c>content-row-map.json</c> into
+    /// <paramref name="contentRegistry"/> when provided.
+    /// </summary>
+    public MergedCacheMountResult MountMergedCache(
+        string mergedCacheDirectory,
+        ContentRegistry? contentRegistry = null,
+        int priority = 500,
+        Action<string, string, string>? log = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mergedCacheDirectory);
+        string fullDir = Path.GetFullPath(mergedCacheDirectory);
+        if (!Directory.Exists(fullDir))
+        {
+            return new MergedCacheMountResult(false, fullDir, [], null, null);
+        }
+
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ContentRowMap.FileName,
+        };
+
+        Dictionary<string, string> indexed = IndexDirectory(fullDir, excluded);
+        ContentRowMap? rowMap = null;
+        string rowMapPath = Path.Combine(fullDir, ContentRowMap.FileName);
+        if (File.Exists(rowMapPath))
+        {
+            try
+            {
+                rowMap = ContentRowMap.LoadFromFile(rowMapPath);
+                contentRegistry?.SetRowMap(rowMap);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+            {
+                log?.Invoke("WARN", "content", $"Failed to parse '{rowMapPath}': {ex.Message}");
+            }
+        }
+
+        if (indexed.Count == 0 && rowMap is null)
+        {
+            return new MergedCacheMountResult(false, fullDir, [], null, null);
+        }
+
+        IDisposable? overlayHandle = indexed.Count > 0
+            ? RegisterDirectoryForMod("__merged-cache", fullDir, priority, excluded)
+            : null;
+
+        string[] mountedPaths = [.. indexed.Keys.OrderBy(p => p, StringComparer.Ordinal)];
+        log?.Invoke(
+            "INFO",
+            "content",
+            $"Mounted .merged-cache from '{fullDir}' at t=0 ({mountedPaths.Length} overlay file(s), digest={rowMap?.Digest ?? "<none>"}).");
+
+        return new MergedCacheMountResult(
+            Mounted: true,
+            MergedCacheDirectory: fullDir,
+            MountedVirtualPaths: mountedPaths,
+            RowMap: rowMap,
+            OverlayHandle: overlayHandle);
     }
 
     /// <inheritdoc/>
@@ -194,7 +280,7 @@ public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
                 for (int i = 0; i < _directories.Count; i++)
                 {
                     DirectoryLayer d = _directories[i];
-                    _directories[i] = d with { IndexedFiles = IndexDirectory(d.RootDirectory) };
+                    _directories[i] = d with { IndexedFiles = IndexDirectory(d.RootDirectory, d.ExcludedNormalizedPaths) };
                 }
 
                 updatedPaths = RebuildResolvedIndexLocked();
@@ -305,7 +391,9 @@ public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
         return [.. next.Keys];
     }
 
-    private static Dictionary<string, string> IndexDirectory(string rootDirectory)
+    private static Dictionary<string, string> IndexDirectory(
+        string rootDirectory,
+        IReadOnlySet<string>? excludedNormalizedPaths = null)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
         if (!Directory.Exists(rootDirectory))
@@ -319,7 +407,8 @@ public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
             {
                 string rel = Path.GetRelativePath(rootDirectory, fullPath);
                 string normalized = ClientTextEncoding.NormalizeVirtualPath(rel);
-                if (!string.IsNullOrEmpty(normalized))
+                if (!string.IsNullOrEmpty(normalized) &&
+                    (excludedNormalizedPaths is null || !excludedNormalizedPaths.Contains(normalized)))
                 {
                     map[normalized] = fullPath;
                 }
@@ -1519,7 +1608,7 @@ public sealed class OpcodeRegistry(INativeBridge bridge) : IOpcodeRegistry
     }
 }
 
-/// <summary>Managed <see cref="IContentRegistry"/> implementation tracking append-only dat rows, item bases, world objects, and overlays.</summary>
+/// <summary>Managed <see cref="IContentRegistry"/> implementation tracking append-only dat rows, item bases, world objects, overlays, and the live <c>content-row-map.json</c>.</summary>
 public sealed class ContentRegistry(FileOverlayService files) : IContentRegistry
 {
     private readonly List<DatRowDeclaration> _datRows = [];
@@ -1527,6 +1616,13 @@ public sealed class ContentRegistry(FileOverlayService files) : IContentRegistry
     private readonly List<WorldObjectDeclaration> _worldObjects = [];
     private readonly List<ObjectOverlayDeclaration> _overlays = [];
     private readonly Lock _gate = new();
+    private ContentRowMap? _rowMap;
+
+    /// <inheritdoc/>
+    public ContentRowMap? RowMap => Volatile.Read(ref _rowMap);
+
+    /// <inheritdoc/>
+    public string? ContentRowMapDigest => Volatile.Read(ref _rowMap)?.Digest;
 
     /// <inheritdoc/>
     public IReadOnlyList<DatRowDeclaration> DatRows { get { lock (_gate) { return [.. _datRows]; } } }
@@ -1539,6 +1635,56 @@ public sealed class ContentRegistry(FileOverlayService files) : IContentRegistry
 
     /// <inheritdoc/>
     public IReadOnlyList<ObjectOverlayDeclaration> Overlays { get { lock (_gate) { return [.. _overlays]; } } }
+
+    /// <summary>Sets or replaces the live <see cref="ContentRowMap"/> loaded from <c>Mods/Client/.merged-cache/content-row-map.json</c>.</summary>
+    public void SetRowMap(ContentRowMap? rowMap) => Volatile.Write(ref _rowMap, rowMap);
+
+    /// <summary>Loads a <see cref="ContentRowMap"/> from a <c>content-row-map.json</c> file on disk and binds it as the live <see cref="RowMap"/>.</summary>
+    public ContentRowMap LoadRowMapFromFile(string path)
+    {
+        ContentRowMap map = ContentRowMap.LoadFromFile(path);
+        SetRowMap(map);
+        return map;
+    }
+
+    /// <inheritdoc/>
+    public bool TryResolveRow(string tableName, string entryKey, [NotNullWhen(true)] out ContentRowEntry? entry)
+    {
+        ContentRowMap? map = Volatile.Read(ref _rowMap);
+        if (map is not null && map.TryResolveRow(tableName, entryKey, out entry))
+        {
+            return true;
+        }
+
+        entry = null;
+        return false;
+    }
+
+    /// <summary>Looks up a live <see cref="DeclareDatRow"/> registration by table name and entry key.</summary>
+    public bool TryGetDeclaredDatRow(string tableName, string entryKey, [NotNullWhen(true)] out DatRowDeclaration? declaration)
+    {
+        if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(entryKey))
+        {
+            declaration = null;
+            return false;
+        }
+
+        lock (_gate)
+        {
+            foreach (DatRowDeclaration row in _datRows)
+            {
+                if (string.Equals(row.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(row.EntryKey, entryKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    declaration = row;
+                    return true;
+                }
+            }
+        }
+
+        declaration = null;
+        return false;
+    }
 
     /// <inheritdoc/>
     public IDisposable DeclareDatRow(DatRowDeclaration row)

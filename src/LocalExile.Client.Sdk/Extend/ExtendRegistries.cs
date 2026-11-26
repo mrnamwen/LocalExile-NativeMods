@@ -1,3 +1,6 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using LocalExile.Client.Sdk.Engine;
 
 namespace LocalExile.Client.Sdk.Extend;
@@ -223,11 +226,208 @@ public sealed record ObjectOverlayDeclaration(
     string Content);
 
 /// <summary>
+/// Recorded row assignment and hash metadata for a single merged <c>.datc64</c> content entry
+/// loaded from <c>Mods/Client/.merged-cache/content-row-map.json</c>.
+/// </summary>
+public sealed record ContentRowEntry
+{
+    /// <summary>Owning mod identifier that declared this entry.</summary>
+    [JsonPropertyName("modId")]
+    public required string ModId { get; init; }
+
+    /// <summary>Deterministic zero-based row index inside the merged <c>.datc64</c> table.</summary>
+    [JsonPropertyName("rowIndex")]
+    public required int RowIndex { get; init; }
+
+    /// <summary>Computed or explicit 32-bit MurmurHash2 (<c>HASH32</c>) for tables with a <c>HASH32</c> column.</summary>
+    [JsonPropertyName("hash32")]
+    public uint? Hash32 { get; init; }
+
+    /// <summary>Allocated collision-free 16-bit hash (<c>HASH16</c>) for tables with a <c>HASH16</c> column.</summary>
+    [JsonPropertyName("hash16")]
+    public ushort? Hash16 { get; init; }
+
+    /// <summary>Stock <c>Stats[row].Id</c> preserved for dead-stat slot allocations (null for appended rows).</summary>
+    [JsonPropertyName("stockId")]
+    public string? StockId { get; init; }
+}
+
+/// <summary>
+/// Per-table merged row counts, SHA-256 checksum, and symbolic key map recorded in <c>content-row-map.json</c>.
+/// </summary>
+public sealed record ContentTableMap
+{
+    /// <summary>Number of rows in the stock 3.29 <c>.datc64</c> table prior to merging.</summary>
+    [JsonPropertyName("stockRowCount")]
+    public required int StockRowCount { get; init; }
+
+    /// <summary>Total row count in the merged <c>.datc64</c> table.</summary>
+    [JsonPropertyName("mergedRowCount")]
+    public required int MergedRowCount { get; init; }
+
+    /// <summary>Lowercase hex SHA-256 checksum of the merged <c>.datc64</c> binary.</summary>
+    [JsonPropertyName("tableSha256")]
+    public required string TableSha256 { get; init; }
+
+    /// <summary>Symbolic entry keys mapped to their merged row index and allocated hashes.</summary>
+    [JsonPropertyName("entries")]
+    public required IReadOnlyDictionary<string, ContentRowEntry> Entries { get; init; }
+}
+
+/// <summary>
+/// Metadata for a generated Route A text overlay (such as <c>Metadata/StatDescriptions/&lt;mod&gt;_custom_stats.txt</c>)
+/// emitted alongside merged <c>.datc64</c> files in <c>.merged-cache/</c>.
+/// </summary>
+public sealed record ContentGeneratedOverlay
+{
+    /// <summary>Normalized virtual game path of the generated overlay.</summary>
+    [JsonPropertyName("virtualPath")]
+    public required string VirtualPath { get; init; }
+
+    /// <summary>Lowercase hex SHA-256 checksum of the generated overlay file.</summary>
+    [JsonPropertyName("sha256")]
+    public required string Sha256 { get; init; }
+}
+
+/// <summary>
+/// Deterministic <c>content-row-map.json</c> manifest shared between the client host (<see cref="IContentRegistry"/>)
+/// and <c>ServerBridge</c> so both sides resolve identical <c>(table, entryKey)</c> row indices, hashes, and
+/// handshake digests.
+/// </summary>
+public sealed record ContentRowMap
+{
+    /// <summary>Current JSON schema version for <c>content-row-map.json</c>.</summary>
+    public const int CurrentSchemaVersion = 1;
+
+    /// <summary>Canonical filename stored inside <c>Mods/Client/.merged-cache/</c>.</summary>
+    public const string FileName = "content-row-map.json";
+
+    private static readonly JsonSerializerOptions ReadOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
+
+    private static readonly JsonSerializerOptions WriteOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    /// <summary>Schema version of this row map (currently <c>1</c>).</summary>
+    [JsonPropertyName("schemaVersion")]
+    public int SchemaVersion { get; init; } = CurrentSchemaVersion;
+
+    /// <summary>Deterministic lowercase hex SHA-256 handshake digest covering all merged tables and overlays.</summary>
+    [JsonPropertyName("digest")]
+    public required string Digest { get; init; }
+
+    /// <summary>Deterministically ordered list of mod identifiers included in this merged cache.</summary>
+    [JsonPropertyName("mods")]
+    public IReadOnlyList<string> Mods { get; init; } = [];
+
+    /// <summary>Merged table summaries keyed by canonical <c>.datc64</c> table name.</summary>
+    [JsonPropertyName("tables")]
+    public IReadOnlyDictionary<string, ContentTableMap> Tables { get; init; } =
+        new Dictionary<string, ContentTableMap>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Generated Route A text overlays included in this merged cache.</summary>
+    [JsonPropertyName("generatedOverlays")]
+    public IReadOnlyList<ContentGeneratedOverlay> GeneratedOverlays { get; init; } = [];
+
+    /// <summary>
+    /// Resolves a merged content entry by table name and symbolic entry key (case-insensitive on both).
+    /// </summary>
+    public bool TryResolveRow(string tableName, string entryKey, [NotNullWhen(true)] out ContentRowEntry? entry)
+    {
+        entry = null;
+        if (string.IsNullOrWhiteSpace(tableName) || string.IsNullOrWhiteSpace(entryKey))
+        {
+            return false;
+        }
+
+        string trimmedTable = tableName.Trim();
+        string trimmedKey = entryKey.Trim();
+
+        ContentTableMap? tableMap = null;
+        if (!Tables.TryGetValue(trimmedTable, out tableMap))
+        {
+            foreach (KeyValuePair<string, ContentTableMap> kv in Tables)
+            {
+                if (string.Equals(kv.Key, trimmedTable, StringComparison.OrdinalIgnoreCase))
+                {
+                    tableMap = kv.Value;
+                    break;
+                }
+            }
+        }
+
+        if (tableMap is null)
+        {
+            return false;
+        }
+
+        if (tableMap.Entries.TryGetValue(trimmedKey, out entry))
+        {
+            return true;
+        }
+
+        foreach (KeyValuePair<string, ContentRowEntry> kv in tableMap.Entries)
+        {
+            if (string.Equals(kv.Key, trimmedKey, StringComparison.OrdinalIgnoreCase))
+            {
+                entry = kv.Value;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Parses a <see cref="ContentRowMap"/> from <c>content-row-map.json</c> text.</summary>
+    public static ContentRowMap Parse(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        ContentRowMap map = JsonSerializer.Deserialize<ContentRowMap>(json, ReadOptions)
+            ?? throw new InvalidDataException("Failed to deserialize content-row-map.json: root evaluated to null.");
+        if (map.SchemaVersion != CurrentSchemaVersion)
+        {
+            throw new InvalidDataException($"Unsupported content-row-map.json schemaVersion {map.SchemaVersion} (expected {CurrentSchemaVersion}).");
+        }
+
+        if (string.IsNullOrWhiteSpace(map.Digest))
+        {
+            throw new InvalidDataException("content-row-map.json is missing required 'digest'.");
+        }
+
+        return map;
+    }
+
+    /// <summary>Loads and parses a <see cref="ContentRowMap"/> from disk.</summary>
+    public static ContentRowMap LoadFromFile(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return Parse(File.ReadAllText(path));
+    }
+
+    /// <summary>Serializes this <see cref="ContentRowMap"/> back to canonical indented JSON.</summary>
+    public string ToJson() => JsonSerializer.Serialize(this, WriteOptions);
+}
+
+/// <summary>
 /// Collects append-only content declarations (dat rows, item bases, world objects, and <c>.ot</c>/<c>.it</c> overlays)
-/// with deterministic cross-side ID generation.
+/// and exposes the live <c>content-row-map.json</c> mounted at <c>t=0</c> from <c>Mods/Client/.merged-cache/</c>.
 /// </summary>
 public interface IContentRegistry
 {
+    /// <summary>Live <see cref="ContentRowMap"/> parsed from <c>Mods/Client/.merged-cache/content-row-map.json</c> at <c>t=0</c>, or <c>null</c> if none is mounted.</summary>
+    ContentRowMap? RowMap { get; }
+
+    /// <summary>SHA-256 digest of the mounted <see cref="RowMap"/> advertised in <see cref="Protocol.ClientHandshake"/>, or <c>null</c> if no merged cache is mounted.</summary>
+    string? ContentRowMapDigest { get; }
+
     /// <summary>All declared append-only dat table rows.</summary>
     IReadOnlyList<DatRowDeclaration> DatRows { get; }
 
@@ -239,6 +439,11 @@ public interface IContentRegistry
 
     /// <summary>All declared <c>.ot</c>/<c>.it</c> overlays.</summary>
     IReadOnlyList<ObjectOverlayDeclaration> Overlays { get; }
+
+    /// <summary>
+    /// Resolves a merged content row from <see cref="RowMap"/> by <paramref name="tableName"/> and <paramref name="entryKey"/>.
+    /// </summary>
+    bool TryResolveRow(string tableName, string entryKey, [NotNullWhen(true)] out ContentRowEntry? entry);
 
     /// <summary>Registers an append-only dat row declaration.</summary>
     IDisposable DeclareDatRow(DatRowDeclaration row);

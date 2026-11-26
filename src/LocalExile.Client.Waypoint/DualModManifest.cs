@@ -83,6 +83,13 @@ public sealed record NativeClientManifest
     [JsonPropertyName("replaces")]
     public IReadOnlyList<string> Replaces { get; init; } = [];
 
+    /// <summary>
+    /// Relative paths under <see cref="PayloadDir"/> to declarative <c>.datpatch.json</c> files
+    /// merged conflict-free into <c>Mods/Client/.merged-cache/</c> by <c>DatPatchMerger</c>.
+    /// </summary>
+    [JsonPropertyName("datPatches")]
+    public IReadOnlyList<string> DatPatches { get; init; } = [];
+
     [JsonPropertyName("rawAccess")]
     public bool RawAccess { get; init; }
 
@@ -275,7 +282,8 @@ public sealed record WaypointCatalogModEntry
                 nc.SdkVersionRange,
                 nc.RawAccess,
                 nc.Replaces.Count,
-                !string.IsNullOrWhiteSpace(nc.Assembly))
+                !string.IsNullOrWhiteSpace(nc.Assembly),
+                nc.DatPatches.Count)
             : null;
 
         return new WaypointCatalogModEntry
@@ -301,7 +309,8 @@ public sealed record WaypointCatalogClientSummary(
     [property: JsonPropertyName("sdkVersionRange")] string SdkVersionRange,
     [property: JsonPropertyName("rawAccess")] bool RawAccess,
     [property: JsonPropertyName("replacesCount")] int ReplacesCount,
-    [property: JsonPropertyName("hasClientAssembly")] bool HasClientAssembly);
+    [property: JsonPropertyName("hasClientAssembly")] bool HasClientAssembly,
+    [property: JsonPropertyName("datPatchesCount")] int DatPatchesCount = 0);
 
 /// <summary>
 /// Version-1 repository catalog index matching <c>LocalExile-Mods/mods.json</c>.

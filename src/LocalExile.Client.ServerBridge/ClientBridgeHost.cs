@@ -26,11 +26,19 @@ public sealed class ClientBridgeHost : IDisposable
     private readonly Lock _gate = new();
     private GatewayBridgeRegistration? _busRegistration;
     private string? _defaultChannel;
+    private string? _expectedContentRowMapDigest;
+    private ContentRowMap? _contentRowMap;
     private long _sequence;
     private int _disposed;
 
     /// <summary>Active bridge configuration options.</summary>
     public ClientBridgeOptions Options => _options;
+
+    /// <summary>Expected SHA-256 <c>content-row-map.json</c> digest enforced during client handshakes, or <c>null</c> if unset.</summary>
+    public string? ExpectedContentRowMapDigest => Volatile.Read(ref _expectedContentRowMapDigest);
+
+    /// <summary>Optional <see cref="ContentRowMap"/> bound to this bridge for server-side row/hash resolution.</summary>
+    public ContentRowMap? ContentRowMap => Volatile.Read(ref _contentRowMap);
 
     /// <summary>Default channel used by channel-less <c>SendAsync</c> overloads when configured.</summary>
     public string? DefaultChannel
@@ -59,17 +67,39 @@ public sealed class ClientBridgeHost : IDisposable
     /// <summary>Raised whenever a subscribed sync or async handler throws an unhandled exception.</summary>
     public event Action<string, Exception>? HandlerError;
 
+    /// <summary>
+    /// Raised when a client's <see cref="ClientHandshake.ContentRowMapDigest"/> does not match
+    /// <see cref="ExpectedContentRowMapDigest"/> (preventing silent row-ID desynchronization).
+    /// </summary>
+    public event Action<ContentRowMapDigestMismatchEventArgs>? ContentRowMapDigestMismatch;
+
     /// <summary>Creates a new <see cref="ClientBridgeHost"/> writing outbound traffic through <paramref name="sink"/>.</summary>
     public ClientBridgeHost(IGatewayPacketSink sink, ClientBridgeOptions? options = null)
     {
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
         _options = options ?? new ClientBridgeOptions();
         _defaultChannel = string.IsNullOrWhiteSpace(_options.DefaultChannel) ? null : _options.DefaultChannel.Trim();
+        _contentRowMap = _options.ContentRowMap;
+        string? configuredDigest = !string.IsNullOrWhiteSpace(_options.ExpectedContentRowMapDigest)
+            ? _options.ExpectedContentRowMapDigest.Trim()
+            : (!string.IsNullOrWhiteSpace(_options.ContentRowMap?.Digest) ? _options.ContentRowMap.Digest.Trim() : null);
+        _expectedContentRowMapDigest = configuredDigest;
         if (_options.HostRulesetId > IRulesetRegistry.MaxRulesetId)
         {
             throw new ArgumentOutOfRangeException(nameof(options), $"HostRulesetId 0x{_options.HostRulesetId:X2} exceeds maximum 0x{IRulesetRegistry.MaxRulesetId:X2}.");
         }
     }
+
+    /// <summary>Binds a server-loaded <see cref="ContentRowMap"/> and enforces its digest on future handshakes.</summary>
+    public void SetExpectedContentRowMap(ContentRowMap? rowMap)
+    {
+        Volatile.Write(ref _contentRowMap, rowMap);
+        Volatile.Write(ref _expectedContentRowMapDigest, string.IsNullOrWhiteSpace(rowMap?.Digest) ? null : rowMap.Digest.Trim());
+    }
+
+    /// <summary>Sets or clears the expected SHA-256 <c>content-row-map.json</c> digest enforced during client handshakes.</summary>
+    public void SetExpectedContentRowMapDigest(string? digest) =>
+        Volatile.Write(ref _expectedContentRowMapDigest, string.IsNullOrWhiteSpace(digest) ? null : digest.Trim());
 
     /// <summary>
     /// Attaches this bridge to the process-wide cross-<c>AssemblyLoadContext</c> <see cref="GatewayBridgeBus"/> so
@@ -829,6 +859,7 @@ public sealed class ClientBridgeHost : IDisposable
             {
                 ClientHandshake handshake = MessageCodec.DeserializePayload<ClientHandshake>(envelope);
                 session.ApplyHandshake(handshake);
+                VerifyContentRowMapDigest(session, handshake);
 
                 int flags = GatewayBridgeBus.ResultHandled | GatewayBridgeBus.ResultWasClientHandshake;
                 if (!suppressServerHandshakeReply)
@@ -840,7 +871,8 @@ public sealed class ClientBridgeHost : IDisposable
                         HostRulesetId: _options.HostRulesetId,
                         PreferredTransport: session.ActiveTransport,
                         RequiredMods: mergedRequiredMods ?? _options.RequiredMods,
-                        ServerCapabilities: mergedCapabilities ?? _options.ServerCapabilities);
+                        ServerCapabilities: mergedCapabilities ?? _options.ServerCapabilities,
+                        ExpectedContentRowMapDigest: ExpectedContentRowMapDigest);
 
                     await session.SendDirectAsync(MessageCodec.SystemChannel, reply, messageType: null, cancellationToken).ConfigureAwait(false);
                     onServerHandshakeSent?.Invoke();
@@ -997,6 +1029,52 @@ public sealed class ClientBridgeHost : IDisposable
         await InvokeEnvelopeHandlersAsync(wildcardGlobals, session, envelope, cancellationToken).ConfigureAwait(false);
 
         return GatewayBridgeBus.ResultHandled;
+    }
+
+    private void VerifyContentRowMapDigest(ClientSession session, ClientHandshake handshake)
+    {
+        string? expected = Volatile.Read(ref _expectedContentRowMapDigest);
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            return;
+        }
+
+        string? actual = string.IsNullOrWhiteSpace(handshake.ContentRowMapDigest)
+            ? null
+            : handshake.ContentRowMapDigest.Trim();
+
+        if (string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        string message = actual is null
+            ? $"Client '{session.ConnectionId}' reported no content-row-map.json digest, but server expects '{expected}'. Rebuild Mods/Client/.merged-cache/ via Waypoint to avoid row-ID desynchronization."
+            : $"Client '{session.ConnectionId}' content-row-map.json digest '{actual}' does not match server expected digest '{expected}'. Rebuild Mods/Client/.merged-cache/ via Waypoint to avoid row-ID desynchronization.";
+
+        Trace.TraceWarning($"[ClientBridgeHost] {message}");
+
+        var args = new ContentRowMapDigestMismatchEventArgs(
+            session.ConnectionId,
+            session,
+            actual,
+            expected,
+            message);
+
+        if (ContentRowMapDigestMismatch is { } mismatchEvent)
+        {
+            foreach (Delegate del in mismatchEvent.GetInvocationList())
+            {
+                try
+                {
+                    ((Action<ContentRowMapDigestMismatchEventArgs>)del)(args);
+                }
+                catch (Exception ex)
+                {
+                    ReportHandlerError($"ContentRowMapDigestMismatch({session.ConnectionId})", ex);
+                }
+            }
+        }
     }
 
     private async Task DispatchClientReadyAsync(ClientSession session, CancellationToken cancellationToken)
@@ -1170,6 +1248,21 @@ internal sealed class ClientSession : IClientSession
     public ClientBuildId ClientBuild => Handshake?.Build ?? ClientBuildId.Unknown;
     public string? ExtenderVersion => Handshake?.ExtenderVersion;
     public string? ClientSdkVersion => Handshake?.SdkVersion;
+    public string? ClientContentRowMapDigest => Handshake?.ContentRowMapDigest;
+    public string? ExpectedContentRowMapDigest => _host.ExpectedContentRowMapDigest;
+    public bool? IsContentRowMapDigestMatched
+    {
+        get
+        {
+            string? expected = _host.ExpectedContentRowMapDigest;
+            if (string.IsNullOrWhiteSpace(expected) || Handshake is null)
+            {
+                return null;
+            }
+
+            return string.Equals(Handshake.ContentRowMapDigest?.Trim(), expected, StringComparison.OrdinalIgnoreCase);
+        }
+    }
     public IReadOnlyCollection<InstalledClientModInfo> InstalledMods => Handshake?.InstalledMods ?? [];
     public IReadOnlyCollection<string> ClientMods =>
         Handshake?.InstalledMods is { Count: > 0 } mods ? mods.Select(m => m.Id).ToArray() : [];
