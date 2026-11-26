@@ -3362,6 +3362,148 @@ int test_phase4_geal_rulesets_and_custom_ui_registries() {
     return 0;
 }
 
+struct alignas(16) MockGealBuiltinEntry {
+    const wchar_t* name;
+    void*          factory;
+};
+static_assert(sizeof(MockGealBuiltinEntry) == 16u, "MockGealBuiltinEntry must be 16 bytes");
+static_assert(alignof(MockGealBuiltinEntry) == 16u, "MockGealBuiltinEntry must be 16-byte aligned");
+
+struct MockGealRegCapture {
+    int            calls = 0;
+    uintptr_t      last_begin = 0;
+    uintptr_t      last_end = 0;
+    bool           all_16b_aligned = true;
+    std::wstring   last_name;
+    void*          last_factory = nullptr;
+};
+
+MockGealRegCapture g_mock_geal_reg_cap{};
+
+void NM_CALL mock_geal_builtin_register_entry(const void* begin, const void* end) {
+    ++g_mock_geal_reg_cap.calls;
+    const uintptr_t b = reinterpret_cast<uintptr_t>(begin);
+    const uintptr_t e = reinterpret_cast<uintptr_t>(end);
+    g_mock_geal_reg_cap.last_begin = b;
+    g_mock_geal_reg_cap.last_end = e;
+    if ((b % 16u) != 0u) {
+        g_mock_geal_reg_cap.all_16b_aligned = false;
+    }
+
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+    // Mirror Game.exe 3.29.3d geal.builtin_register_entry (0x141de9858 / 0x141de9870):
+    // `movaps xmm0, XMMWORD PTR [rdi]` traps #GP (0xC0000005 / SIGSEGV) unless begin % 16 == 0!
+    __asm__ volatile("movaps (%0), %%xmm0" : : "r"(begin) : "xmm0");
+#endif
+
+    if (begin && (e - b) == sizeof(MockGealBuiltinEntry)) {
+        const auto* entry = static_cast<const MockGealBuiltinEntry*>(begin);
+        g_mock_geal_reg_cap.last_name = entry->name ? std::wstring(entry->name) : std::wstring{};
+        g_mock_geal_reg_cap.last_factory = entry->factory;
+    }
+}
+
+int test_phase4_geal_builtin_register_alignment() {
+    using nativemods::EmbeddedSymbol;
+    using nativemods::GameAllocator;
+    using nativemods::HookEngine;
+    using nativemods::Phase4Services;
+    using nativemods::find_symbol;
+
+    g_mock_geal_reg_cap = MockGealRegCapture{};
+
+#if defined(_WIN32)
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    const EmbeddedSymbol* reg_sym = find_symbol(NM_BUILD_3_29_3D_328228, "geal.builtin_register_entry");
+    CHECK(reg_sym != nullptr && reg_sym->rva != 0);
+
+    // Place a 12-byte x64 absolute jump (`mov rax, &mock_geal_builtin_register_entry; jmp rax`)
+    // in an isolated executable page so `fake_base + reg_sym->rva == stub_page`, while all other
+    // 3.29.3d RVAs (hooks + geal.builtin_factory_table) resolve to unmapped memory safely skipped.
+    void* stub_page = HookEngine::alloc_exec_page(4096);
+    CHECK(stub_page != nullptr);
+    auto* stub = static_cast<uint8_t*>(stub_page);
+    const uint64_t mock_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&mock_geal_builtin_register_entry));
+    stub[0] = 0x48u; // mov rax, imm64
+    stub[1] = 0xB8u;
+    std::memcpy(stub + 2, &mock_addr, sizeof(mock_addr));
+    stub[10] = 0xFFu; // jmp rax
+    stub[11] = 0xE0u;
+    FlushInstructionCache(GetCurrentProcess(), stub_page, 4096);
+
+    const uint64_t stub_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(stub_page));
+    const uint64_t fake_base = stub_addr - reg_sym->rva;
+    CHECK(fake_base != 0);
+
+    Phase4Services svc;
+    HookEngine hooks;
+    GameAllocator alloc;
+    svc.install_live_hooks(NM_BUILD_3_29_3D_328228, fake_base, hooks, alloc);
+
+    auto dummy_cb = [](uint32_t, const char*, char*, size_t, size_t*, void*) -> nm_status_t {
+        return NM_OK;
+    };
+
+    uint64_t h1 = 0;
+    CHECK(svc.geal_register_builtin("GardenRipen", 0, 2, 0, dummy_cb, nullptr, &h1) == NM_OK);
+    CHECK(h1 != 0);
+    CHECK(g_mock_geal_reg_cap.calls == 1);
+    CHECK(g_mock_geal_reg_cap.all_16b_aligned);
+    CHECK((g_mock_geal_reg_cap.last_begin % 16u) == 0u);
+    CHECK((g_mock_geal_reg_cap.last_end - g_mock_geal_reg_cap.last_begin) == 16u);
+    CHECK(g_mock_geal_reg_cap.last_name == L"GardenRipen");
+    CHECK(g_mock_geal_reg_cap.last_factory != nullptr);
+
+    // Register a second builtin from a slightly shifted stack frame to stress stack alignment
+    auto reg_shifted = [&](uint64_t* out_h) -> nm_status_t {
+        volatile uint8_t pad[24] = {};
+        pad[0] = 1u;
+        (void)pad[0];
+        return svc.geal_register_builtin("MaxwellDance", 0, 1, 0, dummy_cb, nullptr, out_h);
+    };
+    uint64_t h2 = 0;
+    CHECK(reg_shifted(&h2) == NM_OK);
+    CHECK(h2 != 0);
+    CHECK(g_mock_geal_reg_cap.calls == 2);
+    CHECK(g_mock_geal_reg_cap.all_16b_aligned);
+    CHECK((g_mock_geal_reg_cap.last_begin % 16u) == 0u);
+    CHECK((g_mock_geal_reg_cap.last_end - g_mock_geal_reg_cap.last_begin) == 16u);
+    CHECK(g_mock_geal_reg_cap.last_name == L"MaxwellDance");
+    CHECK(g_mock_geal_reg_cap.last_factory != nullptr);
+
+    CHECK(svc.geal_unregister_builtin(h2) == NM_OK);
+    CHECK(svc.geal_unregister_builtin(h1) == NM_OK);
+    svc.reset(&hooks);
+    HookEngine::free_exec_page(stub_page, 4096);
+    CHECK(nm_shutdown() == NM_OK);
+#else
+    (void)find_symbol;
+    struct alignas(16) RegCtx {
+        MockGealBuiltinEntry entry;
+        uint64_t             reg_addr;
+    };
+    static_assert(alignof(RegCtx) == 16u, "RegCtx must be 16-byte aligned");
+    static_assert(offsetof(RegCtx, entry) % 16u == 0u, "RegCtx::entry must be 16-byte aligned");
+    int dummy_factory = 0;
+    RegCtx rctx{
+        MockGealBuiltinEntry{L"GardenRipen", &dummy_factory},
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&mock_geal_builtin_register_entry)),
+    };
+    using RegFn = void(NM_CALL*)(const void*, const void*);
+    reinterpret_cast<RegFn>(static_cast<uintptr_t>(rctx.reg_addr))(&rctx.entry, &rctx.entry + 1);
+    CHECK(g_mock_geal_reg_cap.calls == 1);
+    CHECK(g_mock_geal_reg_cap.all_16b_aligned);
+    CHECK((g_mock_geal_reg_cap.last_begin % 16u) == 0u);
+    CHECK((g_mock_geal_reg_cap.last_end - g_mock_geal_reg_cap.last_begin) == 16u);
+    CHECK(g_mock_geal_reg_cap.last_name == L"GardenRipen");
+    CHECK(g_mock_geal_reg_cap.last_factory == &dummy_factory);
+#endif
+
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -3396,6 +3538,7 @@ int main() {
     if (test_phase4_prologues_hookengine_safety() != 0) return 1;
     if (test_phase4_rich_ui_tooltips_and_stash_affinity() != 0) return 1;
     if (test_phase4_geal_rulesets_and_custom_ui_registries() != 0) return 1;
+    if (test_phase4_geal_builtin_register_alignment() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

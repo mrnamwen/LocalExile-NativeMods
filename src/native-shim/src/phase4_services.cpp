@@ -657,6 +657,22 @@ nm_status_t invoke_geal_slot_guarded(
     return cb_st;
 }
 
+// geal.builtin_register_entry (0x141de9780) executes `movaps xmm0, XMMWORD PTR [rdi]`
+// at 0x141de9858 and 0x141de9870, requiring `begin` to be 16-byte aligned!
+struct alignas(16) GealBuiltinEntry {
+    const wchar_t* name;
+    void*          factory;
+};
+static_assert(sizeof(GealBuiltinEntry) == 16u, "GealBuiltinEntry must be 16 bytes");
+static_assert(alignof(GealBuiltinEntry) == 16u, "GealBuiltinEntry must be 16-byte aligned for movaps");
+
+struct alignas(16) GealRegisterCtx {
+    GealBuiltinEntry entry;
+    uint64_t         reg_addr;
+};
+static_assert(alignof(GealRegisterCtx) == 16u, "GealRegisterCtx must be 16-byte aligned");
+static_assert(offsetof(GealRegisterCtx, entry) % 16u == 0u, "GealRegisterCtx::entry must be 16-byte aligned for movaps");
+
 #if defined(_WIN32)
 
 // --- Win32 live helpers ---
@@ -670,11 +686,12 @@ struct MsvcWString {
 };
 static_assert(sizeof(MsvcWString) == 32u, "MSVC std::wstring must be 32 bytes");
 
-struct ImageHandle16 {
+struct alignas(16) ImageHandle16 {
     uint64_t vtable;
     void*    img_obj;
 };
 static_assert(sizeof(ImageHandle16) == 16u, "ImageHandle must be 16 bytes");
+static_assert(alignof(ImageHandle16) == 16u, "ImageHandle must be 16-byte aligned");
 
 struct MsvcStdFunc64 {
     uint8_t storage[0x38];
@@ -712,12 +729,6 @@ struct GealArgSpan {
     const uint8_t* begin;
     const uint8_t* end;
 };
-
-struct GealBuiltinEntry {
-    const wchar_t* name;
-    void*          factory;
-};
-static_assert(sizeof(GealBuiltinEntry) == 16u, "GealBuiltinEntry must be 16 bytes");
 
 struct MsvcVectorRaw {
     uint8_t* begin;
@@ -915,10 +926,16 @@ void write_json_to_geal_vec_unguarded(
 }
 
 // --- DLL-owned SBO MSVC std::function _Func_impl for GEAL Builtins (#128) ---
+struct alignas(16) GealCompiledArgSlot {
+    uint8_t bytes[0x50];
+};
+static_assert(sizeof(GealCompiledArgSlot) == 0x50u, "GealCompiledArgSlot must be 0x50 bytes");
+static_assert(alignof(GealCompiledArgSlot) == 16u, "GealCompiledArgSlot must be 16-byte aligned");
+
 struct GealCompiledArgsHolder {
-    std::atomic<uint32_t> ref_count{1};
-    uint32_t              count = 0;
-    std::vector<uint8_t>  arg_storage; // count * 0x50 bytes
+    std::atomic<uint32_t>            ref_count{1};
+    uint32_t                         count = 0;
+    std::vector<GealCompiledArgSlot> arg_storage; // count * 0x50 bytes, 16-byte aligned
 };
 
 struct GealFuncImpl {
@@ -963,7 +980,7 @@ std::string eval_geal_args_to_json_unguarded(
     std::string json = "[";
     for (uint32_t i = 0; i < holder->count; ++i) {
         if (i > 0) json.push_back(',');
-        uint8_t* arg_mem = holder->arg_storage.data() + static_cast<size_t>(i) * 0x50u;
+        uint8_t* arg_mem = holder->arg_storage[i].bytes;
         eval_fn(arg_mem);
         const auto* vec = reinterpret_cast<const GealValueVectorRaw*>(arg_mem + 0x08u);
         if (vec->begin && vec->end && vec->end > vec->begin && ptr_readable_p4(vec->begin, sizeof(GealValueRaw))) {
@@ -1129,11 +1146,11 @@ GealFuncWrapper* build_geal_func_wrapper(size_t slot_idx, GealFuncWrapper* out_s
         if (n > 0 && n <= 16u) {
             holder = new GealCompiledArgsHolder();
             holder->count = static_cast<uint32_t>(n);
-            holder->arg_storage.assign(n * 0x50u, 0u);
+            holder->arg_storage.assign(n, GealCompiledArgSlot{});
             using CompileArgFn = void*(NM_CALL*)(void*, const void*);
             auto compile_fn = reinterpret_cast<CompileArgFn>(static_cast<uintptr_t>(compile_addr));
             for (size_t i = 0; i < n; ++i) {
-                compile_fn(holder->arg_storage.data() + i * 0x50u, args->begin + i * 16u);
+                compile_fn(holder->arg_storage[i].bytes, args->begin + i * 16u);
             }
         }
     }
@@ -1970,7 +1987,7 @@ nm_status_t Phase4Services::ui_create_control(
             if (get_map == 0 || idx_fn == 0) return nullptr;
             void* map = reinterpret_cast<PoolFn>(static_cast<uintptr_t>(get_map))();
             if (!map) return nullptr;
-            MsvcWString key{};
+            alignas(16) MsvcWString key{};
             init_msvc_ws_unguarded(c->bid, c->base, key, std::wstring(type_name));
             using MapIdxFn = MsvcStdFunc64*(NM_CALL*)(void*, const void*);
             MsvcStdFunc64* fn_slot = reinterpret_cast<MapIdxFn>(static_cast<uintptr_t>(idx_fn))(map, &key);
@@ -2351,7 +2368,7 @@ nm_status_t Phase4Services::ui_tab_container_add_tab(
         auto* c = static_cast<Ctx*>(raw);
         if (!ptr_readable_p4(c->ctrl, 0x330u)) return -1;
 
-        MsvcWString label_ws{};
+        alignas(16) MsvcWString label_ws{};
         init_msvc_ws_unguarded(c->bid, c->base, label_ws, c->label_w);
 
         // CRITICAL #131 6-arg Win64 ABI:
@@ -2525,9 +2542,9 @@ nm_status_t Phase4Services::ui_combobox_add_item(
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<Ctx*>(raw);
         if (!ptr_readable_p4(static_cast<const uint8_t*>(c->ctrl) + c->iface_off, sizeof(void*))) return -1;
-        MsvcWString ws{};
+        alignas(16) MsvcWString ws{};
         init_msvc_ws_unguarded(c->bid, c->base, ws, c->text_w);
-        MsvcStdFunc64 empty_cb{};
+        alignas(16) MsvcStdFunc64 empty_cb{};
         std::memset(&empty_cb, 0, sizeof(empty_cb));
         // NOTE #129: ComboBox::AddItem takes rcx = cb + 0x418!
         using AddItemFn = uint64_t(NM_CALL*)(void*, const MsvcWString*, const MsvcStdFunc64*, uint8_t, uint32_t);
@@ -2859,7 +2876,7 @@ nm_status_t Phase4Services::tooltip_add_item_section(
         void* sub = static_cast<uint8_t*>(lbl) + text_iface_off;
         void** svt = nullptr;
         if (read_mem_p4(sub, 0, svt) && svt && ptr_readable_p4(svt, 3 * sizeof(void*)) && svt[2]) {
-            MsvcWString ws{};
+            alignas(16) MsvcWString ws{};
             init_msvc_ws_unguarded(c->bid, c->base, ws, c->text_w);
             using SetTextFn = void(NM_CALL*)(void*, const void*);
             reinterpret_cast<SetTextFn>(svt[2])(sub, &ws);
@@ -2951,18 +2968,15 @@ nm_status_t Phase4Services::geal_register_builtin(
     if (build_id_ != NM_BUILD_SYNTHETIC && build_id_ != NM_BUILD_UNKNOWN && image_base_ != 0) {
         const uint64_t reg_addr = sym_addr_p4(build_id_, image_base_, "geal.builtin_register_entry");
         if (reg_addr != 0) {
-            struct RegCtx {
-                uint64_t         reg_addr;
-                GealBuiltinEntry entry;
-            } rctx{
-                reg_addr,
+            GealRegisterCtx rctx{
                 GealBuiltinEntry{
                     g_geal_slots[chosen_idx].name_w.c_str(),
                     reinterpret_cast<void*>(kGealFactoryThunks[chosen_idx]),
                 },
+                reg_addr,
             };
             auto fn = [](void* raw) -> int64_t {
-                auto* c = static_cast<RegCtx*>(raw);
+                auto* c = static_cast<GealRegisterCtx*>(raw);
                 using RegFn = void(NM_CALL*)(const GealBuiltinEntry*, const GealBuiltinEntry*);
                 reinterpret_cast<RegFn>(static_cast<uintptr_t>(c->reg_addr))(&c->entry, &c->entry + 1);
                 return 0;
@@ -3021,8 +3035,14 @@ nm_status_t Phase4Services::geal_unregister_builtin(uint64_t handle) {
                 auto* vec = reinterpret_cast<MsvcVectorRaw*>(static_cast<uintptr_t>(c->table_addr));
                 if (!ptr_readable_p4(vec, sizeof(MsvcVectorRaw))) return -1;
                 if (!vec->begin || !vec->end || vec->end <= vec->begin) return 0;
-                auto* entries = reinterpret_cast<GealBuiltinEntry*>(vec->begin);
-                const size_t n = static_cast<size_t>(vec->end - vec->begin) / sizeof(GealBuiltinEntry);
+                struct GealBuiltinEntryRaw {
+                    const wchar_t* name;
+                    void*          factory;
+                };
+                static_assert(sizeof(GealBuiltinEntryRaw) == sizeof(GealBuiltinEntry),
+                              "GealBuiltinEntryRaw size mismatch");
+                auto* entries = reinterpret_cast<GealBuiltinEntryRaw*>(vec->begin);
+                const size_t n = static_cast<size_t>(vec->end - vec->begin) / sizeof(GealBuiltinEntryRaw);
                 size_t lo = 0;
                 size_t hi = n;
                 while (lo < hi) {
@@ -3034,9 +3054,9 @@ nm_status_t Phase4Services::geal_unregister_builtin(uint64_t handle) {
                 if (lo < n && entries[lo].name && std::wcscmp(entries[lo].name, c->name_w) == 0) {
                     const size_t tail = n - lo - 1u;
                     if (tail > 0) {
-                        std::memmove(&entries[lo], &entries[lo + 1u], tail * sizeof(GealBuiltinEntry));
+                        std::memmove(&entries[lo], &entries[lo + 1u], tail * sizeof(GealBuiltinEntryRaw));
                     }
-                    vec->end -= sizeof(GealBuiltinEntry);
+                    vec->end -= sizeof(GealBuiltinEntryRaw);
                 }
                 return 0;
             };
@@ -3136,7 +3156,7 @@ nm_status_t Phase4Services::geal_invoke_function(
         if (!obj_type) return -3;
 
         // Build SSO MSVC std::string("Functions")
-        MsvcStdString comp_key{};
+        alignas(16) MsvcStdString comp_key{};
         std::memset(&comp_key, 0, sizeof(comp_key));
         std::memcpy(comp_key.buf, "Functions", 9u);
         comp_key.size = 9u;
@@ -3166,7 +3186,7 @@ nm_status_t Phase4Services::geal_invoke_function(
         if (!read_mem_p4(fn_comp, 0x08u, fn_table_obj) || !fn_table_obj) return -5;
 
         // Lookup named function entry
-        MsvcStdString fn_key{};
+        alignas(16) MsvcStdString fn_key{};
         std::memset(&fn_key, 0, sizeof(fn_key));
         if (c->fn_name.size() < 16u) {
             std::memcpy(fn_key.buf, c->fn_name.data(), c->fn_name.size());
@@ -3369,7 +3389,7 @@ nm_status_t Phase4Services::ui_register_custom_control_kind(
                 void* map = reinterpret_cast<GetMapFn>(static_cast<uintptr_t>(c->get_map))();
                 if (!map) return -1;
 
-                MsvcWString key{};
+                alignas(16) MsvcWString key{};
                 init_msvc_ws_unguarded(c->bid, c->base, key, c->kind_w);
                 MsvcStdFunc64* fn_slot = reinterpret_cast<MapIdxFn>(static_cast<uintptr_t>(c->idx_fn))(map, &key);
                 destroy_msvc_ws_unguarded(c->bid, c->base, key);
