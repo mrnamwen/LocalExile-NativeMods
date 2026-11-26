@@ -36,7 +36,7 @@ extern "C" {
 
 /* Semantic ABI version encoded as (major << 16) | (minor << 8) | patch. */
 #define NM_ABI_VERSION_MAJOR 0u
-#define NM_ABI_VERSION_MINOR 3u
+#define NM_ABI_VERSION_MINOR 4u
 #define NM_ABI_VERSION_PATCH 0u
 #define NM_ABI_VERSION ((NM_ABI_VERSION_MAJOR << 16) | (NM_ABI_VERSION_MINOR << 8) | NM_ABI_VERSION_PATCH)
 
@@ -438,6 +438,163 @@ typedef void    (NM_CALL *nm_pregame_created_callback_t)(
     uint16_t    result_code,
     void*       user_data);
 
+/* --- ABI 0.4.0: World, Stats, Area Lifecycle, Item Filter & Camera types --- */
+
+typedef enum nm_world_entity_kind_t {
+    NM_ENTITY_KIND_NONE            = 0u,
+    NM_ENTITY_KIND_PLAYER          = 1u << 0,
+    NM_ENTITY_KIND_MONSTER         = 1u << 1,
+    NM_ENTITY_KIND_WORLD_ITEM      = 1u << 2,
+    NM_ENTITY_KIND_CHEST           = 1u << 3,
+    NM_ENTITY_KIND_NPC             = 1u << 4,
+    NM_ENTITY_KIND_PORTAL          = 1u << 5,
+    NM_ENTITY_KIND_AREA_TRANSITION = 1u << 6,
+    NM_ENTITY_KIND_MINIMAP_ICON    = 1u << 7,
+    NM_ENTITY_KIND_TARGETABLE      = 1u << 8,
+    NM_ENTITY_KIND_ALIVE           = 1u << 9,
+    NM_ENTITY_KIND_OPENED          = 1u << 10,
+    NM_ENTITY_KIND_LOCAL_PLAYER    = 1u << 11
+} nm_world_entity_kind_t;
+
+/* Query filter for nm_world_list_entities (160 bytes, zero hidden padding). */
+typedef struct nm_world_entity_query_t {
+    uint32_t struct_size;
+    uint32_t required_kinds;       /* bitmask of nm_world_entity_kind_t (all bits required) */
+    uint32_t excluded_kinds;       /* bitmask of nm_world_entity_kind_t (none may match) */
+    uint32_t max_results;          /* 0 = unlimited (bounded by out_buf capacity) */
+    float    origin_x;             /* world X for max_distance when use_origin != 0 */
+    float    origin_y;             /* world Y for max_distance when use_origin != 0 */
+    float    max_distance;         /* <= 0.0f disables distance check (world units) */
+    uint8_t  use_origin;           /* 0 = distance from local player, non-zero = origin_x/origin_y */
+    uint8_t  filter_visible_only;  /* non-zero = require filter_visible != 0 for WorldItem entities */
+    uint8_t  include_world_item;   /* non-zero = populate embedded world_item snapshot for WorldItems */
+    uint8_t  reserved;
+    char     metadata_prefix[128]; /* optional UTF-8 prefix filter (empty = match all) */
+} nm_world_entity_query_t;
+
+/* Snapshot of a live ClientEntity in the active ClientWorld (760 bytes on x64). */
+typedef struct nm_world_entity_snapshot_t {
+    uint32_t           struct_size;
+    uint32_t           entity_id;
+    void*              entity_ptr;
+    uint32_t           kind_flags;          /* bitmask of nm_world_entity_kind_t */
+    int32_t            grid_x;
+    int32_t            grid_y;
+    float              world_x;
+    float              world_y;
+    float              world_z;
+    int32_t            hp;
+    int32_t            max_hp;
+    uint32_t           rarity;              /* 0=Normal, 1=Magic, 2=Rare, 3=Unique */
+    uint8_t            filter_visible;      /* WorldItem::IsFilterVisible (0 if not a WorldItem) */
+    uint8_t            is_alive;
+    uint8_t            is_targetable;
+    uint8_t            is_opened;
+    char               metadata_path[256];  /* UTF-8 ObjectTypeSlot+0x08 metadata path */
+    nm_item_snapshot_t world_item;          /* 448 B, populated when WorldItem component present */
+} nm_world_entity_snapshot_t;
+
+/* Single stat key/value pair from StatsComponent+0xf0 (8 bytes). */
+typedef struct nm_stat_entry_t {
+    int32_t stat_id;
+    int32_t value;
+} nm_stat_entry_t;
+
+typedef enum nm_area_event_kind_t {
+    NM_AREA_EVT_ENTERED = 1,
+    NM_AREA_EVT_LEFT    = 2
+} nm_area_event_kind_t;
+
+#define NM_AREA_MAX_RULESETS 16u
+
+/* Active area / WorldAreasRow + ruleset snapshot (352 bytes). */
+typedef struct nm_area_info_t {
+    uint32_t struct_size;
+    uint8_t  in_game;
+    uint8_t  is_town;
+    uint8_t  is_hideout;
+    uint8_t  is_guild_hideout;
+    int32_t  act;
+    int32_t  area_level;                    /* WorldAreasRow+0x26 base level */
+    int32_t  effective_level;               /* ClientWorld+0xd4 effective runtime level */
+    uint16_t hash16;                        /* WorldAreasRow+0x2a */
+    uint16_t reserved;
+    uint32_t area_seed;                     /* ClientWorld+0x8e0 */
+    uint32_t ruleset_count;                 /* clamped to NM_AREA_MAX_RULESETS */
+    uint32_t ruleset_ids[NM_AREA_MAX_RULESETS];
+    char     area_id[128];                  /* WorldAreasRow+0x00 Id (e.g. "1_1_town") */
+    char     area_name[128];                /* WorldAreasRow+0x08 Name */
+} nm_area_info_t;
+
+/* Loaded client item-filter metadata & visibility toggle snapshot (784 bytes). */
+typedef struct nm_item_filter_state_t {
+    uint32_t struct_size;
+    uint8_t  loaded;
+    uint8_t  hide_filtered_ground_items;
+    uint8_t  alt_highlight_active;
+    uint8_t  reserved;
+    uint32_t filter_kind;                   /* 0=None, 1=Normal, 2=Ruthless */
+    uint32_t rule_count;
+    char     filter_name[128];
+    char     filter_folder[256];
+    char     filter_path[384];
+} nm_item_filter_state_t;
+
+/* Evaluated ItemFilterStyle + ground label rect for a WorldItem or Item entity (72 bytes). */
+typedef struct nm_item_filter_result_t {
+    uint32_t struct_size;
+    uint8_t  evaluated;
+    uint8_t  is_visible;
+    uint8_t  beam_temporary;
+    uint8_t  has_label_rect;
+    uint32_t style_flags;                   /* raw flags b0 | (b1 << 8) | (b2 << 16) */
+    uint32_t font_size;
+    uint32_t text_rgba;                     /* packed 0xRRGGBBAA */
+    uint32_t border_rgba;                   /* packed 0xRRGGBBAA */
+    uint32_t bg_rgba;                       /* packed 0xRRGGBBAA */
+    int32_t  alert_sound_id;                /* -1 = none */
+    uint32_t alert_sound_volume;
+    int32_t  minimap_icon_shape;            /* -1 = none */
+    int32_t  minimap_icon_color;            /* -1 = none */
+    int32_t  minimap_icon_size;             /* -1 = none */
+    int32_t  beam_color;                    /* DropEffects row index, -1 = none */
+    float    label_x;
+    float    label_y;
+    float    label_w;
+    float    label_h;
+    uint32_t reserved;
+} nm_item_filter_result_t;
+
+/* Active FollowCamera / CameraController snapshot (120 bytes). */
+typedef struct nm_camera_state_t {
+    uint32_t struct_size;
+    uint8_t  valid;
+    uint8_t  reserved[3];
+    float    pos_x;
+    float    pos_y;
+    float    pos_z;
+    float    target_x;
+    float    target_y;
+    float    target_z;
+    float    zoom;                          /* CameraController+0x4a8 zoom_current */
+    float    zoom_override;                 /* CameraController+0x4ac (<0.0f = stock) */
+    float    zoom_target;                   /* CameraController+0x4b0 */
+    float    fov;                           /* vertical FOV in radians */
+    uint32_t viewport_w;
+    uint32_t viewport_h;
+    float    view_proj[16];                 /* Camera+0x100 row-major DirectX v_row * M */
+} nm_camera_state_t;
+
+typedef void (NM_CALL *nm_area_event_callback_t)(
+    int32_t               event_kind,
+    const nm_area_info_t* area_info,
+    void*                 user_data);
+
+typedef void (NM_CALL *nm_filter_reload_callback_t)(
+    int32_t                       succeeded,
+    const nm_item_filter_state_t* filter_state,
+    void*                         user_data);
+
 /*
  * Versioned function-pointer table passed to the managed host entry point:
  *   int LocalExile.Client.Host.NativeEntryPoint.Initialize(IntPtr abiTablePtr)
@@ -723,6 +880,71 @@ typedef struct nm_abi_table_t {
         nm_pregame_creating_callback_t on_creating,
         nm_pregame_created_callback_t  on_created,
         void*                          user_data);
+
+    /* ABI 0.4.0: World entities & client objects (5; slots 89..93) */
+    nm_status_t (NM_CALL *world_get_local_player)(nm_world_entity_snapshot_t* out_entity);
+    nm_status_t (NM_CALL *world_list_entities)(
+        const nm_world_entity_query_t* query,
+        nm_world_entity_snapshot_t*    out_buf,
+        uint32_t                       capacity,
+        uint32_t*                      out_count,
+        uint32_t*                      out_total);
+    nm_status_t (NM_CALL *world_get_entity)(
+        uint32_t                    entity_id,
+        nm_world_entity_snapshot_t* out_entity);
+    nm_status_t (NM_CALL *world_create_client_object)(
+        const char* metadata_utf8,
+        float       x,
+        float       y,
+        float       z,
+        uint64_t*   out_handle);
+    nm_status_t (NM_CALL *world_remove_client_object)(uint64_t handle);
+
+    /* ABI 0.4.0: Entity stats (3; slots 94..96) */
+    nm_status_t (NM_CALL *stats_read_entity)(
+        uint32_t entity_id,
+        int32_t  stat_id,
+        int32_t* out_value);
+    nm_status_t (NM_CALL *stats_set_local_entity)(
+        uint32_t entity_id,
+        int32_t  stat_id,
+        int32_t  value);
+    nm_status_t (NM_CALL *stats_list_entity)(
+        uint32_t         entity_id,
+        nm_stat_entry_t* out_buf,
+        uint32_t         capacity,
+        uint32_t*        out_count,
+        uint32_t*        out_total);
+
+    /* ABI 0.4.0: Area lifecycle (2; slots 97..98) */
+    nm_status_t (NM_CALL *lifecycle_get_area_info)(nm_area_info_t* out_info);
+    nm_status_t (NM_CALL *lifecycle_set_area_callback)(
+        nm_area_event_callback_t cb,
+        void*                    user_data);
+
+    /* ABI 0.4.0: Client Item Filter & Ground Loot visibility (5; slots 99..103) */
+    nm_status_t (NM_CALL *filter_get_state)(nm_item_filter_state_t* out_state);
+    nm_status_t (NM_CALL *filter_reload)(void);
+    nm_status_t (NM_CALL *filter_get_world_item_result)(
+        uint32_t                 entity_id,
+        nm_item_filter_result_t* out_result);
+    nm_status_t (NM_CALL *filter_evaluate_entity)(
+        uint32_t                 entity_id,
+        nm_item_filter_result_t* out_result);
+    nm_status_t (NM_CALL *filter_set_reload_callback)(
+        nm_filter_reload_callback_t cb,
+        void*                       user_data);
+
+    /* ABI 0.4.0: Camera state, WorldToScreen & Zoom Override (3; slots 104..106) */
+    nm_status_t (NM_CALL *camera_get_state)(nm_camera_state_t* out_state);
+    nm_status_t (NM_CALL *camera_world_to_screen)(
+        float    wx,
+        float    wy,
+        float    wz,
+        float*   out_sx,
+        float*   out_sy,
+        int32_t* out_in_front);
+    nm_status_t (NM_CALL *camera_set_zoom_override)(float zoom_override);
 } nm_abi_table_t;
 
 /* Exported C ABI functions. */
@@ -1002,6 +1224,71 @@ NM_API void    NM_CALL nm_dispatch_pregame_created(
     const char* name_utf8,
     const char* league_utf8,
     uint16_t    result_code);
+
+/* ABI 0.4.0 exported functions: World, Stats, Area Lifecycle, Item Filter & Camera. */
+NM_API nm_status_t NM_CALL nm_world_get_local_player(nm_world_entity_snapshot_t* out_entity);
+NM_API nm_status_t NM_CALL nm_world_list_entities(
+    const nm_world_entity_query_t* query,
+    nm_world_entity_snapshot_t*    out_buf,
+    uint32_t                       capacity,
+    uint32_t*                      out_count,
+    uint32_t*                      out_total);
+NM_API nm_status_t NM_CALL nm_world_get_entity(
+    uint32_t                    entity_id,
+    nm_world_entity_snapshot_t* out_entity);
+NM_API nm_status_t NM_CALL nm_world_create_client_object(
+    const char* metadata_utf8,
+    float       x,
+    float       y,
+    float       z,
+    uint64_t*   out_handle);
+NM_API nm_status_t NM_CALL nm_world_remove_client_object(uint64_t handle);
+
+NM_API nm_status_t NM_CALL nm_stats_read_entity(
+    uint32_t entity_id,
+    int32_t  stat_id,
+    int32_t* out_value);
+NM_API nm_status_t NM_CALL nm_stats_set_local_entity(
+    uint32_t entity_id,
+    int32_t  stat_id,
+    int32_t  value);
+NM_API nm_status_t NM_CALL nm_stats_list_entity(
+    uint32_t         entity_id,
+    nm_stat_entry_t* out_buf,
+    uint32_t         capacity,
+    uint32_t*        out_count,
+    uint32_t*        out_total);
+
+NM_API nm_status_t NM_CALL nm_lifecycle_get_area_info(nm_area_info_t* out_info);
+NM_API nm_status_t NM_CALL nm_lifecycle_set_area_callback(
+    nm_area_event_callback_t cb,
+    void*                    user_data);
+
+NM_API nm_status_t NM_CALL nm_filter_get_state(nm_item_filter_state_t* out_state);
+NM_API nm_status_t NM_CALL nm_filter_reload(void);
+NM_API nm_status_t NM_CALL nm_filter_get_world_item_result(
+    uint32_t                 entity_id,
+    nm_item_filter_result_t* out_result);
+NM_API nm_status_t NM_CALL nm_filter_evaluate_entity(
+    uint32_t                 entity_id,
+    nm_item_filter_result_t* out_result);
+NM_API nm_status_t NM_CALL nm_filter_set_reload_callback(
+    nm_filter_reload_callback_t cb,
+    void*                       user_data);
+
+NM_API nm_status_t NM_CALL nm_camera_get_state(nm_camera_state_t* out_state);
+NM_API nm_status_t NM_CALL nm_camera_world_to_screen(
+    float    wx,
+    float    wy,
+    float    wz,
+    float*   out_sx,
+    float*   out_sy,
+    int32_t* out_in_front);
+NM_API nm_status_t NM_CALL nm_camera_set_zoom_override(float zoom_override);
+
+/* ABI 0.4.0 deterministic dispatch helpers (used by internal hooks and host-side tests). */
+NM_API void NM_CALL nm_dispatch_area_event(int32_t event_kind, const nm_area_info_t* area_info);
+NM_API void NM_CALL nm_dispatch_filter_reloaded(int32_t succeeded, const nm_item_filter_state_t* filter_state);
 
 /* Deferred CoreCLR (.NET 10) bootstrapper (off game thread to avoid DeadlockDetector). */
 NM_API nm_status_t NM_CALL nm_bootstrap_managed_host(

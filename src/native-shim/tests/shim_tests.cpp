@@ -6,6 +6,7 @@
 #include "live_engine_hooks.hpp"
 #include "overlay_and_channels.hpp"
 #include "phase1_services.hpp"
+#include "phase2_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -48,13 +49,20 @@ int test_abi_table_and_build_recognition() {
     CHECK(nm_get_abi_table(&table) == NM_OK);
     CHECK(table != nullptr);
     CHECK(table->struct_size == sizeof(nm_abi_table_t));
-    CHECK(sizeof(nm_abi_table_t) == 720u);
+    CHECK(sizeof(nm_abi_table_t) == 864u);
     CHECK(sizeof(nm_screens_state_t) == 280u);
     CHECK(sizeof(nm_input_event_t) == 40u);
     CHECK(sizeof(nm_item_snapshot_t) == 448u);
     CHECK(sizeof(nm_hover_state_t) == 952u);
+    CHECK(sizeof(nm_world_entity_query_t) == 160u);
+    CHECK(sizeof(nm_world_entity_snapshot_t) == 760u);
+    CHECK(sizeof(nm_stat_entry_t) == 8u);
+    CHECK(sizeof(nm_area_info_t) == 352u);
+    CHECK(sizeof(nm_item_filter_state_t) == 784u);
+    CHECK(sizeof(nm_item_filter_result_t) == 72u);
+    CHECK(sizeof(nm_camera_state_t) == 120u);
     CHECK(table->abi_version == NM_ABI_VERSION);
-    CHECK(NM_ABI_VERSION == 0x00000300u);
+    CHECK(NM_ABI_VERSION == 0x00000400u);
     CHECK(table->get_host_info != nullptr);
     CHECK(table->lookup_symbol != nullptr);
     CHECK(table->install_inline_hook != nullptr);
@@ -110,6 +118,24 @@ int test_abi_table_and_build_recognition() {
     CHECK(table->input_is_text_focused == &nm_input_is_text_focused);
     CHECK(table->hover_get_state == &nm_hover_get_state);
     CHECK(table->pregame_set_callbacks == &nm_pregame_set_callbacks);
+    CHECK(table->world_get_local_player == &nm_world_get_local_player);
+    CHECK(table->world_list_entities == &nm_world_list_entities);
+    CHECK(table->world_get_entity == &nm_world_get_entity);
+    CHECK(table->world_create_client_object == &nm_world_create_client_object);
+    CHECK(table->world_remove_client_object == &nm_world_remove_client_object);
+    CHECK(table->stats_read_entity == &nm_stats_read_entity);
+    CHECK(table->stats_set_local_entity == &nm_stats_set_local_entity);
+    CHECK(table->stats_list_entity == &nm_stats_list_entity);
+    CHECK(table->lifecycle_get_area_info == &nm_lifecycle_get_area_info);
+    CHECK(table->lifecycle_set_area_callback == &nm_lifecycle_set_area_callback);
+    CHECK(table->filter_get_state == &nm_filter_get_state);
+    CHECK(table->filter_reload == &nm_filter_reload);
+    CHECK(table->filter_get_world_item_result == &nm_filter_get_world_item_result);
+    CHECK(table->filter_evaluate_entity == &nm_filter_evaluate_entity);
+    CHECK(table->filter_set_reload_callback == &nm_filter_set_reload_callback);
+    CHECK(table->camera_get_state == &nm_camera_get_state);
+    CHECK(table->camera_world_to_screen == &nm_camera_world_to_screen);
+    CHECK(table->camera_set_zoom_override == &nm_camera_set_zoom_override);
 
     // SHA-256 build recognition matches LocalExile ClientBuilds.cs verbatim
     CHECK(nativemods::identify_build_by_sha256("e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d")
@@ -142,7 +168,7 @@ int test_address_table_3293d_and_3293c() {
     CHECK(host.build_id == NM_BUILD_3_29_3D_328228);
     CHECK(std::strcmp(host.build_version, "3.29.3d") == 0);
     CHECK(host.image_base == kRebased);
-    CHECK(host.symbol_count == 240u);
+    CHECK(host.symbol_count == 319u);
 
     nm_symbol_info_t sym{};
     CHECK(nm_lookup_symbol("frame.state_stack_pass_a_hook", &sym) == NM_OK);
@@ -208,6 +234,42 @@ int test_address_table_3293d_and_3293c() {
     CHECK(nm_lookup_symbol("items.cursor_get_held_item", &sym) == NM_OK);
     CHECK(sym.rva == 0x16fcbc0ull && sym.kind == NM_SYM_CODE);
 
+    // Phase 2 verified symbols on 3.29.3d (World, Stats, Lifecycle, ItemFilter, Camera)
+    CHECK(nm_lookup_symbol("world.get_instance_client", &sym) == NM_OK);
+    CHECK(sym.rva == 0x00f3740ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("world.entity_mgr_find_by_id", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1ec5880ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("world.client_world_init_area", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1653ee0ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("components.get_positioned", &sym) == NM_OK);
+    CHECK(sym.rva == 0x020f350ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("components.get_world_item", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0141a20ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("components.get_stats", &sym) == NM_OK);
+    CHECK(sym.rva == 0x013e140ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("stats.notify_listeners", &sym) == NM_OK);
+    CHECK(sym.rva == 0x24d67d0ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("frame.area_loading_leave", &sym) == NM_OK);
+    CHECK(sym.rva == 0x152b710ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("items.options_singleton_get", &sym) == NM_OK);
+    CHECK(sym.rva == 0x190abe0ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("items.options_singleton_global", &sym) == NM_OK);
+    CHECK(sym.rva == 0x475e9f0ull && sym.kind == NM_SYM_DATA && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("items.filter_match", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0e15970ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("items.filter_notify_loaded", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1935130ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("items.filter_style_dtor_custom_sounds", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0134470ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("items.world_item_is_visible", &sym) == NM_OK);
+    CHECK(sym.rva == 0x15e5ed0ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.vtable_world_label_mgr", &sym) == NM_OK);
+    CHECK(sym.rva == 0x31e7f30ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("world.camera_world_to_screen", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0fd3b40ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("world.vtable_camera_follow", &sym) == NM_OK);
+    CHECK(sym.rva == 0x3221068ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
+
     // Every vtable symbol in 3.29.3d MUST have expected_bytes_hex == nullptr (ASLR safety).
     for (uint32_t i = 0; i < host.symbol_count; ++i) {
         nm_symbol_info_t s{};
@@ -227,6 +289,14 @@ int test_address_table_3293d_and_3293c() {
     CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.league_overlay.cards_flow")->offset == 0x3c0u);
     CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.ingame_ui.inventory_panel")->offset == 0x628u);
     CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.item_view.entity")->offset == 0x420u);
+    // Phase 2 offsets & stale world.object_map fix (0x8d8 -> 0xa18)
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "world.object_map")->offset == 0xa18u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "world.client_world.entity_manager")->offset == 0xa18u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "world.client_world.local_player")->offset == 0x970u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "stats.comp.entries_begin")->offset == 0xf0u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "frame.ingame_state.camera_ctrl")->offset == 0x270u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "world.camera.view_proj")->offset == 0x100u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.world_item.filter_style")->offset == 0x70u);
     CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "nonexistent.offset") == nullptr);
 
     // 3.29.3c: code RVAs resolve, HNC mask resolves to 0x2feaed0, unverified data returns NM_ERR_SYMBOL_UNVERIFIED
@@ -237,7 +307,11 @@ int test_address_table_3293d_and_3293c() {
               "01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf") == NM_OK);
 
     CHECK(nm_get_host_info(&host) == NM_OK);
-    CHECK(host.symbol_count == 240u);
+    CHECK(host.symbol_count == 319u);
+    CHECK(nm_lookup_symbol("items.filter_notify_loaded", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
+    CHECK(nm_lookup_symbol("ui.vtable_world_label_mgr", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
     CHECK(nm_lookup_symbol("network.login_write_create_char_0x12", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
     CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
     CHECK(nm_lookup_symbol("ui.vtable_pc_hud", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
@@ -2204,6 +2278,390 @@ int test_phase1_input_screens_hover_and_pregame_callbacks() {
     return 0;
 }
 
+int test_phase2_prologues_hookengine_safety() {
+    const char* kPhase2Hooks[] = {
+        "world.client_world_init_area",
+        "frame.area_loading_enter",
+        "frame.area_loading_leave",
+        "frame.ingame_on_instance_details",
+        "world.entity_mgr_insert",
+        "world.entity_mgr_remove",
+        "world.entity_mark_for_removal",
+        "items.filter_match",
+        "items.filter_poll_load",
+        "items.filter_select_apply",
+        "items.filter_notify_loaded",
+        "items.filter_style_dtor_custom_sounds",
+        "items.world_item_eval_filter",
+        "items.world_item_is_visible",
+        "ui.world_item_label_update",
+        "world.camera_ctrl_update",
+        "world.camera_ctrl_mouse_wheel",
+        "world.camera_world_to_screen",
+    };
+
+    auto hex_nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
+    for (const char* name : kPhase2Hooks) {
+        const nativemods::EmbeddedSymbol* sym = nativemods::find_symbol(NM_BUILD_3_29_3D_328228, name);
+        CHECK(sym != nullptr && sym->expected_bytes_hex != nullptr);
+        CHECK(std::strlen(sym->expected_bytes_hex) == 32u);
+        uint8_t buf[32];
+        std::memset(buf, 0x90, sizeof(buf));
+        for (size_t i = 0; i < 16u; ++i) {
+            const int hi = hex_nibble(sym->expected_bytes_hex[i * 2]);
+            const int lo = hex_nibble(sym->expected_bytes_hex[i * 2 + 1]);
+            CHECK(hi >= 0 && lo >= 0);
+            buf[i] = static_cast<uint8_t>((hi << 4) | lo);
+        }
+        const size_t stolen = nativemods::HookEngine::compute_stolen_length(buf, 14);
+        CHECK(stolen >= 14u && stolen <= 24u);
+    }
+
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_phase2_world_rbtree_stats_area_filter_camera() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // 1. World EntityManager MSVC std::map<uint32_t, Entity*> RB-tree traversal & lookup
+    {
+        struct FakeRbNode {
+            FakeRbNode* left;      // +0x00
+            FakeRbNode* parent;    // +0x08 (root in header sentinel)
+            FakeRbNode* right;     // +0x10
+            uint8_t     color;     // +0x18
+            uint8_t     is_nil;    // +0x19
+            uint8_t     pad[6];    // +0x1a..0x1f
+            uint32_t    entity_id; // +0x20
+            uint32_t    pad2;      // +0x24
+            void*       entity;    // +0x28
+        };
+        static_assert(sizeof(FakeRbNode) == 0x30u);
+
+        int e10 = 10, e20 = 20, e30 = 30, e40 = 40, e50 = 50;
+        FakeRbNode head{};
+        FakeRbNode n10{}, n20{}, n30{}, n40{}, n50{};
+        head.left = &n10;
+        head.parent = &n30; // root
+        head.right = &n50;
+        head.color = 1;
+        head.is_nil = 1;
+
+        auto init_node = [&](FakeRbNode& n, FakeRbNode* l, FakeRbNode* p, FakeRbNode* r, uint32_t id, void* ent) {
+            n.left = l ? l : &head;
+            n.parent = p ? p : &head;
+            n.right = r ? r : &head;
+            n.color = 0;
+            n.is_nil = 0;
+            n.entity_id = id;
+            n.entity = ent;
+        };
+        init_node(n30, &n20, &head, &n40, 30u, &e30);
+        init_node(n20, &n10, &n30, &head, 20u, &e20);
+        init_node(n10, &head, &n20, &head, 10u, &e10);
+        init_node(n40, &head, &n30, &n50, 40u, &e40);
+        init_node(n50, &head, &n40, &head, 50u, &e50);
+
+        std::vector<void*> collected;
+        const size_t visited = nativemods::Phase2Services::traverse_rb_tree_entities(&head, collected);
+        CHECK(visited == 5u && collected.size() == 5u);
+        CHECK(nativemods::Phase2Services::find_entity_in_rb_tree(&head, 10u) == &e10);
+        CHECK(nativemods::Phase2Services::find_entity_in_rb_tree(&head, 30u) == &e30);
+        CHECK(nativemods::Phase2Services::find_entity_in_rb_tree(&head, 50u) == &e50);
+        CHECK(nativemods::Phase2Services::find_entity_in_rb_tree(&head, 99u) == nullptr);
+
+        // Max-nodes bound prevents runaway traversal
+        std::vector<void*> capped;
+        CHECK(nativemods::Phase2Services::traverse_rb_tree_entities(&head, capped, 2u) == 2u);
+        CHECK(capped.size() == 2u);
+    }
+
+    // 2. StatsComponent +0xf0 sorted vector enumeration (including high-ID >= 0x10000 custom stats)
+    {
+        nm_stat_entry_t entries[4] = {
+            {1, 120},
+            {42, 75},
+            {0x10000, 999},
+            {0x12345, -50},
+        };
+        alignas(16) uint8_t fake_stats[0x120] = {};
+        const nm_stat_entry_t* begin_p = entries;
+        const nm_stat_entry_t* end_p = entries + 4;
+        std::memcpy(fake_stats + 0xF0u, &begin_p, sizeof(begin_p));
+        std::memcpy(fake_stats + 0xF8u, &end_p, sizeof(end_p));
+
+        uint32_t cnt = 0, total = 0;
+        // Sizing query
+        CHECK(nativemods::Phase2Services::read_stats_vector(fake_stats, 0xF0u, 0xF8u, nullptr, 0u, &cnt, &total) == NM_OK);
+        CHECK(cnt == 0u && total == 4u);
+
+        // Partial copy
+        nm_stat_entry_t partial[2] = {};
+        CHECK(nativemods::Phase2Services::read_stats_vector(fake_stats, 0xF0u, 0xF8u, partial, 2u, &cnt, &total) == NM_OK);
+        CHECK(cnt == 2u && total == 4u && partial[0].stat_id == 1 && partial[1].stat_id == 42);
+
+        // Full copy with high-ID custom stats
+        nm_stat_entry_t full[8] = {};
+        CHECK(nativemods::Phase2Services::read_stats_vector(fake_stats, 0xF0u, 0xF8u, full, 8u, &cnt, &total) == NM_OK);
+        CHECK(cnt == 4u && total == 4u);
+        CHECK(full[2].stat_id == 0x10000 && full[2].value == 999);
+        CHECK(full[3].stat_id == 0x12345 && full[3].value == -50);
+    }
+
+    // 3. AreaInfo reading from ClientWorld + WorldAreasRow + InstanceClient rulesets vector
+    {
+        alignas(16) uint8_t fake_row[0x160] = {};
+        const wchar_t* area_id_w = L"1_1_town";
+        const wchar_t* area_name_w = L"Lioneye's Watch";
+        const int32_t act = 1;
+        const uint8_t is_town = 1;
+        const int32_t base_lvl = 1;
+        const uint16_t hash16 = 0x1234u;
+        const uint8_t is_guild_ho = 0;
+        const uint8_t is_ho = 0;
+        std::memcpy(fake_row + 0x00u, &area_id_w, sizeof(area_id_w));
+        std::memcpy(fake_row + 0x08u, &area_name_w, sizeof(area_name_w));
+        std::memcpy(fake_row + 0x10u, &act, sizeof(act));
+        std::memcpy(fake_row + 0x14u, &is_town, sizeof(is_town));
+        std::memcpy(fake_row + 0x26u, &base_lvl, sizeof(base_lvl));
+        std::memcpy(fake_row + 0x2Au, &hash16, sizeof(hash16));
+        std::memcpy(fake_row + 0x139u, &is_guild_ho, sizeof(is_guild_ho));
+        std::memcpy(fake_row + 0x14Eu, &is_ho, sizeof(is_ho));
+
+        std::vector<uint8_t> fake_world(0xA00u, 0);
+        const void* row_ptr = fake_row;
+        const uint8_t eff_lvl = 68u;
+        const uint32_t seed = 0xDEADBEEFu;
+        std::memcpy(fake_world.data() + 0xB0u, &row_ptr, sizeof(row_ptr));
+        std::memcpy(fake_world.data() + 0xD4u, &eff_lvl, sizeof(eff_lvl));
+        std::memcpy(fake_world.data() + 0x8E0u, &seed, sizeof(seed));
+
+        struct FakeRuleset {
+            void*    vtable;
+            uint32_t id;
+            uint32_t pad;
+        } rs0{nullptr, 100u, 0}, rs1{nullptr, 101u, 0}, rs2{nullptr, 200u, 0};
+        void* rs_ptrs[3] = {&rs0, &rs1, &rs2};
+        void* const* rs_begin = rs_ptrs;
+        void* const* rs_end = rs_ptrs + 3;
+
+        std::vector<uint8_t> fake_ic(0xD000u, 0);
+        std::memcpy(fake_ic.data() + 0xCFD8u, &rs_begin, sizeof(rs_begin));
+        std::memcpy(fake_ic.data() + 0xCFE0u, &rs_end, sizeof(rs_end));
+
+        nm_area_info_t info{};
+        CHECK(nativemods::Phase2Services::read_area_info_from_structs(fake_world.data(), fake_ic.data(), info));
+        CHECK(info.struct_size == sizeof(nm_area_info_t));
+        CHECK(info.in_game == 1u);
+        CHECK(std::strcmp(info.area_id, "1_1_town") == 0);
+        CHECK(std::strcmp(info.area_name, "Lioneye's Watch") == 0);
+        CHECK(info.act == 1 && info.area_level == 1 && info.effective_level == 68);
+        CHECK(info.hash16 == 0x1234u && info.area_seed == 0xDEADBEEFu);
+        CHECK(info.is_town == 1u && info.is_hideout == 0u && info.is_guild_hideout == 0u);
+        CHECK(info.ruleset_count == 3u && info.ruleset_ids[0] == 100u && info.ruleset_ids[1] == 101u && info.ruleset_ids[2] == 200u);
+    }
+
+    // 4. ItemFilterStyle extraction (Show, Hide, colors 0xRRGGBBAA, sound, icon, temp/perm beam)
+    {
+        alignas(8) uint8_t raw_style[0x40] = {};
+        // Show + TextColor + BorderColor + BgColor
+        raw_style[0] = 0x04u | 0x08u | 0x10u;
+        // FontSize + AlertSound
+        raw_style[1] = 0x01u | 0x02u;
+        // MinimapIcon + PlayEffect (without EffectPermanent -> temporary beam)
+        raw_style[2] = 0x01u | 0x02u;
+        // Text RGBA (255, 0, 128, 255)
+        raw_style[3] = 255; raw_style[4] = 0; raw_style[5] = 128; raw_style[6] = 255;
+        // Border RGBA (10, 20, 30, 200)
+        raw_style[7] = 10; raw_style[8] = 20; raw_style[9] = 30; raw_style[10] = 200;
+        // Bg RGBA (0, 0, 0, 240)
+        raw_style[11] = 0; raw_style[12] = 0; raw_style[13] = 0; raw_style[14] = 240;
+        const int32_t sound_id = 6;
+        const uint32_t sound_vol = 300;
+        const uint32_t font_sz = 45;
+        const int32_t icon_id = 17;
+        const int32_t beam_id = 3;
+        std::memcpy(raw_style + 0x10u, &sound_id, 4);
+        std::memcpy(raw_style + 0x14u, &sound_vol, 4);
+        std::memcpy(raw_style + 0x18u, &font_sz, 4);
+        std::memcpy(raw_style + 0x1Cu, &icon_id, 4);
+        std::memcpy(raw_style + 0x20u, &beam_id, 4);
+
+        nm_item_filter_result_t res{};
+        CHECK(nativemods::Phase2Services::extract_item_filter_style(raw_style, -1, res));
+        CHECK(res.evaluated == 1u && res.is_visible == 1u);
+        CHECK(res.text_rgba == 0xFF0080FFu);
+        CHECK(res.border_rgba == 0x0A141EC8u);
+        CHECK(res.bg_rgba == 0x000000F0u);
+        CHECK(res.font_size == 45u);
+        CHECK(res.alert_sound_id == 6 && res.alert_sound_volume == 300u);
+        CHECK(res.minimap_icon_shape == 17);
+        CHECK(res.beam_color == 3 && res.beam_temporary == 1u);
+
+        // Hide rule + permanent beam
+        raw_style[0] |= 0x01u;
+        raw_style[2] |= 0x04u;
+        CHECK(nativemods::Phase2Services::extract_item_filter_style(raw_style, -1, res));
+        CHECK(res.is_visible == 0u && res.beam_temporary == 0u);
+
+        // Visibility override (e.g. WorldItem::never_hidden lifts Hide)
+        CHECK(nativemods::Phase2Services::extract_item_filter_style(raw_style, 1, res));
+        CHECK(res.is_visible == 1u);
+    }
+
+    // 5. Camera row-major DirectX v_row * M WorldToScreen & FOV math
+    {
+        const float fov = nativemods::Phase2Services::compute_vertical_fov(0.41421357f, 0.5f);
+        CHECK(std::fabs(fov - 0.78539816f) < 1e-4f); // 45 degrees == pi/4
+
+        // Row-major matrix with translation in row 3 (M[12..15]):
+        //   clip = [x, y, z, 1] * M
+        //   cx = 0.5*x + 0.25, cy = 0.5*y - 0.25, cw = 1.0*z + 1.0
+        const float mat[16] = {
+            0.5f,  0.0f, 0.0f, 0.0f,
+            0.0f,  0.5f, 0.0f, 0.0f,
+            0.0f,  0.0f, 1.0f, 1.0f,
+            0.25f, -0.25f, 0.0f, 1.0f,
+        };
+        float sx = 0.0f, sy = 0.0f;
+        int32_t in_front = 0;
+
+        // World (0, 0, 0) -> cx=0.25, cy=-0.25, cw=1.0 -> sx=960*1.25=1200, sy=540*1.25=675
+        CHECK(nativemods::Phase2Services::project_world_to_screen(mat, 1920u, 1080u, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, &sx, &sy, &in_front));
+        CHECK(in_front == 1 && std::fabs(sx - 1200.0f) < 1e-3f && std::fabs(sy - 675.0f) < 1e-3f);
+
+        // Ultrawide viewport offset (120, 20) subtracted
+        CHECK(nativemods::Phase2Services::project_world_to_screen(mat, 1920u, 1080u, 120.0f, 20.0f, 0.0f, 0.0f, 0.0f, &sx, &sy, &in_front));
+        CHECK(in_front == 1 && std::fabs(sx - 1080.0f) < 1e-3f && std::fabs(sy - 655.0f) < 1e-3f);
+
+        // Perspective divide: world (1.5, 2.5, 1.0) -> cx=1.0, cy=1.0, cw=2.0 -> ndc=(0.5, 0.5) -> (1440, 270)
+        CHECK(nativemods::Phase2Services::project_world_to_screen(mat, 1920u, 1080u, 0.0f, 0.0f, 1.5f, 2.5f, 1.0f, &sx, &sy, &in_front));
+        CHECK(in_front == 1 && std::fabs(sx - 1440.0f) < 1e-3f && std::fabs(sy - 270.0f) < 1e-3f);
+
+        // Behind camera (z = -2.0 -> cw = -1.0 <= 1e-6f)
+        CHECK(!nativemods::Phase2Services::project_world_to_screen(mat, 1920u, 1080u, 0.0f, 0.0f, 0.0f, 0.0f, -2.0f, &sx, &sy, &in_front));
+        CHECK(in_front == 0);
+    }
+
+    // 6. AreaEntered / AreaLeft & FilterReloaded callbacks + exception isolation
+    {
+        struct AreaCap {
+            int         calls = 0;
+            int32_t     last_kind = 0;
+            std::string last_id;
+        } acap{};
+        auto area_cb = [](int32_t kind, const nm_area_info_t* info, void* ud) {
+            auto* c = static_cast<AreaCap*>(ud);
+            ++c->calls;
+            c->last_kind = kind;
+            c->last_id = info->area_id;
+            if (kind == 99) throw std::runtime_error("faulty area cb");
+        };
+        CHECK(nm_lifecycle_set_area_callback(area_cb, &acap) == NM_OK);
+
+        nm_area_info_t ainfo{};
+        ainfo.struct_size = sizeof(ainfo);
+        ainfo.in_game = 1;
+        std::snprintf(ainfo.area_id, sizeof(ainfo.area_id), "1_1_1");
+        nm_dispatch_area_event(NM_AREA_EVT_ENTERED, &ainfo);
+        CHECK(acap.calls == 1 && acap.last_kind == NM_AREA_EVT_ENTERED && acap.last_id == "1_1_1");
+        nm_dispatch_area_event(NM_AREA_EVT_LEFT, &ainfo);
+        CHECK(acap.calls == 2 && acap.last_kind == NM_AREA_EVT_LEFT);
+        nm_dispatch_area_event(99, &ainfo); // exception isolated
+        CHECK(acap.calls == 3);
+        CHECK(nm_lifecycle_set_area_callback(nullptr, nullptr) == NM_OK);
+        nm_dispatch_area_event(NM_AREA_EVT_ENTERED, &ainfo);
+        CHECK(acap.calls == 3);
+
+        struct FilterCap {
+            int         calls = 0;
+            int32_t     last_ok = -1;
+            std::string last_name;
+        } fcap{};
+        auto flt_cb = [](int32_t ok, const nm_item_filter_state_t* st, void* ud) {
+            auto* c = static_cast<FilterCap*>(ud);
+            ++c->calls;
+            c->last_ok = ok;
+            c->last_name = st->filter_name;
+            if (ok == 99) throw std::runtime_error("faulty filter cb");
+        };
+        CHECK(nm_filter_set_reload_callback(flt_cb, &fcap) == NM_OK);
+
+        nm_item_filter_state_t fst{};
+        fst.struct_size = sizeof(fst);
+        fst.loaded = 1;
+        std::snprintf(fst.filter_name, sizeof(fst.filter_name), "NeverSink.filter");
+        nm_dispatch_filter_reloaded(1, &fst);
+        CHECK(fcap.calls == 1 && fcap.last_ok == 1 && fcap.last_name == "NeverSink.filter");
+        nm_dispatch_filter_reloaded(0, &fst);
+        CHECK(fcap.calls == 2 && fcap.last_ok == 0);
+        nm_dispatch_filter_reloaded(99, &fst); // exception isolated
+        CHECK(fcap.calls == 3);
+    }
+
+    // 7. Null-arg / NaN validation & synthetic platform checks for all 18 ABI 0.4.0 entry points
+    {
+        nm_world_entity_snapshot_t ent{};
+        uint32_t cnt = 0, total = 0;
+        uint64_t handle = 0;
+        int32_t val = 0;
+        nm_area_info_t ainfo{};
+        nm_item_filter_state_t fst{};
+        nm_item_filter_result_t fres{};
+        nm_camera_state_t cam{};
+        float sx = 0.0f, sy = 0.0f;
+        int32_t front = 0;
+
+        CHECK(nm_world_get_local_player(nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_get_local_player(&ent) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_world_list_entities(nullptr, nullptr, 0, nullptr, &total) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_list_entities(nullptr, nullptr, 1, &cnt, &total) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_list_entities(nullptr, nullptr, 0, &cnt, &total) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_world_get_entity(1, nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_get_entity(1, &ent) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_world_create_client_object(nullptr, 0, 0, 0, &handle) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_create_client_object("Metadata/Effects/Effect", 1, 2, 3, &handle) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_world_remove_client_object(0) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_remove_client_object(1) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+        CHECK(nm_stats_read_entity(0, 1, nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_stats_read_entity(0, 1, &val) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_stats_set_local_entity(0, 1, 42) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_stats_list_entity(0, nullptr, 0, nullptr, &total) == NM_ERR_INVALID_ARG);
+        CHECK(nm_stats_list_entity(0, nullptr, 0, &cnt, &total) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+        CHECK(nm_lifecycle_get_area_info(nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_lifecycle_get_area_info(&ainfo) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+        CHECK(nm_filter_get_state(nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_filter_get_state(&fst) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_filter_reload() == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_filter_get_world_item_result(1, nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_filter_get_world_item_result(1, &fres) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_filter_evaluate_entity(1, nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_filter_evaluate_entity(1, &fres) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+        CHECK(nm_camera_get_state(nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_camera_get_state(&cam) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_camera_world_to_screen(0, 0, 0, nullptr, &sy, &front) == NM_ERR_INVALID_ARG);
+        CHECK(nm_camera_world_to_screen(0, 0, 0, &sx, &sy, &front) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(nm_camera_set_zoom_override(NAN) == NM_ERR_INVALID_ARG);
+        CHECK(nm_camera_set_zoom_override(INFINITY) == NM_ERR_INVALID_ARG);
+        CHECK(nm_camera_set_zoom_override(1.5f) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    }
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -2231,6 +2689,8 @@ int main() {
     if (test_live_ui_vtable_mismatch_guards() != 0) return 1;
     if (test_phase1_prologues_hookengine_safety() != 0) return 1;
     if (test_phase1_input_screens_hover_and_pregame_callbacks() != 0) return 1;
+    if (test_phase2_prologues_hookengine_safety() != 0) return 1;
+    if (test_phase2_world_rbtree_stats_area_filter_camera() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

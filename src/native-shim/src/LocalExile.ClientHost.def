@@ -99,6 +99,26 @@ EXPORTS
     nm_dispatch_input_event
     nm_dispatch_pregame_creating
     nm_dispatch_pregame_created
+    nm_world_get_local_player
+    nm_world_list_entities
+    nm_world_get_entity
+    nm_world_create_client_object
+    nm_world_remove_client_object
+    nm_stats_read_entity
+    nm_stats_set_local_entity
+    nm_stats_list_entity
+    nm_lifecycle_get_area_info
+    nm_lifecycle_set_area_callback
+    nm_filter_get_state
+    nm_filter_reload
+    nm_filter_get_world_item_result
+    nm_filter_evaluate_entity
+    nm_filter_set_reload_callback
+    nm_camera_get_state
+    nm_camera_world_to_screen
+    nm_camera_set_zoom_override
+    nm_dispatch_area_event
+    nm_dispatch_filter_reloaded
     nm_bootstrap_managed_host
     nm_initialize_for_build
     nm_shutdown

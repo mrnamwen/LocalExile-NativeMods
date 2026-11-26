@@ -10,6 +10,7 @@
 #include "live_engine_hooks.hpp"
 #include "overlay_and_channels.hpp"
 #include "phase1_services.hpp"
+#include "phase2_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -43,6 +44,7 @@ struct ShimState {
     LiveAudioManager    audio;
     LiveEngineHooks     live_hooks;
     Phase1Services      phase1;
+    Phase2Services      phase2;
     CoreClrBootstrapper clr;
 
     nm_hook_handle_t    frame_hook_handle = NM_HOOK_INVALID;
@@ -146,6 +148,24 @@ const nm_abi_table_t kAbiTable = {
     &nm_input_is_text_focused,
     &nm_hover_get_state,
     &nm_pregame_set_callbacks,
+    &nm_world_get_local_player,
+    &nm_world_list_entities,
+    &nm_world_get_entity,
+    &nm_world_create_client_object,
+    &nm_world_remove_client_object,
+    &nm_stats_read_entity,
+    &nm_stats_set_local_entity,
+    &nm_stats_list_entity,
+    &nm_lifecycle_get_area_info,
+    &nm_lifecycle_set_area_callback,
+    &nm_filter_get_state,
+    &nm_filter_reload,
+    &nm_filter_get_world_item_result,
+    &nm_filter_evaluate_entity,
+    &nm_filter_set_reload_callback,
+    &nm_camera_get_state,
+    &nm_camera_world_to_screen,
+    &nm_camera_set_zoom_override,
 };
 
 #if defined(_WIN32)
@@ -356,6 +376,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
 
+    s.phase2.reset(&s.hooks);
     s.phase1.reset(&s.hooks);
     s.live_hooks.reset(&s.hooks);
     s.hooks.remove_all();
@@ -435,6 +456,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
 NM_API nm_status_t NM_CALL nm_shutdown(void) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
+    s.phase2.reset(&s.hooks);
     s.phase1.reset(&s.hooks);
     s.live_hooks.reset(&s.hooks);
     s.hooks.remove_all();
@@ -1143,6 +1165,129 @@ NM_API void NM_CALL nm_dispatch_pregame_created(const char* name_utf8, const cha
     state().phase1.dispatch_pregame_created(name_utf8, league_utf8, result_code);
 }
 
+/* --- ABI 0.4.0 exports --- */
+
+NM_API nm_status_t NM_CALL nm_world_get_local_player(nm_world_entity_snapshot_t* out_entity) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.world_get_local_player(out_entity);
+}
+
+NM_API nm_status_t NM_CALL nm_world_list_entities(
+    const nm_world_entity_query_t* query,
+    nm_world_entity_snapshot_t*    out_buf,
+    uint32_t                       capacity,
+    uint32_t*                      out_count,
+    uint32_t*                      out_total) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.world_list_entities(query, out_buf, capacity, out_count, out_total);
+}
+
+NM_API nm_status_t NM_CALL nm_world_get_entity(uint32_t entity_id, nm_world_entity_snapshot_t* out_entity) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.world_get_entity(entity_id, out_entity);
+}
+
+NM_API nm_status_t NM_CALL nm_world_create_client_object(
+    const char* metadata_utf8,
+    float       x,
+    float       y,
+    float       z,
+    uint64_t*   out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.world_create_client_object(metadata_utf8, x, y, z, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_world_remove_client_object(uint64_t handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.world_remove_client_object(handle);
+}
+
+NM_API nm_status_t NM_CALL nm_stats_read_entity(uint32_t entity_id, int32_t stat_id, int32_t* out_value) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.stats_read_entity(entity_id, stat_id, out_value);
+}
+
+NM_API nm_status_t NM_CALL nm_stats_set_local_entity(uint32_t entity_id, int32_t stat_id, int32_t value) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.stats_set_local_entity(entity_id, stat_id, value);
+}
+
+NM_API nm_status_t NM_CALL nm_stats_list_entity(
+    uint32_t         entity_id,
+    nm_stat_entry_t* out_buf,
+    uint32_t         capacity,
+    uint32_t*        out_count,
+    uint32_t*        out_total) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.stats_list_entity(entity_id, out_buf, capacity, out_count, out_total);
+}
+
+NM_API nm_status_t NM_CALL nm_lifecycle_get_area_info(nm_area_info_t* out_info) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.lifecycle_get_area_info(out_info);
+}
+
+NM_API nm_status_t NM_CALL nm_lifecycle_set_area_callback(nm_area_event_callback_t cb, void* user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.lifecycle_set_area_callback(cb, user_data);
+}
+
+NM_API nm_status_t NM_CALL nm_filter_get_state(nm_item_filter_state_t* out_state) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.filter_get_state(out_state);
+}
+
+NM_API nm_status_t NM_CALL nm_filter_reload(void) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.filter_reload();
+}
+
+NM_API nm_status_t NM_CALL nm_filter_get_world_item_result(uint32_t entity_id, nm_item_filter_result_t* out_result) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.filter_get_world_item_result(entity_id, out_result);
+}
+
+NM_API nm_status_t NM_CALL nm_filter_evaluate_entity(uint32_t entity_id, nm_item_filter_result_t* out_result) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.filter_evaluate_entity(entity_id, out_result);
+}
+
+NM_API nm_status_t NM_CALL nm_filter_set_reload_callback(nm_filter_reload_callback_t cb, void* user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.filter_set_reload_callback(cb, user_data);
+}
+
+NM_API nm_status_t NM_CALL nm_camera_get_state(nm_camera_state_t* out_state) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.camera_get_state(out_state);
+}
+
+NM_API nm_status_t NM_CALL nm_camera_world_to_screen(
+    float    wx,
+    float    wy,
+    float    wz,
+    float*   out_sx,
+    float*   out_sy,
+    int32_t* out_in_front) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.camera_world_to_screen(wx, wy, wz, out_sx, out_sy, out_in_front);
+}
+
+NM_API nm_status_t NM_CALL nm_camera_set_zoom_override(float zoom_override) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase2.camera_set_zoom_override(zoom_override);
+}
+
+NM_API void NM_CALL nm_dispatch_area_event(int32_t event_kind, const nm_area_info_t* area_info) {
+    if (!state().initialized) return;
+    state().phase2.dispatch_area_event(event_kind, area_info);
+}
+
+NM_API void NM_CALL nm_dispatch_filter_reloaded(int32_t succeeded, const nm_item_filter_state_t* filter_state) {
+    if (!state().initialized) return;
+    state().phase2.dispatch_filter_reloaded(succeeded, filter_state);
+}
+
 NM_API nm_status_t NM_CALL nm_bootstrap_managed_host(
     const char* hostfxr_path_utf8,
     const char* runtimeconfig_path_utf8,
@@ -1279,6 +1424,7 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
         s.live_hooks.register_startup_disk_overlays(dll_dir, s.channels);
         s.live_hooks.install_live_hooks(detected_build, base, s.hooks, s.allocator, s.channels);
         s.phase1.install_live_hooks(detected_build, base, s.hooks);
+        s.phase2.install_live_hooks(detected_build, base, s.hooks, s.allocator);
     }
 
     // Install register-preserving prologue hook at frame.state_stack_pass_a

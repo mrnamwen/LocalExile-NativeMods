@@ -2202,4 +2202,19 @@ int32_t Phase1Services::read_map_stash_selected_tier(
 #endif
 }
 
+void Phase1Services::populate_item_snapshot_unguarded(
+    nm_build_id_t       build_id,
+    uint64_t            image_base,
+    void*               item_entity,
+    nm_item_snapshot_t& out) {
+#if defined(_WIN32)
+    nativemods::populate_item_snapshot_unguarded(build_id, image_base, item_entity, out);
+#else
+    (void)build_id;
+    (void)image_base;
+    (void)item_entity;
+    (void)out;
+#endif
+}
+
 } // namespace nativemods

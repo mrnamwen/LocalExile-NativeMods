@@ -158,6 +158,24 @@ int main() {
     SMOKE_CHECK(abi->input_set_callback != nullptr);
     SMOKE_CHECK(abi->hover_get_state != nullptr);
     SMOKE_CHECK(abi->pregame_set_callbacks != nullptr);
+    SMOKE_CHECK(abi->world_get_local_player != nullptr);
+    SMOKE_CHECK(abi->world_list_entities != nullptr);
+    SMOKE_CHECK(abi->world_get_entity != nullptr);
+    SMOKE_CHECK(abi->world_create_client_object != nullptr);
+    SMOKE_CHECK(abi->world_remove_client_object != nullptr);
+    SMOKE_CHECK(abi->stats_read_entity != nullptr);
+    SMOKE_CHECK(abi->stats_set_local_entity != nullptr);
+    SMOKE_CHECK(abi->stats_list_entity != nullptr);
+    SMOKE_CHECK(abi->lifecycle_get_area_info != nullptr);
+    SMOKE_CHECK(abi->lifecycle_set_area_callback != nullptr);
+    SMOKE_CHECK(abi->filter_get_state != nullptr);
+    SMOKE_CHECK(abi->filter_reload != nullptr);
+    SMOKE_CHECK(abi->filter_get_world_item_result != nullptr);
+    SMOKE_CHECK(abi->filter_evaluate_entity != nullptr);
+    SMOKE_CHECK(abi->filter_set_reload_callback != nullptr);
+    SMOKE_CHECK(abi->camera_get_state != nullptr);
+    SMOKE_CHECK(abi->camera_world_to_screen != nullptr);
+    SMOKE_CHECK(abi->camera_set_zoom_override != nullptr);
 
     constexpr const char* kSha3293d = "e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d";
     SMOKE_CHECK(p_init(NM_BUILD_3_29_3D_328228, NM_NOMINAL_IMAGE_BASE, 0x4d9a000u, kSha3293d) == NM_OK);
@@ -346,7 +364,7 @@ int main() {
     }
     SMOKE_CHECK(log_contents.find("NativeEntryPoint.Initialize(nm_abi_table_t*) returned 0") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded JsonAddressLibrary") != std::string::npos);
-    SMOKE_CHECK(log_contents.find("symbols=240") != std::string::npos);
+    SMOKE_CHECK(log_contents.find("symbols=319") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded client mod 'harvest-garden'") != std::string::npos);
     SMOKE_CHECK(log_contents.find("collectibleAlc=True") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Managed frame tick #1") != std::string::npos);

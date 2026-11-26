@@ -85,6 +85,13 @@ public:
         const void* map_stash_page,
         size_t      selected_group_offset) noexcept;
 
+    // Shared helper reused by Phase 2 WorldItem snapshots (caller must run inside invoke_guarded on Win32).
+    static void populate_item_snapshot_unguarded(
+        nm_build_id_t       build_id,
+        uint64_t            image_base,
+        void*               item_entity,
+        nm_item_snapshot_t& out);
+
 private:
     nm_build_id_t                 build_id_ = NM_BUILD_UNKNOWN;
     uint64_t                      image_base_ = 0;
