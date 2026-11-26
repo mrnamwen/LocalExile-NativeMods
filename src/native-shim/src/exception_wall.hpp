@@ -36,4 +36,8 @@ nm_status_t invoke_guarded(
     int64_t*             out_result,
     nm_exception_info_t* out_exception);
 
+nm_status_t invoke_native_guarded(
+    nm_native_call_desc_t* desc,
+    nm_exception_info_t*   out_exception);
+
 } // namespace nativemods

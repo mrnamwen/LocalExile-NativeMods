@@ -9,12 +9,16 @@ EXPORTS
     nm_install_inline_hook
     nm_install_inline_hook_at
     nm_install_vtable_hook
+    nm_install_inline_chain_hook
+    nm_install_inline_chain_hook_sym
+    nm_install_vtable_chain_hook
     nm_remove_hook
     nm_register_frame_callback
     nm_unregister_frame_callback
     nm_enqueue_main_thread
     nm_drain_main_thread_queue
     nm_call_guarded
+    nm_call_native_guarded
     nm_game_alloc
     nm_game_free
     nm_register_file_overlay
@@ -26,6 +30,8 @@ EXPORTS
     nm_free_file_overlay_buffer
     nm_set_file_overlay_known_paths
     nm_get_active_connection_token
+    nm_files_read_stock
+    nm_files_invalidate
     nm_audio_play_ogg
     nm_audio_play_event
     nm_audio_stop
@@ -33,18 +39,40 @@ EXPORTS
     nm_audio_is_playing
     nm_ui_get_root
     nm_ui_create_window
+    nm_ui_create_window_into
     nm_ui_find_child
     nm_ui_set_visible
     nm_ui_set_text
     nm_ui_subscribe_click
+    nm_ui_get_rect
+    nm_ui_set_position
+    nm_ui_set_size
+    nm_ui_set_enabled
+    nm_ui_remove_child
+    nm_ui_destroy_control
+    nm_ui_textbox_get_text
+    nm_ui_textbox_set_text
+    nm_ui_textbox_subscribe_changed
+    nm_ui_textbox_subscribe_submitted
+    nm_ui_checkbox_get_checked
+    nm_ui_checkbox_set_checked
+    nm_ui_checkbox_subscribe_changed
+    nm_ui_unsubscribe
+    nm_clipboard_get_text
+    nm_clipboard_set_text
     nm_register_ruleset_handler
     nm_unregister_ruleset_handler
     nm_send_ruleset_packet
     nm_register_chat_channel_handler
     nm_unregister_chat_channel_handler
     nm_send_chat_line
+    nm_send_raw_packet
+    nm_register_opcode_handler_group
+    nm_unregister_opcode_handler_group
+    nm_stream_read
     nm_dispatch_ruleset_rx
     nm_dispatch_chat_rx
+    nm_dispatch_opcode_rx
     nm_set_packet_tx_override
     nm_bootstrap_managed_host
     nm_initialize_for_build

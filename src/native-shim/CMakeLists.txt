@@ -24,6 +24,29 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 #      cmake --build build/native-shim-win64
 # ==============================================================================
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(ADDRESS_CODEGEN_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/generate-address-table.py")
+set(ADDRESS_JSON_3D "${CMAKE_CURRENT_SOURCE_DIR}/../../data/addresses/3.29.3d.json")
+set(ADDRESS_JSON_3C "${CMAKE_CURRENT_SOURCE_DIR}/../../data/addresses/3.29.3c.json")
+set(ADDRESS_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/../../data/addresses/address-library.schema.json")
+set(ADDRESS_STAMP "${CMAKE_CURRENT_BINARY_DIR}/address_table_generated.stamp")
+
+add_custom_command(
+    OUTPUT "${ADDRESS_STAMP}"
+    COMMAND ${Python3_EXECUTABLE} "${ADDRESS_CODEGEN_SCRIPT}"
+    COMMAND ${Python3_EXECUTABLE} "${ADDRESS_CODEGEN_SCRIPT}" --check
+    COMMAND ${CMAKE_COMMAND} -E touch "${ADDRESS_STAMP}"
+    DEPENDS
+        "${ADDRESS_CODEGEN_SCRIPT}"
+        "${ADDRESS_JSON_3D}"
+        "${ADDRESS_JSON_3C}"
+        "${ADDRESS_SCHEMA}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/address_table.cpp"
+    COMMENT "Generating and verifying address_table.cpp from data/addresses/*.json"
+    VERBATIM
+)
+add_custom_target(generate_address_table DEPENDS "${ADDRESS_STAMP}")
+
 set(SHIM_SOURCES
     src/address_table.cpp
     src/hook_engine.cpp
@@ -43,6 +66,7 @@ if(WIN32)
 endif()
 
 add_library(LocalExile.ClientHost SHARED ${SHIM_SOURCES})
+add_dependencies(LocalExile.ClientHost generate_address_table)
 target_include_directories(LocalExile.ClientHost
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -105,9 +129,11 @@ if(BUILD_TESTING)
             src/client_host_shim.cpp
         )
         add_executable(nativemods_shim_tests tests/shim_tests.cpp ${SHIM_CORE_SOURCES})
+        add_dependencies(nativemods_shim_tests generate_address_table)
         target_compile_definitions(nativemods_shim_tests PRIVATE NATIVEMODS_SHIM_STATIC)
     else()
         add_executable(nativemods_shim_tests tests/shim_tests.cpp)
+        add_dependencies(nativemods_shim_tests generate_address_table)
         target_link_libraries(nativemods_shim_tests PRIVATE LocalExile.ClientHost)
     endif()
     target_include_directories(nativemods_shim_tests PRIVATE

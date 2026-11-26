@@ -1027,14 +1027,14 @@
       "name": "network.stream_reader",
       "category": "network",
       "kind": "code",
-      "rva": "0xdf9ed0",
-      "va": "0x140df9ed0",
+      "rva": null,
+      "va": null,
       "expectedBytes": null,
-      "status": "code_shared_3_29_3c",
+      "status": "unverified_3_29_3c",
       "callingConvention": "win64",
-      "signature": "void BufferStreamIn::Read(void* stream, void* dst, uint64_t len)",
-      "notes": "Reads bytes from the incoming network stream, advancing the cursor exactly. (Code RVA shared between 3.29.3c and 3.29.3d per 08-deep-analysis.md \u00a79; verify prologue bytes against 3.29.3c binary before hooking.)",
-      "source": "08-deep-analysis.md \u00a72; Game.exe 3.29.3d"
+      "signature": "void* BufferStreamInRead(void* stream, void* dst, uint64_t len)",
+      "notes": "Reads len bytes from BufferStreamIn ring buffer ([+0x298..+0x2a0), error=+0x252, total=+0x270, cursor=+0x278). (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x140df9ed0)"
     },
     {
       "name": "network.socket_write",
@@ -1451,6 +1451,162 @@
       "signature": "xor al, al inside files.patch_digest_compare",
       "notes": "Patched by LocalExile LooseFilesPatch to 'b001' (mov al, 1) so no-GGPK patch digest check succeeds. (Code RVA shared between 3.29.3c and 3.29.3d per 08-deep-analysis.md \u00a79; verify prologue bytes against 3.29.3c binary before hooking.)",
       "source": "LocalExile LooseFilesPatch.cs; Game.exe 3.29.3d"
+    },
+    {
+      "name": "files.hash_to_wstring_view",
+      "category": "files",
+      "kind": "code",
+      "rva": "0xe40af0",
+      "va": "0x140e40af0",
+      "expectedBytes": null,
+      "status": "code_shared_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "WStringView* HashToWStringView(const uint64_t* pathHash, WStringView* outView)",
+      "notes": "Resolves a 64-bit FileSystem path hash back to a UTF-16LE WStringView. (Shared with 3.29.3d.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x140e40af0)"
+    },
+    {
+      "name": "files.hash_and_register_path",
+      "category": "files",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "uint64_t* HashAndRegisterPath(uint64_t* outHash, const WStringView* path)",
+      "notes": "Computes MurmurHash64A (seed 0xde59dbf86f8bd67c) over UTF-16LE bytes and registers (hash -> WStringView) in FileSystem. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x140e40a90)"
+    },
+    {
+      "name": "files.filesystem_holder_get",
+      "category": "files",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void* GetFileSystemHolder()",
+      "notes": "Returns singleton holder whose +0x8 field is the active FileSystem* pointer. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x140e571d0)"
+    },
+    {
+      "name": "files.hot_reload_singleton",
+      "category": "files",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void* GetHotReloadManager()",
+      "notes": "Returns the HotReloadManager singleton passed as rcx to files.hot_reload_invalidate_ext. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1410062a0)"
+    },
+    {
+      "name": "runtime.wstring_destroy",
+      "category": "runtime",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void WStringDestroy(void* stdWString)",
+      "notes": "MSVC std::wstring::~wstring(); frees heap buffer when cap > 7 and resets SSO. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x140134500)"
+    },
+    {
+      "name": "runtime.string_destroy",
+      "category": "runtime",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void StringDestroy(void* stdString)",
+      "notes": "MSVC std::string::~string(); frees heap buffer when cap > 15 and resets SSO. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x140134810)"
+    },
+    {
+      "name": "ui.control_set_position",
+      "category": "ui",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void ControlSetPosition(void* control, float x, float y)",
+      "notes": "Sets Control relative position (+0x158/+0x15c/+0x160/+0x164) and triggers layout update. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418b1080)"
+    },
+    {
+      "name": "ui.control_set_size",
+      "category": "ui",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void ControlSetSize(void* control, float w, float h)",
+      "notes": "Clamps to min/max bounds (+0x270..+0x27c) and writes size (+0x268/+0x26c). (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x141906a30)"
+    },
+    {
+      "name": "ui.control_get_abs_pos",
+      "category": "ui",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "float* ControlGetAbsPos(void* control, float outXY[2])",
+      "notes": "Walks parent chain (+0x1e0) and computes absolute screen-space (x, y) into outXY. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418b1250)"
+    },
+    {
+      "name": "ui.control_detach",
+      "category": "ui",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void ControlDetach(void* childControl)",
+      "notes": "Detaches child control from its parent ([child+0x1e0]+0xb8) via ui.children_remove_at. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418b5a00)"
+    },
+    {
+      "name": "ui.children_remove_at",
+      "category": "ui",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void ChildrenRemoveAt(void* childrenContainer, uint64_t index)",
+      "notes": "Removes child at index from a Control's +0xb8 children container. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418b6720)"
+    },
+    {
+      "name": "ui.event_list_get_ctrl",
+      "category": "ui",
+      "kind": "code",
+      "rva": null,
+      "va": null,
+      "expectedBytes": null,
+      "status": "unverified_3_29_3c",
+      "callingConvention": "win64",
+      "signature": "void* EventListGetCtrl(void* eventKey, void* outSharedPtr[2], uint8_t create)",
+      "notes": "Looks up or creates the EventList shared_ptr for Control event keys such as TextBox +0x6c7. (Unverified on 3.29.3c binary.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x14055ae30)"
     }
   ],
   "offsets": [
@@ -1487,7 +1643,7 @@
       "offset": "0x110",
       "type": "float[4]",
       "status": "code_shared_3_29_3c",
-      "notes": "Layout rectangle (x, y, w, h) at +0x110..+0x11c in 1600-high virtual units. (Struct layout shared with 3.29.3d code.)",
+      "notes": "HISTORICAL NOTE: +0x110 is inline vector storage in 3.29.3d, NOT (x, y, w, h). Use ui.control.rel_x/rel_y (+0x150/+0x154), ui.control_get_abs_pos (0x18b1250), and ui.control.width/height (+0x268/+0x26c) for true position and size.",
       "source": "07-spike-results.md; spikes/agent.js#L83"
     },
     {
@@ -1714,6 +1870,78 @@
       "status": "code_shared_3_29_3c",
       "notes": "Active world entity/object map. (Struct layout shared with 3.29.3d code.)",
       "source": "12-ceiling.md \u00a74"
+    },
+    {
+      "name": "ui.control.rel_x",
+      "struct": "UI::Control",
+      "offset": "0x150",
+      "type": "float",
+      "status": "code_shared_3_29_3c",
+      "notes": "Relative X coordinate scaled by +0x168 in Control::GetAbsPos (0x18b1250). (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418b1250)"
+    },
+    {
+      "name": "ui.control.rel_y",
+      "struct": "UI::Control",
+      "offset": "0x154",
+      "type": "float",
+      "status": "code_shared_3_29_3c",
+      "notes": "Relative Y coordinate scaled by +0x168 in Control::GetAbsPos (0x18b1250). (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418b1250)"
+    },
+    {
+      "name": "ui.control.width",
+      "struct": "UI::Control",
+      "offset": "0x268",
+      "type": "float",
+      "status": "code_shared_3_29_3c",
+      "notes": "Control width written by Control::SetSize (0x1906a30). (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x141906a30)"
+    },
+    {
+      "name": "ui.control.height",
+      "struct": "UI::Control",
+      "offset": "0x26c",
+      "type": "float",
+      "status": "code_shared_3_29_3c",
+      "notes": "Control height written by Control::SetSize (0x1906a30). (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x141906a30)"
+    },
+    {
+      "name": "ui.textbox.text_interface",
+      "struct": "UI::Controls::TextBox",
+      "offset": "0x298",
+      "type": "ITextInterface",
+      "status": "code_shared_3_29_3c",
+      "notes": "Text interface subobject whose vtable slot 2 (+0x10, 0x188f880) sets TextBox text and destroys the passed std::wstring. (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x14188f880)"
+    },
+    {
+      "name": "ui.textbox.changed_event_key",
+      "struct": "UI::Controls::TextBox",
+      "offset": "0x6c7",
+      "type": "uint8_t",
+      "status": "code_shared_3_29_3c",
+      "notes": "TextChanged event key fired by TextBox primary vtable slot 129 (+0x408, 0x141894e30). (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x141894e30)"
+    },
+    {
+      "name": "ui.checkbox.checked",
+      "struct": "UI::Controls::CheckBox",
+      "offset": "0x4e2",
+      "type": "uint8_t",
+      "status": "code_shared_3_29_3c",
+      "notes": "Boolean checked state byte tested by CheckBox::SetChecked (vtable slot 115, 0x1418f5710). (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418f5710)"
+    },
+    {
+      "name": "ui.checkbox.event_key",
+      "struct": "UI::Controls::CheckBox",
+      "offset": "0x418",
+      "type": "uint8_t",
+      "status": "code_shared_3_29_3c",
+      "notes": "CheckedChanged event key passed to ui.event_list_get (0x19b2b0) at 0x1418f5add. (Struct layout shared with 3.29.3d code.)",
+      "source": "Game.exe 3.29.3d static disassembly (0x1418f5add)"
     }
   ],
   "constants": {

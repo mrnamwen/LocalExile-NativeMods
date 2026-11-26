@@ -6,7 +6,7 @@
 //      while unguarded 0xE06D7363 exceptions pass straight through (EXCEPTION_CONTINUE_SEARCH).
 //   4. 15-byte StateStack::PassA prologue inline detour + trampoline + unhook works on Win64.
 //   5. Off-game-thread hostfxr.dll -> .NET 10 CoreCLR -> LocalExile.Client.Host.NativeEntryPoint.Initialize
-//      boots ClientHostRuntime, loads 3.29.3d.json (110 symbols) & harvest-garden.Client.dll in a
+//      boots ClientHostRuntime, loads 3.29.3d.json (122 symbols) & harvest-garden.Client.dll in a
 //      collectible ALC, runs 5 frame ticks, verifies diagnostics, and exits 0.
 
 #define WIN32_LEAN_AND_MEAN
@@ -325,7 +325,7 @@ int main() {
     SMOKE_CHECK(conn_tok == 0ull);
     std::printf("[r1_wine_smoke] Live file overlay dir (%zu bytes), connection token API & looping audio C ABI verified!\n", ui_size);
 
-    // 7. Verify shared diagnostic log confirms CoreCLR + JsonAddressLibrary (110 symbols) +
+    // 7. Verify shared diagnostic log confirms CoreCLR + JsonAddressLibrary (122 symbols) +
     //    ClientModLoader (harvest-garden.Client.dll in collectible ALC) + 5 managed frame ticks!
     std::string log_contents;
     {
@@ -341,7 +341,7 @@ int main() {
     }
     SMOKE_CHECK(log_contents.find("NativeEntryPoint.Initialize(nm_abi_table_t*) returned 0") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded JsonAddressLibrary") != std::string::npos);
-    SMOKE_CHECK(log_contents.find("symbols=110") != std::string::npos);
+    SMOKE_CHECK(log_contents.find("symbols=122") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded client mod 'harvest-garden'") != std::string::npos);
     SMOKE_CHECK(log_contents.find("collectibleAlc=True") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Managed frame tick #1") != std::string::npos);

@@ -100,6 +100,17 @@ std::vector<uint8_t> encode_poe_ruleset_wire(uint32_t ruleset_id, const uint8_t*
     return out;
 }
 
+std::vector<uint8_t> encode_poe_raw_wire(uint16_t opcode, const uint8_t* payload, uint32_t length) {
+    std::vector<uint8_t> out;
+    out.reserve(2 + length);
+    out.push_back(static_cast<uint8_t>((opcode >> 8) & 0xFFu));
+    out.push_back(static_cast<uint8_t>(opcode & 0xFFu));
+    if (length > 0 && payload != nullptr) {
+        out.insert(out.end(), payload, payload + length);
+    }
+    return out;
+}
+
 #if defined(_WIN32)
 
 struct WStringView {
@@ -139,6 +150,10 @@ using FsReadWholeFn       = FsReadResult*(NM_CALL*)(void* fs, FsReadResult* out,
 using UiControlLoadFn     = void(NM_CALL*)(void* control, const void* wstring_path);
 using ChatListenerFn      = void(NM_CALL*)(void* panel, void* message);
 using RulesetS2cFilterFn  = uint8_t(NM_CALL*)(void* client, void** msg_ptr_ptr);
+using MessagePumpFn       = void(NM_CALL*)(void* pump, void* stream);
+using RegisterGroupFn     = void(NM_CALL*)(void* pump, void* handler_group);
+using TbTextChangedFn     = void(NM_CALL*)(void* textbox);
+using TbKeyDownFn         = void(NM_CALL*)(void* textbox, void* input_event);
 
 // Active global pointers shared by Win64 detours (set on install, cleared on reset).
 std::atomic<OverlayAndChannels*> g_live_overlay{nullptr};
@@ -152,6 +167,13 @@ std::atomic<FsReadWholeFn>       g_orig_fs_read_v5{nullptr};
 std::atomic<UiControlLoadFn>     g_orig_ui_control_load{nullptr};
 std::atomic<ChatListenerFn>      g_orig_chat_listener{nullptr};
 std::atomic<RulesetS2cFilterFn>  g_orig_ruleset_s2c{nullptr};
+std::atomic<MessagePumpFn>       g_orig_message_pump{nullptr};
+std::atomic<RegisterGroupFn>     g_register_handler_group{nullptr};
+std::atomic<TbTextChangedFn>     g_orig_tb_text_changed{nullptr};
+std::atomic<TbKeyDownFn>         g_orig_tb_key_down{nullptr};
+std::atomic<void*>               g_last_registered_pump{nullptr};
+std::mutex                       g_pumps_mutex;
+std::unordered_set<void*>        g_registered_pumps;
 std::atomic<void*>               g_captured_ui_root{nullptr};
 std::atomic<bool>                g_trace_files{false};
 std::atomic<uint64_t>            g_cached_app_global_addr{0};
@@ -322,7 +344,8 @@ uint8_t NM_CALL detour_fs_exists(void* fs, const WStringView* path) {
     auto orig = g_orig_fs_exists.load(std::memory_order_acquire);
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && path && path->ptr && path->len > 0 && path->len < 4096) {
-        const OverlayIndex* idx = ov->get_active_index();
+        auto idx_guard = ov->acquire_index();
+        const OverlayIndex* idx = idx_guard.get();
         if (idx && !idx->empty) {
             const bool tracing = g_trace_files.load(std::memory_order_relaxed);
             bool candidate = idx->has_unfiltered_callbacks;
@@ -356,7 +379,8 @@ uint64_t NM_CALL detour_fs_size(void* fs, const uint64_t* path_hash) {
     auto orig = g_orig_fs_size.load(std::memory_order_acquire);
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && path_hash) {
-        const OverlayIndex* idx = ov->get_active_index();
+        auto idx_guard = ov->acquire_index();
+        const OverlayIndex* idx = idx_guard.get();
         if (idx && !idx->empty) {
             ScopedFsReentrancyGuard guard;
             if (guard.entered) {
@@ -384,7 +408,8 @@ uint64_t NM_CALL detour_fs_read_range(
     auto orig = g_orig_fs_read_range.load(std::memory_order_acquire);
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && path_hash) {
-        const OverlayIndex* idx = ov->get_active_index();
+        auto idx_guard = ov->acquire_index();
+        const OverlayIndex* idx = idx_guard.get();
         if (idx && !idx->empty) {
             ScopedFsReentrancyGuard guard;
             if (guard.entered) {
@@ -418,7 +443,8 @@ FsReadResult* serve_whole_file_common(
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     auto* alloc = g_live_alloc.load(std::memory_order_acquire);
     if (ov && alloc && out && path_hash) {
-        const OverlayIndex* idx = ov->get_active_index();
+        auto idx_guard = ov->acquire_index();
+        const OverlayIndex* idx = idx_guard.get();
         if (idx && !idx->empty) {
             ScopedFsReentrancyGuard guard;
             if (guard.entered) {
@@ -492,10 +518,11 @@ void NM_CALL detour_chat_panel_listener(void* panel, void* message) {
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && message) {
         const std::string text = read_msvc_wstring_utf8(static_cast<const uint8_t*>(message) + 0x20);
-        if (text.size() >= 5 && std::strncmp(text.c_str(), NM_CHAT_FALLBACK_PREFIX, 5) == 0) {
+        const bool is_nm = text.size() >= 5 && std::strncmp(text.c_str(), NM_CHAT_FALLBACK_PREFIX, 5) == 0;
+        if (is_nm || ov->has_chat_handlers()) {
             const std::string sender = read_msvc_wstring_utf8(message);
             if (ov->dispatch_chat_rx(sender.c_str(), text.c_str()) != 0) {
-                logger_logf("INFO", "[NET] Intercepted S->C ##NM chat channel message (len=%zu)", text.size());
+                logger_logf("INFO", "[NET] Intercepted S->C chat message (len=%zu, nm_prefix=%d)", text.size(), is_nm ? 1 : 0);
                 return;
             }
         }
@@ -503,6 +530,56 @@ void NM_CALL detour_chat_panel_listener(void* panel, void* message) {
     auto orig = g_orig_chat_listener.load(std::memory_order_acquire);
     if (orig) {
         orig(panel, message);
+    }
+}
+
+// --- Network 0x02FC+ HandlerGroup & MessagePump Detour ---
+
+void* NM_CALL nm_handler_group_dtor(void* self, uint64_t /*flags*/) { return self; }
+
+uint8_t NM_CALL nm_handler_group_on_message(void* /*self*/, uint16_t opcode, void* stream) {
+    if (opcode < NM_OPCODE_RESERVED_MIN) {
+        return 0;
+    }
+    auto* ov = g_live_overlay.load(std::memory_order_acquire);
+    if (!ov || !ov->has_opcode_handlers()) {
+        return 0;
+    }
+    int32_t handled = 0;
+    (void)ov->dispatch_opcode_rx(opcode, stream, nullptr, 0, &handled);
+    return handled ? 1 : 0;
+}
+
+void* g_nm_handler_group_vtable[2] = {
+    reinterpret_cast<void*>(&nm_handler_group_dtor),
+    reinterpret_cast<void*>(&nm_handler_group_on_message),
+};
+
+struct NmMessageHandlerGroup {
+    void** vtable;
+} g_nm_handler_group{g_nm_handler_group_vtable};
+
+void NM_CALL detour_network_message_pump(void* pump, void* stream) {
+    if (pump && g_last_registered_pump.load(std::memory_order_acquire) != pump) {
+        auto reg_fn = g_register_handler_group.load(std::memory_order_acquire);
+        if (reg_fn) {
+            bool need_register = false;
+            {
+                std::lock_guard<std::mutex> lock(g_pumps_mutex);
+                if (g_registered_pumps.insert(pump).second) {
+                    need_register = true;
+                }
+            }
+            if (need_register) {
+                reg_fn(pump, &g_nm_handler_group);
+                logger_logf("INFO", "[NET] Registered 0x02FC+ HandlerGroup on MessagePump %p", pump);
+            }
+            g_last_registered_pump.store(pump, std::memory_order_release);
+        }
+    }
+    auto orig = g_orig_message_pump.load(std::memory_order_acquire);
+    if (orig) {
+        orig(pump, stream);
     }
 }
 
@@ -542,13 +619,129 @@ struct UiClickHandlerRecord {
     void*                  user_data;
 };
 
-std::mutex                                      g_ui_handlers_mutex;
-uint64_t                                        g_ui_next_token = 1;
-std::vector<UiClickHandlerRecord*>              g_ui_handlers;
-std::unordered_map<void*, UiClickHandlerRecord*> g_ui_button_slots;
-std::mutex                                      g_ui_windows_mutex;
-void*                                           g_ui_windows_root = nullptr;
-std::unordered_map<std::string, void*>          g_ui_loaded_windows;
+struct UiWindowCacheKey {
+    void*       parent;
+    std::string path;
+    bool operator==(const UiWindowCacheKey& o) const {
+        return parent == o.parent && path == o.path;
+    }
+};
+struct UiWindowCacheKeyHash {
+    size_t operator()(const UiWindowCacheKey& k) const {
+        const size_t h1 = std::hash<void*>{}(k.parent);
+        const size_t h2 = std::hash<std::string>{}(k.path);
+        return h1 ^ (h2 + 0x9e3779b97f4a7c15ull + (h1 << 6) + (h1 >> 2));
+    }
+};
+
+std::mutex                                                      g_ui_handlers_mutex;
+uint64_t                                                        g_ui_next_token = 1;
+std::vector<UiClickHandlerRecord*>                              g_ui_handlers;
+std::unordered_map<uint64_t, UiClickHandlerRecord*>             g_ui_token_map;
+std::unordered_map<void*, UiClickHandlerRecord*>                g_ui_button_slots;
+std::unordered_map<void*, UiClickHandlerRecord*>                g_ui_checkbox_slots;
+std::unordered_map<void*, UiClickHandlerRecord*>                g_ui_tb_changed_slots;
+std::unordered_map<void*, UiClickHandlerRecord*>                g_ui_tb_submitted_slots;
+nm_hook_handle_t                                                g_tb_changed_vt_hook = NM_HOOK_INVALID;
+nm_hook_handle_t                                                g_tb_submitted_vt_hook = NM_HOOK_INVALID;
+std::mutex                                                      g_ui_windows_mutex;
+void*                                                           g_ui_windows_root = nullptr;
+std::unordered_map<UiWindowCacheKey, void*, UiWindowCacheKeyHash> g_ui_loaded_windows;
+
+void NM_CALL detour_tb_text_changed(void* textbox) {
+    auto orig = g_orig_tb_text_changed.load(std::memory_order_acquire);
+    if (orig) {
+        orig(textbox);
+    }
+    if (!textbox) return;
+    nm_ui_event_callback_t cb = nullptr;
+    void* ud = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        auto it = g_ui_tb_changed_slots.find(textbox);
+        if (it != g_ui_tb_changed_slots.end() && it->second != nullptr) {
+            cb = it->second->cb;
+            ud = it->second->user_data;
+        }
+    }
+    if (cb) {
+        struct Ctx { void* ctrl; nm_ui_event_callback_t cb; void* ud; } ctx{textbox, cb, ud};
+        auto fn = [](void* raw) -> int64_t {
+            auto* c = static_cast<Ctx*>(raw);
+            c->cb(c->ctrl, c->ud);
+            return 0;
+        };
+        nm_exception_info_t ex{};
+        (void)invoke_guarded(fn, &ctx, nullptr, &ex);
+    }
+}
+
+void NM_CALL detour_tb_key_down(void* textbox, void* input_event) {
+    auto orig = g_orig_tb_key_down.load(std::memory_order_acquire);
+    if (orig) {
+        orig(textbox, input_event);
+    }
+    if (!textbox || !input_event || !is_ptr_readable(input_event, 8)) return;
+    const auto* ev_bytes = static_cast<const uint8_t*>(input_event);
+    const uint8_t event_kind = ev_bytes[0];
+    uint32_t vk = 0;
+    std::memcpy(&vk, ev_bytes + 4, sizeof(vk));
+    if (event_kind != 0 || vk != 0x0Du) { // VK_RETURN key down
+        return;
+    }
+
+    nm_ui_event_callback_t cb = nullptr;
+    void* ud = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        auto it = g_ui_tb_submitted_slots.find(textbox);
+        if (it != g_ui_tb_submitted_slots.end() && it->second != nullptr) {
+            cb = it->second->cb;
+            ud = it->second->user_data;
+        }
+    }
+    if (cb) {
+        struct Ctx { void* ctrl; nm_ui_event_callback_t cb; void* ud; } ctx{textbox, cb, ud};
+        auto fn = [](void* raw) -> int64_t {
+            auto* c = static_cast<Ctx*>(raw);
+            c->cb(c->ctrl, c->ud);
+            return 0;
+        };
+        nm_exception_info_t ex{};
+        (void)invoke_guarded(fn, &ctx, nullptr, &ex);
+    }
+}
+
+void invalidate_control_cache_and_handlers(void* control) {
+    if (!control) return;
+    {
+        std::lock_guard<std::mutex> lock(g_ui_windows_mutex);
+        for (auto it = g_ui_loaded_windows.begin(); it != g_ui_loaded_windows.end();) {
+            if (it->second == control || it->first.parent == control) {
+                it = g_ui_loaded_windows.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        auto clear_slot = [&](std::unordered_map<void*, UiClickHandlerRecord*>& m) {
+            auto it = m.find(control);
+            if (it != m.end()) {
+                if (it->second) {
+                    it->second->cb = nullptr;
+                    it->second->user_data = nullptr;
+                }
+                m.erase(it);
+            }
+        };
+        clear_slot(g_ui_button_slots);
+        clear_slot(g_ui_checkbox_slots);
+        clear_slot(g_ui_tb_changed_slots);
+        clear_slot(g_ui_tb_submitted_slots);
+    }
+}
 
 void* NM_CALL ui_event_destroy(void* self, uint64_t /*flags*/) { return self; }
 uint64_t NM_CALL ui_event_size(void* /*self*/) { return 0x10ull; }
@@ -779,6 +972,10 @@ std::vector<uint8_t> LiveEngineHooks::encode_c2s_ruleset_packet(uint32_t ruleset
     return encode_poe_ruleset_wire(ruleset_id, payload, length);
 }
 
+std::vector<uint8_t> LiveEngineHooks::encode_c2s_raw_packet(uint16_t opcode, const uint8_t* payload, uint32_t length) {
+    return encode_poe_raw_wire(opcode, payload, length);
+}
+
 void LiveEngineHooks::register_startup_disk_overlays(
     const std::string&  dll_dir_utf8,
     OverlayAndChannels& overlay) {
@@ -869,6 +1066,7 @@ void LiveEngineHooks::install_live_hooks(
     OverlayAndChannels& overlay) {
     build_id_ = build_id;
     image_base_ = image_base;
+    hooks_ = &hooks;
 
 #if defined(_WIN32)
     if (build_id == NM_BUILD_SYNTHETIC || build_id == NM_BUILD_UNKNOWN || image_base == 0) {
@@ -926,12 +1124,21 @@ void LiveEngineHooks::install_live_hooks(
     const bool ok_ui = arm_hook("ui.control_load", reinterpret_cast<void*>(&detour_ui_control_load), g_orig_ui_control_load);
     logger_logf("INFO", "[UI] Armed Control::Load root observer (%s)", ok_ui ? "OK" : "SKIP");
 
-    // 3. Mod channel hooks (Chat S->C 0x17 + Ruleset S->C 0x2c9)
+    // 3. Mod channel hooks (Chat S->C 0x17 + Ruleset S->C 0x2c9 + MessagePump 0x02FC+)
     const bool ok_chat = arm_hook("network.chat_panel_listener", reinterpret_cast<void*>(&detour_chat_panel_listener), g_orig_chat_listener);
     const bool ok_rs   = arm_hook("rulesets.s2c_0x2c9_filter",   reinterpret_cast<void*>(&detour_ruleset_s2c_filter),  g_orig_ruleset_s2c);
-    logger_logf("INFO", "[NET] Armed live channel hooks (chat_rx=%s ruleset_0x2c9=%s)",
+    const EmbeddedSymbol* reg_grp_sym = find_symbol(build_id, "network.register_handler_group");
+    if (reg_grp_sym && reg_grp_sym->rva != 0 &&
+        is_ptr_readable(reinterpret_cast<const void*>(static_cast<uintptr_t>(image_base + reg_grp_sym->rva)), 16)) {
+        g_register_handler_group.store(
+            reinterpret_cast<RegisterGroupFn>(static_cast<uintptr_t>(image_base + reg_grp_sym->rva)),
+            std::memory_order_release);
+    }
+    const bool ok_pump = arm_hook("network.message_pump", reinterpret_cast<void*>(&detour_network_message_pump), g_orig_message_pump);
+    logger_logf("INFO", "[NET] Armed live channel hooks (chat_rx=%s ruleset_0x2c9=%s msg_pump=%s)",
                 ok_chat ? "OK" : "SKIP",
-                ok_rs   ? "OK" : "SKIP");
+                ok_rs   ? "OK" : "SKIP",
+                ok_pump ? "OK" : "SKIP");
 #else
     (void)hooks;
     (void)allocator;
@@ -944,8 +1151,19 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
         for (nm_hook_handle_t h : installed_handles_) {
             (void)hooks->remove(h);
         }
+#if defined(_WIN32)
+        if (g_tb_changed_vt_hook != NM_HOOK_INVALID) {
+            (void)hooks->remove(g_tb_changed_vt_hook);
+            g_tb_changed_vt_hook = NM_HOOK_INVALID;
+        }
+        if (g_tb_submitted_vt_hook != NM_HOOK_INVALID) {
+            (void)hooks->remove(g_tb_submitted_vt_hook);
+            g_tb_submitted_vt_hook = NM_HOOK_INVALID;
+        }
+#endif
     }
     installed_handles_.clear();
+    hooks_ = nullptr;
     build_id_ = NM_BUILD_UNKNOWN;
     image_base_ = 0;
 
@@ -961,6 +1179,15 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
     g_orig_ui_control_load.store(nullptr, std::memory_order_release);
     g_orig_chat_listener.store(nullptr, std::memory_order_release);
     g_orig_ruleset_s2c.store(nullptr, std::memory_order_release);
+    g_orig_message_pump.store(nullptr, std::memory_order_release);
+    g_register_handler_group.store(nullptr, std::memory_order_release);
+    g_orig_tb_text_changed.store(nullptr, std::memory_order_release);
+    g_orig_tb_key_down.store(nullptr, std::memory_order_release);
+    g_last_registered_pump.store(nullptr, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_pumps_mutex);
+        g_registered_pumps.clear();
+    }
     g_captured_ui_root.store(nullptr, std::memory_order_release);
     g_cached_app_global_addr.store(0, std::memory_order_release);
     for (auto& slot : g_fs_miss_cache) {
@@ -983,7 +1210,11 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
                 rec->user_data = nullptr;
             }
         }
+        g_ui_token_map.clear();
         g_ui_button_slots.clear();
+        g_ui_checkbox_slots.clear();
+        g_ui_tb_changed_slots.clear();
+        g_ui_tb_submitted_slots.clear();
     }
 #endif
 }
@@ -1014,6 +1245,240 @@ nm_status_t LiveEngineHooks::send_live_ruleset_packet(uint32_t ruleset_id, const
                     ruleset_id, length, wire.size());
     }
     return st;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::send_live_raw_packet(uint16_t opcode, const uint8_t* payload, uint32_t length) {
+    if (length > 1048576u) return NM_ERR_PAYLOAD_TOO_LARGE;
+    if (length > 0 && payload == nullptr) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    const std::vector<uint8_t> wire = encode_poe_raw_wire(opcode, payload, length);
+    const nm_status_t st = write_socket_bytes_locked(build_id_, image_base_, wire.data(), wire.size());
+    if (st == NM_OK) {
+        logger_logf("INFO", "[NET] Sent C->S raw opcode=0x%04X (%u payload / %zu wire bytes)",
+                    opcode, length, wire.size());
+    }
+    return st;
+#else
+    (void)opcode;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::stream_read(void* stream_handle, void* dst, uint64_t length) {
+    if (!stream_handle || (length > 0 && !dst)) return NM_ERR_INVALID_ARG;
+    if (length == 0) return NM_OK;
+
+    // Check synthetic in-memory stream first (used by nm_dispatch_opcode_rx & tests).
+    uint64_t maybe_magic = 0;
+    std::memcpy(&maybe_magic, stream_handle, sizeof(maybe_magic));
+    if (maybe_magic == 0x4E4D53545245414Dull) {
+        auto* ss = static_cast<SyntheticPacketStream*>(stream_handle);
+        if (ss->cursor > ss->size || length > (ss->size - ss->cursor)) {
+            return NM_ERR_BUFFER_TOO_SMALL;
+        }
+        if (ss->data == nullptr) return NM_ERR_INVALID_ARG;
+        std::memcpy(dst, ss->data + ss->cursor, static_cast<size_t>(length));
+        ss->cursor += length;
+        return NM_OK;
+    }
+
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_read = find_symbol(build_id_, "network.stream_reader");
+    if (!sym_read || sym_read->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    struct StreamCtx {
+        void*    stream;
+        void*    dst;
+        uint64_t len;
+        uint64_t fn_addr;
+    } ctx{stream_handle, dst, length, image_base_ + sym_read->rva};
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<StreamCtx*>(raw);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->stream) + 0x252, 1)) return -1;
+        using StreamReadFn = void*(NM_CALL*)(void*, void*, uint64_t);
+        reinterpret_cast<StreamReadFn>(static_cast<uintptr_t>(c->fn_addr))(c->stream, c->dst, c->len);
+        const uint8_t err = *reinterpret_cast<const uint8_t*>(static_cast<const uint8_t*>(c->stream) + 0x252);
+        return (err == 0) ? 0 : -2;
+    };
+
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK) return st;
+    if (rc == -2) return NM_ERR_BUFFER_TOO_SMALL;
+    return (rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::files_read_stock(
+    const char*          virtual_path_utf8,
+    OverlayAndChannels&  overlay,
+    const GameAllocator& allocator,
+    uint8_t**            out_data,
+    size_t*              out_size) {
+    if (!virtual_path_utf8 || virtual_path_utf8[0] == '\0' || !out_data || !out_size) {
+        return NM_ERR_INVALID_ARG;
+    }
+    *out_data = nullptr;
+    *out_size = 0;
+
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_hash_reg = find_symbol(build_id_, "files.hash_and_register_path");
+    const EmbeddedSymbol* sym_holder   = find_symbol(build_id_, "files.filesystem_holder_get");
+    const EmbeddedSymbol* sym_read     = find_symbol(build_id_, "files.read_whole_file");
+    const EmbeddedSymbol* sym_str_dtor = find_symbol(build_id_, "runtime.string_destroy");
+    if (!sym_hash_reg || !sym_holder || !sym_read ||
+        sym_hash_reg->rva == 0 || sym_holder->rva == 0 || sym_read->rva == 0) {
+        return NM_ERR_SYMBOL_NOT_FOUND;
+    }
+
+    const std::string norm = OverlayAndChannels::normalize_virtual_path(virtual_path_utf8);
+    if (norm.empty()) return NM_ERR_INVALID_ARG;
+
+    auto orig_read = g_orig_fs_read_whole.load(std::memory_order_acquire);
+    const uint64_t read_addr = orig_read
+                                   ? static_cast<uint64_t>(reinterpret_cast<uintptr_t>(orig_read))
+                                   : (image_base_ + sym_read->rva);
+
+    struct ReadStockCtx {
+        uint64_t             hash_reg_addr;
+        uint64_t             holder_addr;
+        uint64_t             read_addr;
+        uint64_t             str_dtor_addr;
+        std::wstring         wide_path;
+        OverlayAndChannels*  overlay;
+        const GameAllocator* allocator;
+        uint8_t*             out_buf = nullptr;
+        size_t               out_len = 0;
+    } ctx{
+        image_base_ + sym_hash_reg->rva,
+        image_base_ + sym_holder->rva,
+        read_addr,
+        (sym_str_dtor && sym_str_dtor->rva) ? (image_base_ + sym_str_dtor->rva) : 0ull,
+        utf8_to_wide_hooks(norm.c_str()),
+        &overlay,
+        &allocator,
+        nullptr,
+        0,
+    };
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<ReadStockCtx*>(raw);
+        ScopedFsReentrancyGuard guard;
+
+        using HashRegFn   = uint64_t*(NM_CALL*)(uint64_t*, const WStringView*);
+        using HolderGetFn = void*(NM_CALL*)();
+        using StrDtorFn   = void(NM_CALL*)(void*);
+
+        auto hash_reg   = reinterpret_cast<HashRegFn>(static_cast<uintptr_t>(c->hash_reg_addr));
+        auto holder_get = reinterpret_cast<HolderGetFn>(static_cast<uintptr_t>(c->holder_addr));
+        auto read_whole = reinterpret_cast<FsReadWholeFn>(static_cast<uintptr_t>(c->read_addr));
+        auto str_dtor   = c->str_dtor_addr
+                              ? reinterpret_cast<StrDtorFn>(static_cast<uintptr_t>(c->str_dtor_addr))
+                              : nullptr;
+
+        WStringView wv{c->wide_path.c_str(), static_cast<uint64_t>(c->wide_path.size())};
+        uint64_t path_hash = 0;
+        hash_reg(&path_hash, &wv);
+        if (path_hash == 0) return -1;
+
+        void* holder = holder_get();
+        if (!holder || !is_ptr_readable(static_cast<const uint8_t*>(holder) + 0x08, sizeof(void*))) return -2;
+        void* fs = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(holder) + 0x08);
+        if (!fs) return -3;
+
+        FsReadResult res{};
+        std::memset(&res, 0, sizeof(res));
+        res.err_cap = 15;
+        read_whole(fs, &res, &path_hash);
+
+        if (res.ok != 0 && res.begin != nullptr && res.end >= res.begin) {
+            const size_t len = static_cast<size_t>(res.end - res.begin);
+            c->out_buf = c->overlay->allocate_owned_buffer_copy(res.begin, len);
+            c->out_len = len;
+
+            size_t align = 16;
+            if (is_ptr_readable(res.begin - sizeof(nm_game_alloc_header_t), sizeof(nm_game_alloc_header_t))) {
+                const auto* hdr = reinterpret_cast<const nm_game_alloc_header_t*>(
+                    res.begin - sizeof(nm_game_alloc_header_t));
+                if (hdr->log2_align >= 4 && hdr->log2_align <= 12) {
+                    align = size_t{1} << hdr->log2_align;
+                }
+            }
+            (void)c->allocator->free(res.begin, align);
+            if (str_dtor && res.err_cap > 15) {
+                str_dtor(res.err_buf);
+            }
+            return 0;
+        }
+
+        if (str_dtor && res.err_cap > 15) {
+            str_dtor(res.err_buf);
+        }
+        return -4;
+    };
+
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK) return st;
+    if (rc == -4) return NM_ERR_SYMBOL_NOT_FOUND;
+    if (rc != 0 || !ctx.out_buf) return NM_ERR_GAME_EXCEPTION;
+    *out_data = ctx.out_buf;
+    *out_size = ctx.out_len;
+    return NM_OK;
+#else
+    (void)overlay;
+    (void)allocator;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::files_invalidate(const char* virtual_path_utf8) {
+    if (!virtual_path_utf8 || virtual_path_utf8[0] == '\0') return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_mgr = find_symbol(build_id_, "files.hot_reload_singleton");
+    const EmbeddedSymbol* sym_inv = find_symbol(build_id_, "files.hot_reload_invalidate_ext");
+    if (!sym_mgr || !sym_inv || sym_mgr->rva == 0 || sym_inv->rva == 0) {
+        return NM_ERR_SYMBOL_NOT_FOUND;
+    }
+
+    const std::string norm = OverlayAndChannels::normalize_virtual_path(virtual_path_utf8);
+    struct InvCtx {
+        uint64_t     mgr_addr;
+        uint64_t     inv_addr;
+        std::wstring wide_path;
+    } ctx{
+        image_base_ + sym_mgr->rva,
+        image_base_ + sym_inv->rva,
+        utf8_to_wide_hooks(norm.c_str()),
+    };
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<InvCtx*>(raw);
+        using GetMgrFn = void*(NM_CALL*)();
+        using InvalFn  = void(NM_CALL*)(void*, const WStringView*);
+        void* mgr = reinterpret_cast<GetMgrFn>(static_cast<uintptr_t>(c->mgr_addr))();
+        if (!mgr) return -1;
+        WStringView wv{c->wide_path.c_str(), static_cast<uint64_t>(c->wide_path.size())};
+        reinterpret_cast<InvalFn>(static_cast<uintptr_t>(c->inv_addr))(mgr, &wv);
+        return 0;
+    };
+
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK) return st;
+    return (rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
 #else
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
 #endif
@@ -1060,21 +1525,20 @@ nm_status_t LiveEngineHooks::ui_get_root(void** out_root) {
 #endif
 }
 
-nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, void** out_control) {
-    if (!virtual_path_utf8 || virtual_path_utf8[0] == '\0' || !out_control) return NM_ERR_INVALID_ARG;
+nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, const char* virtual_path_utf8, void** out_control) {
+    if (!parent_control || !virtual_path_utf8 || virtual_path_utf8[0] == '\0' || !out_control) return NM_ERR_INVALID_ARG;
     *out_control = nullptr;
 #if defined(_WIN32)
-    void* root = g_captured_ui_root.load(std::memory_order_acquire);
-    if (!root || build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) {
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) {
         return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
     }
 
-    // Reuse an already-loaded native window for the same (root, path) so re-opening
-    // never triggers PoE's fatal duplicate-sibling-id exception (matches spikes/garden-demo.js).
+    void* root = g_captured_ui_root.load(std::memory_order_acquire);
     const std::string normalized_key = OverlayAndChannels::normalize_virtual_path(virtual_path_utf8);
+    const UiWindowCacheKey cache_key{parent_control, normalized_key};
     {
         std::lock_guard<std::mutex> lock(g_ui_windows_mutex);
-        if (g_ui_windows_root != root) {
+        if (root != nullptr && g_ui_windows_root != root) {
             g_ui_windows_root = root;
             g_ui_loaded_windows.clear();
             std::lock_guard<std::mutex> hlock(g_ui_handlers_mutex);
@@ -1084,67 +1548,80 @@ nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, voi
                     rec->user_data = nullptr;
                 }
             }
+            g_ui_token_map.clear();
             g_ui_button_slots.clear();
+            g_ui_checkbox_slots.clear();
+            g_ui_tb_changed_slots.clear();
+            g_ui_tb_submitted_slots.clear();
         } else {
-            auto it = g_ui_loaded_windows.find(normalized_key);
+            auto it = g_ui_loaded_windows.find(cache_key);
             if (it != g_ui_loaded_windows.end() && it->second != nullptr) {
-                if (is_control_in_parent_children(root, it->second) && is_ptr_readable(it->second, 0x200)) {
+                if (is_control_in_parent_children(parent_control, it->second) && is_ptr_readable(it->second, 0x200)) {
                     *out_control = it->second;
                     (void)ui_set_visible(it->second, 1);
-                    logger_logf("INFO", "[UI] Reused existing native window '%s' (root=%p, control=%p)",
-                                virtual_path_utf8, root, it->second);
+                    logger_logf("INFO", "[UI] Reused existing native window '%s' (parent=%p, control=%p)",
+                                virtual_path_utf8, parent_control, it->second);
                     return NM_OK;
                 }
-                logger_logf("INFO", "[UI] Cached native window '%s' (%p) no longer attached to root %p; reloading fresh",
-                            virtual_path_utf8, it->second, root);
+                logger_logf("INFO", "[UI] Cached native window '%s' (%p) no longer attached to parent %p; reloading fresh",
+                            virtual_path_utf8, it->second, parent_control);
                 g_ui_loaded_windows.erase(it);
             }
         }
     }
 
-    const EmbeddedSymbol* sym_load   = find_symbol(build_id_, "ui.control_load");
-    const EmbeddedSymbol* sym_assign = find_symbol(build_id_, "runtime.wstring_assign");
+    const EmbeddedSymbol* sym_load    = find_symbol(build_id_, "ui.control_load");
+    const EmbeddedSymbol* sym_assign  = find_symbol(build_id_, "runtime.wstring_assign");
+    const EmbeddedSymbol* sym_destroy = find_symbol(build_id_, "runtime.wstring_destroy");
     if (!sym_load || !sym_assign) {
         return NM_ERR_SYMBOL_NOT_FOUND;
     }
 
     struct CreateWinCtx {
-        void*        root;
+        void*        parent;
         uint64_t     load_addr;
         uint64_t     assign_addr;
+        uint64_t     destroy_addr;
         std::wstring wide_path;
         void*        created = nullptr;
     } ctx{
-        root,
+        parent_control,
         image_base_ + sym_load->rva,
         image_base_ + sym_assign->rva,
+        (sym_destroy && sym_destroy->rva) ? (image_base_ + sym_destroy->rva) : 0ull,
         utf8_to_wide_hooks(virtual_path_utf8),
         nullptr,
     };
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<CreateWinCtx*>(raw);
-        using LoadFn   = void(NM_CALL*)(void*, const void*);
-        using AssignFn = void*(NM_CALL*)(void*, const wchar_t*, uint64_t);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->parent) + 0xC0, 2 * sizeof(void*))) return -1;
+        using LoadFn    = void(NM_CALL*)(void*, const void*);
+        using AssignFn  = void*(NM_CALL*)(void*, const wchar_t*, uint64_t);
+        using DestroyFn = void(NM_CALL*)(void*);
 
-        auto load_fn   = reinterpret_cast<LoadFn>(static_cast<uintptr_t>(c->load_addr));
-        auto assign_fn = reinterpret_cast<AssignFn>(static_cast<uintptr_t>(c->assign_addr));
+        auto load_fn    = reinterpret_cast<LoadFn>(static_cast<uintptr_t>(c->load_addr));
+        auto assign_fn  = reinterpret_cast<AssignFn>(static_cast<uintptr_t>(c->assign_addr));
+        auto destroy_fn = c->destroy_addr
+                              ? reinterpret_cast<DestroyFn>(static_cast<uintptr_t>(c->destroy_addr))
+                              : nullptr;
 
-        // Snapshot root's child vector before Control::Load(root, &ws) so we return the
-        // actual loaded top-level control (matches spikes/garden-demo.js:10).
-        auto* root_bytes = static_cast<uint8_t*>(c->root);
-        auto* old_begin = *reinterpret_cast<uint8_t**>(root_bytes + 0xC0);
-        auto* old_end   = *reinterpret_cast<uint8_t**>(root_bytes + 0xC8);
+        auto* parent_bytes = static_cast<uint8_t*>(c->parent);
+        auto* old_begin = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC0);
+        auto* old_end   = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC8);
         const size_t old_count = (old_end >= old_begin) ? static_cast<size_t>(old_end - old_begin) / sizeof(void*) : 0u;
 
         MsvcWString ws{};
         std::memset(&ws, 0, sizeof(ws));
         ws.cap = 7;
         assign_fn(&ws, c->wide_path.c_str(), static_cast<uint64_t>(c->wide_path.size()));
-        load_fn(c->root, &ws);
+        load_fn(c->parent, &ws);
+        if (destroy_fn) {
+            destroy_fn(&ws);
+        }
 
-        auto* new_begin = *reinterpret_cast<uint8_t**>(root_bytes + 0xC0);
-        auto* new_end   = *reinterpret_cast<uint8_t**>(root_bytes + 0xC8);
+        auto* new_begin = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC0);
+        auto* new_end   = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC8);
         const size_t new_count = (new_end >= new_begin) ? static_cast<size_t>(new_end - new_begin) / sizeof(void*) : 0u;
         if (new_count > old_count && new_end != nullptr) {
             c->created = *(reinterpret_cast<void**>(new_end) - 1);
@@ -1164,16 +1641,34 @@ nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, voi
 
     {
         std::lock_guard<std::mutex> lock(g_ui_windows_mutex);
-        g_ui_windows_root = root;
-        g_ui_loaded_windows[normalized_key] = ctx.created;
+        if (root != nullptr) g_ui_windows_root = root;
+        g_ui_loaded_windows[cache_key] = ctx.created;
     }
 
     *out_control = ctx.created;
-    logger_logf("INFO", "[UI] Loaded native window '%s' directly onto root (root=%p, control=%p)", virtual_path_utf8, root, ctx.created);
+    logger_logf("INFO", "[UI] Loaded native window '%s' onto parent=%p (control=%p)", virtual_path_utf8, parent_control, ctx.created);
     return NM_OK;
 #else
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
 #endif
+}
+
+nm_status_t LiveEngineHooks::ui_create_window(const char* virtual_path_utf8, void** out_control) {
+    if (!virtual_path_utf8 || virtual_path_utf8[0] == '\0' || !out_control) return NM_ERR_INVALID_ARG;
+    *out_control = nullptr;
+#if defined(_WIN32)
+    void* root = g_captured_ui_root.load(std::memory_order_acquire);
+    if (!root || build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) {
+        return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    }
+    return ui_create_window_in_parent(root, virtual_path_utf8, out_control);
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_create_window_into(void* parent_control, const char* virtual_path_utf8, void** out_control) {
+    return ui_create_window_in_parent(parent_control, virtual_path_utf8, out_control);
 }
 
 nm_status_t LiveEngineHooks::ui_find_child(void* parent_control, const char* dot_path_utf8, void** out_child) {
@@ -1350,9 +1845,11 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
         auto it = g_ui_button_slots.find(button_control);
         if (it != g_ui_button_slots.end() && it->second != nullptr) {
             UiClickHandlerRecord* existing = it->second;
+            g_ui_token_map.erase(existing->token);
             existing->token = g_ui_next_token++;
             existing->cb = cb;
             existing->user_data = user_data;
+            g_ui_token_map[existing->token] = existing;
             *out_token = existing->token;
             return NM_OK;
         }
@@ -1428,6 +1925,7 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
     {
         std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
         g_ui_button_slots[button_control] = rec;
+        g_ui_token_map[rec->token] = rec;
     }
 
     *out_token = rec->token;
@@ -1435,6 +1933,621 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
 #else
     (void)user_data;
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_get_rect(void* control, float* out_x, float* out_y, float* out_w, float* out_h) {
+    if (!control || !out_x || !out_y || !out_w || !out_h) return NM_ERR_INVALID_ARG;
+    *out_x = *out_y = *out_w = *out_h = 0.0f;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_pos = find_symbol(build_id_, "ui.control_get_abs_pos");
+    if (!sym_pos || sym_pos->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    struct RectCtx {
+        void*    control;
+        uint64_t pos_addr;
+        float    x = 0.0f;
+        float    y = 0.0f;
+        float    w = 0.0f;
+        float    h = 0.0f;
+    } ctx{control, image_base_ + sym_pos->rva};
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<RectCtx*>(raw);
+        if (!is_ptr_readable(c->control, 0x270)) return -1;
+        using GetAbsPosFn = float*(NM_CALL*)(void*, float*);
+        float xy[2] = {0.0f, 0.0f};
+        reinterpret_cast<GetAbsPosFn>(static_cast<uintptr_t>(c->pos_addr))(c->control, xy);
+        c->x = xy[0];
+        c->y = xy[1];
+        std::memcpy(&c->w, static_cast<const uint8_t*>(c->control) + 0x268, sizeof(float));
+        std::memcpy(&c->h, static_cast<const uint8_t*>(c->control) + 0x26C, sizeof(float));
+        return 0;
+    };
+
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK || rc != 0) return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
+    *out_x = ctx.x;
+    *out_y = ctx.y;
+    *out_w = ctx.w;
+    *out_h = ctx.h;
+    return NM_OK;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_set_position(void* control, float x, float y) {
+    if (!control) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym = find_symbol(build_id_, "ui.control_set_position");
+    if (!sym || sym->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    struct PosCtx { void* control; uint64_t addr; float x; float y; } ctx{control, image_base_ + sym->rva, x, y};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<PosCtx*>(raw);
+        if (!is_ptr_readable(c->control, 0x1E8)) return -1;
+        using SetPosFn = void(NM_CALL*)(void*, float, float);
+        reinterpret_cast<SetPosFn>(static_cast<uintptr_t>(c->addr))(c->control, c->x, c->y);
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    (void)x;
+    (void)y;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_set_size(void* control, float w, float h) {
+    if (!control) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym = find_symbol(build_id_, "ui.control_set_size");
+    if (!sym || sym->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    struct SizeCtx { void* control; uint64_t addr; float w; float h; } ctx{control, image_base_ + sym->rva, w, h};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<SizeCtx*>(raw);
+        if (!is_ptr_readable(c->control, 0x280)) return -1;
+        using SetSizeFn = void(NM_CALL*)(void*, float, float);
+        reinterpret_cast<SetSizeFn>(static_cast<uintptr_t>(c->addr))(c->control, c->w, c->h);
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    (void)w;
+    (void)h;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_set_enabled(void* control, int32_t enabled) {
+    if (!control) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+
+    struct EnableCtx { void* control; uint8_t en; } ctx{control, static_cast<uint8_t>(enabled ? 1 : 0)};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<EnableCtx*>(raw);
+        if (!is_ptr_readable(c->control, sizeof(void*))) return -1;
+        void** vtbl = *reinterpret_cast<void***>(c->control);
+        if (!vtbl || !is_ptr_readable(vtbl, 11 * sizeof(void*)) || !vtbl[10]) return -2;
+        using SetEnabledFn = void(NM_CALL*)(void*, uint8_t);
+        reinterpret_cast<SetEnabledFn>(vtbl[10])(c->control, c->en);
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    (void)enabled;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_remove_child(void* parent_control, void* child_control) {
+    if (!parent_control || !child_control) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym = find_symbol(build_id_, "ui.control_detach");
+    if (!sym || sym->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    invalidate_control_cache_and_handlers(child_control);
+
+    struct DetachCtx { void* parent; void* child; uint64_t addr; } ctx{parent_control, child_control, image_base_ + sym->rva};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<DetachCtx*>(raw);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->child) + 0x1E0, sizeof(void*))) return -1;
+        void* cur_parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->child) + 0x1E0);
+        if (cur_parent != c->parent) return -2;
+        using DetachFn = void(NM_CALL*)(void*);
+        reinterpret_cast<DetachFn>(static_cast<uintptr_t>(c->addr))(c->child);
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK) return st;
+    if (rc == -2) return NM_ERR_INVALID_ARG;
+    return (rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_destroy_control(void* control) {
+    if (!control) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    if (control == g_captured_ui_root.load(std::memory_order_acquire)) {
+        return NM_ERR_INVALID_ARG;
+    }
+
+    const EmbeddedSymbol* sym_detach = find_symbol(build_id_, "ui.control_detach");
+    const uint64_t detach_addr = (sym_detach && sym_detach->rva != 0) ? (image_base_ + sym_detach->rva) : 0ull;
+
+    invalidate_control_cache_and_handlers(control);
+
+    struct DestroyCtx { void* control; uint64_t detach_addr; } ctx{control, detach_addr};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<DestroyCtx*>(raw);
+        if (!is_ptr_readable(c->control, 0x1E8)) return -1;
+        void* parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->control) + 0x1E0);
+        if (parent != nullptr && c->detach_addr != 0) {
+            using DetachFn = void(NM_CALL*)(void*);
+            reinterpret_cast<DetachFn>(static_cast<uintptr_t>(c->detach_addr))(c->control);
+        }
+        void** vtbl = *reinterpret_cast<void***>(c->control);
+        if (!vtbl || !is_ptr_readable(vtbl, 9 * sizeof(void*)) || !vtbl[8]) return -2;
+        using DeletingDtorFn = void*(NM_CALL*)(void*, uint32_t);
+        reinterpret_cast<DeletingDtorFn>(vtbl[8])(c->control, 1u);
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_textbox_get_text(void* textbox_control, char* out_utf8, size_t capacity, size_t* out_length) {
+    if (!textbox_control) return NM_ERR_INVALID_ARG;
+    if (out_length) *out_length = 0;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+
+    struct GetTextCtx {
+        void*       ctrl;
+        std::string text;
+    } ctx{textbox_control, {}};
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<GetTextCtx*>(raw);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->ctrl) + 0x338, sizeof(MsvcWString))) return -1;
+        c->text = read_msvc_wstring_utf8(static_cast<const uint8_t*>(c->ctrl) + 0x338);
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK || rc != 0) return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
+
+    if (out_length) *out_length = ctx.text.size();
+    if (!out_utf8 && capacity == 0) return NM_OK;
+    if (!out_utf8 || capacity < ctx.text.size() + 1) return NM_ERR_BUFFER_TOO_SMALL;
+    if (!ctx.text.empty()) std::memcpy(out_utf8, ctx.text.data(), ctx.text.size());
+    out_utf8[ctx.text.size()] = '\0';
+    return NM_OK;
+#else
+    (void)out_utf8;
+    (void)capacity;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_textbox_set_text(void* textbox_control, const char* text_utf8) {
+    if (!textbox_control || !text_utf8) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_assign = find_symbol(build_id_, "runtime.wstring_assign");
+    if (!sym_assign || sym_assign->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    struct SetTextCtx {
+        void*        ctrl;
+        uint64_t     assign_addr;
+        std::wstring wide;
+    } ctx{textbox_control, image_base_ + sym_assign->rva, utf8_to_wide_hooks(text_utf8)};
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<SetTextCtx*>(raw);
+        void* sub = static_cast<uint8_t*>(c->ctrl) + 0x298;
+        if (!is_ptr_readable(sub, sizeof(void*))) return -1;
+        void** vtbl = *reinterpret_cast<void***>(sub);
+        if (!vtbl || !is_ptr_readable(vtbl, 3 * sizeof(void*)) || !vtbl[2]) return -2;
+
+        using AssignFn  = void*(NM_CALL*)(void*, const wchar_t*, uint64_t);
+        using SetTextFn = void(NM_CALL*)(void*, void*);
+        auto assign_fn = reinterpret_cast<AssignFn>(static_cast<uintptr_t>(c->assign_addr));
+        auto set_text  = reinterpret_cast<SetTextFn>(vtbl[2]);
+
+        MsvcWString ws{};
+        std::memset(&ws, 0, sizeof(ws));
+        ws.cap = 7;
+        assign_fn(&ws, c->wide.c_str(), static_cast<uint64_t>(c->wide.size()));
+        // 0x14188f880 moves & destroys ws internally — do NOT call wstring_destroy!
+        set_text(sub, &ws);
+        return 0;
+    };
+
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_textbox_subscribe_changed(
+    void*                  textbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token) {
+    if (!textbox_control || !cb || !out_token) return NM_ERR_INVALID_ARG;
+    *out_token = 0;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0 || !hooks_) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_vt = find_symbol(build_id_, "ui.vtable_textbox");
+    if (!sym_vt || sym_vt->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        if (g_tb_changed_vt_hook == NM_HOOK_INVALID) {
+            void* orig = nullptr;
+            const nm_status_t hst = hooks_->install_vtable(
+                reinterpret_cast<void*>(static_cast<uintptr_t>(image_base_ + sym_vt->rva)),
+                129u,
+                reinterpret_cast<void*>(&detour_tb_text_changed),
+                &orig,
+                &g_tb_changed_vt_hook);
+            if (hst != NM_OK) return hst;
+            g_orig_tb_text_changed.store(reinterpret_cast<TbTextChangedFn>(orig), std::memory_order_release);
+        }
+
+        auto it = g_ui_tb_changed_slots.find(textbox_control);
+        if (it != g_ui_tb_changed_slots.end() && it->second != nullptr) {
+            g_ui_token_map.erase(it->second->token);
+            it->second->token = g_ui_next_token++;
+            it->second->cb = cb;
+            it->second->user_data = user_data;
+            g_ui_token_map[it->second->token] = it->second;
+            *out_token = it->second->token;
+            return NM_OK;
+        }
+        auto* rec = new UiClickHandlerRecord{g_ui_next_token++, textbox_control, cb, user_data};
+        g_ui_handlers.push_back(rec);
+        g_ui_tb_changed_slots[textbox_control] = rec;
+        g_ui_token_map[rec->token] = rec;
+        *out_token = rec->token;
+    }
+    return NM_OK;
+#else
+    (void)user_data;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_textbox_subscribe_submitted(
+    void*                  textbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token) {
+    if (!textbox_control || !cb || !out_token) return NM_ERR_INVALID_ARG;
+    *out_token = 0;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0 || !hooks_) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_vt = find_symbol(build_id_, "ui.vtable_textbox");
+    if (!sym_vt || sym_vt->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        if (g_tb_submitted_vt_hook == NM_HOOK_INVALID) {
+            void* orig = nullptr;
+            const nm_status_t hst = hooks_->install_vtable(
+                reinterpret_cast<void*>(static_cast<uintptr_t>(image_base_ + sym_vt->rva)),
+                72u,
+                reinterpret_cast<void*>(&detour_tb_key_down),
+                &orig,
+                &g_tb_submitted_vt_hook);
+            if (hst != NM_OK) return hst;
+            g_orig_tb_key_down.store(reinterpret_cast<TbKeyDownFn>(orig), std::memory_order_release);
+        }
+
+        auto it = g_ui_tb_submitted_slots.find(textbox_control);
+        if (it != g_ui_tb_submitted_slots.end() && it->second != nullptr) {
+            g_ui_token_map.erase(it->second->token);
+            it->second->token = g_ui_next_token++;
+            it->second->cb = cb;
+            it->second->user_data = user_data;
+            g_ui_token_map[it->second->token] = it->second;
+            *out_token = it->second->token;
+            return NM_OK;
+        }
+        auto* rec = new UiClickHandlerRecord{g_ui_next_token++, textbox_control, cb, user_data};
+        g_ui_handlers.push_back(rec);
+        g_ui_tb_submitted_slots[textbox_control] = rec;
+        g_ui_token_map[rec->token] = rec;
+        *out_token = rec->token;
+    }
+    return NM_OK;
+#else
+    (void)user_data;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_checkbox_get_checked(void* checkbox_control, int32_t* out_checked) {
+    if (!checkbox_control || !out_checked) return NM_ERR_INVALID_ARG;
+    *out_checked = 0;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    struct GetCtx { void* ctrl; int32_t checked = 0; } ctx{checkbox_control, 0};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<GetCtx*>(raw);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->ctrl) + 0x4E2, 1)) return -1;
+        c->checked = (*reinterpret_cast<const uint8_t*>(static_cast<const uint8_t*>(c->ctrl) + 0x4E2) != 0) ? 1 : 0;
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK || rc != 0) return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
+    *out_checked = ctx.checked;
+    return NM_OK;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_checkbox_set_checked(void* checkbox_control, int32_t checked) {
+    if (!checkbox_control) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    struct SetCtx { void* ctrl; uint8_t val; } ctx{checkbox_control, static_cast<uint8_t>(checked ? 1 : 0)};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<SetCtx*>(raw);
+        if (!is_ptr_readable(c->ctrl, sizeof(void*))) return -1;
+        void** vtbl = *reinterpret_cast<void***>(c->ctrl);
+        if (!vtbl || !is_ptr_readable(vtbl, 116 * sizeof(void*)) || !vtbl[115]) return -2;
+        using SetCheckedFn = void(NM_CALL*)(void*, uint8_t, uint8_t);
+        reinterpret_cast<SetCheckedFn>(vtbl[115])(c->ctrl, c->val, 1);
+        return 0;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+#else
+    (void)checked;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_checkbox_subscribe_changed(
+    void*                  checkbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token) {
+    if (!checkbox_control || !cb || !out_token) return NM_ERR_INVALID_ARG;
+    *out_token = 0;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedSymbol* sym_get  = find_symbol(build_id_, "ui.event_list_get");
+    const EmbeddedSymbol* sym_grow = find_symbol(build_id_, "ui.event_list_grow");
+    if (!sym_get || !sym_grow || sym_get->rva == 0 || sym_grow->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        auto it = g_ui_checkbox_slots.find(checkbox_control);
+        if (it != g_ui_checkbox_slots.end() && it->second != nullptr) {
+            g_ui_token_map.erase(it->second->token);
+            it->second->token = g_ui_next_token++;
+            it->second->cb = cb;
+            it->second->user_data = user_data;
+            g_ui_token_map[it->second->token] = it->second;
+            *out_token = it->second->token;
+            return NM_OK;
+        }
+    }
+
+    auto* rec = new UiClickHandlerRecord{};
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        rec->token = g_ui_next_token++;
+        rec->control = checkbox_control;
+        rec->cb = cb;
+        rec->user_data = user_data;
+        g_ui_handlers.push_back(rec);
+    }
+
+    struct SubCtx {
+        void*                 checkbox;
+        UiClickHandlerRecord* rec;
+        uint64_t              get_addr;
+        uint64_t              grow_addr;
+    } ctx{checkbox_control, rec, image_base_ + sym_get->rva, image_base_ + sym_grow->rva};
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<SubCtx*>(raw);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->checkbox) + 0x418, sizeof(void*))) return -2;
+        using EventGetFn  = void*(NM_CALL*)(void*, void*, uint8_t);
+        using EventGrowFn = void(NM_CALL*)(void*);
+        using StepFn      = uint64_t(NM_CALL*)(void*);
+
+        auto event_get  = reinterpret_cast<EventGetFn>(static_cast<uintptr_t>(c->get_addr));
+        auto event_grow = reinterpret_cast<EventGrowFn>(static_cast<uintptr_t>(c->grow_addr));
+
+        void* shared[2] = {nullptr, nullptr};
+        event_get(static_cast<uint8_t*>(c->checkbox) + 0x418, shared, 1);
+        auto* list = static_cast<uint8_t*>(shared[0]);
+        if (!list) return -1;
+
+        auto* start = *reinterpret_cast<uint8_t**>(list + 8);
+        auto* p = start;
+        for (int n = 0; n < 64; ++n) {
+            void* vt = *reinterpret_cast<void**>(p);
+            if (!vt) break;
+            auto step_fn = reinterpret_cast<StepFn>(reinterpret_cast<void**>(vt)[1]);
+            p += step_fn(p);
+        }
+
+        const uint64_t cap = (start == (list + 0x10))
+                                 ? 0x68ull
+                                 : *reinterpret_cast<uint64_t*>(list + 0x10);
+        if (static_cast<int64_t>(cap) - static_cast<int64_t>(p - start) < 0x18) {
+            event_grow(list);
+            auto* moved = *reinterpret_cast<uint8_t**>(list + 8);
+            p = moved + (p - start);
+            start = moved;
+        }
+
+        *reinterpret_cast<void**>(p)      = static_cast<void*>(g_ui_event_vtable);
+        *reinterpret_cast<void**>(p + 8)  = static_cast<void*>(c->rec);
+        *reinterpret_cast<void**>(p + 16) = nullptr;
+        return 0;
+    };
+
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK || rc != 0) {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        rec->cb = nullptr;
+        rec->user_data = nullptr;
+        return NM_ERR_GAME_EXCEPTION;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+        g_ui_checkbox_slots[checkbox_control] = rec;
+        g_ui_token_map[rec->token] = rec;
+    }
+
+    *out_token = rec->token;
+    return NM_OK;
+#else
+    (void)user_data;
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+nm_status_t LiveEngineHooks::ui_unsubscribe(uint64_t token) {
+    if (token == 0) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
+    auto it = g_ui_token_map.find(token);
+    if (it == g_ui_token_map.end() || it->second == nullptr) {
+        return NM_ERR_INVALID_ARG;
+    }
+    UiClickHandlerRecord* rec = it->second;
+    if (rec->token == token) {
+        rec->cb = nullptr;
+        rec->user_data = nullptr;
+    }
+    g_ui_token_map.erase(it);
+    return NM_OK;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
+#if !defined(_WIN32)
+namespace {
+std::mutex  g_stub_clipboard_mutex;
+std::string g_stub_clipboard_utf8;
+} // namespace
+#endif
+
+nm_status_t LiveEngineHooks::clipboard_get_text(char* out_utf8, size_t capacity, size_t* out_length) {
+    if (out_length) *out_length = 0;
+#if defined(_WIN32)
+    std::string utf8;
+    if (OpenClipboard(nullptr)) {
+        HANDLE h = GetClipboardData(CF_UNICODETEXT);
+        if (h) {
+            const auto* w = static_cast<const wchar_t*>(GlobalLock(h));
+            if (w) {
+                utf8 = wview_to_utf8(w, std::wcslen(w));
+                GlobalUnlock(h);
+            }
+        }
+        CloseClipboard();
+    }
+    if (out_length) *out_length = utf8.size();
+    if (!out_utf8 && capacity == 0) return NM_OK;
+    if (!out_utf8 || capacity < utf8.size() + 1) return NM_ERR_BUFFER_TOO_SMALL;
+    if (!utf8.empty()) std::memcpy(out_utf8, utf8.data(), utf8.size());
+    out_utf8[utf8.size()] = '\0';
+    return NM_OK;
+#else
+    std::lock_guard<std::mutex> lock(g_stub_clipboard_mutex);
+    if (out_length) *out_length = g_stub_clipboard_utf8.size();
+    if (!out_utf8 && capacity == 0) return NM_OK;
+    if (!out_utf8 || capacity < g_stub_clipboard_utf8.size() + 1) return NM_ERR_BUFFER_TOO_SMALL;
+    if (!g_stub_clipboard_utf8.empty()) {
+        std::memcpy(out_utf8, g_stub_clipboard_utf8.data(), g_stub_clipboard_utf8.size());
+    }
+    out_utf8[g_stub_clipboard_utf8.size()] = '\0';
+    return NM_OK;
+#endif
+}
+
+nm_status_t LiveEngineHooks::clipboard_set_text(const char* text_utf8) {
+    if (!text_utf8) return NM_ERR_INVALID_ARG;
+#if defined(_WIN32)
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, text_utf8, -1, nullptr, 0);
+    if (needed <= 0) return NM_ERR_INVALID_ARG;
+    const size_t bytes = static_cast<size_t>(needed) * sizeof(wchar_t);
+    HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!hmem) return NM_ERR_ALLOC_FAILED;
+    auto* dst = static_cast<wchar_t*>(GlobalLock(hmem));
+    if (!dst) {
+        GlobalFree(hmem);
+        return NM_ERR_ALLOC_FAILED;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, text_utf8, -1, dst, needed);
+    GlobalUnlock(hmem);
+
+    if (!OpenClipboard(nullptr)) {
+        GlobalFree(hmem);
+        return NM_ERR_GAME_EXCEPTION;
+    }
+    EmptyClipboard();
+    if (!SetClipboardData(CF_UNICODETEXT, hmem)) {
+        CloseClipboard();
+        GlobalFree(hmem);
+        return NM_ERR_GAME_EXCEPTION;
+    }
+    CloseClipboard();
+    return NM_OK;
+#else
+    std::lock_guard<std::mutex> lock(g_stub_clipboard_mutex);
+    g_stub_clipboard_utf8 = text_utf8;
+    return NM_OK;
 #endif
 }
 

@@ -32,16 +32,37 @@ bool is_safe_relative_virtual_path(const std::string& normalized) {
     return true;
 }
 
-bool is_poe_utf16_text_extension(const std::string& normalized_path) {
+enum class PoeTextFormat {
+    None,
+    Utf16LeBomCrlf,
+    Utf16LeNoBomCrlf,
+};
+
+// Matches ClientTextEncoding in FileOverlayTypes.cs:
+//   - 12 BOM + CRLF extensions: .ui .ot .otc .it .itc .ao .aoc .act .epk .ddt .pet .trl
+//   -  3 no-BOM + CRLF extensions: .sm .mat .amd
+PoeTextFormat classify_poe_utf16_text_extension(const std::string& normalized_path) {
     const size_t dot = normalized_path.rfind('.');
-    if (dot == std::string::npos) return false;
+    if (dot == std::string::npos) return PoeTextFormat::None;
     const std::string_view ext(normalized_path.data() + dot, normalized_path.size() - dot);
-    return ext == ".ui" || ext == ".ot" || ext == ".ao" || ext == ".act" || ext == ".amd" || ext == ".sm";
+    if (ext == ".ui" || ext == ".ot" || ext == ".otc" || ext == ".it" || ext == ".itc" ||
+        ext == ".ao" || ext == ".aoc" || ext == ".act" || ext == ".epk" || ext == ".ddt" ||
+        ext == ".pet" || ext == ".trl") {
+        return PoeTextFormat::Utf16LeBomCrlf;
+    }
+    if (ext == ".sm" || ext == ".mat" || ext == ".amd") {
+        return PoeTextFormat::Utf16LeNoBomCrlf;
+    }
+    return PoeTextFormat::None;
 }
 
-// Detects plain UTF-8/ASCII text overlays that need UTF-16LE + BOM + CRLF transcoding
+bool is_poe_utf16_text_extension(const std::string& normalized_path) {
+    return classify_poe_utf16_text_extension(normalized_path) != PoeTextFormat::None;
+}
+
+// Detects plain UTF-8/ASCII text overlays that need UTF-16LE + CRLF transcoding
 // for PoE 3.29's wide parser while leaving existing UTF-16LE (both BOM FF FE and BOM-less
-// .sm/.amd containing NUL bytes) completely untouched.
+// .sm/.mat/.amd containing NUL bytes) completely untouched.
 bool needs_utf8_to_utf16le_transcode(const std::string& normalized_path, const uint8_t* data, size_t size) {
     if (!data || size == 0) return false;
     if (!is_poe_utf16_text_extension(normalized_path)) return false;
@@ -54,16 +75,22 @@ bool needs_utf8_to_utf16le_transcode(const std::string& normalized_path, const u
     return true;
 }
 
-void transcode_utf8_to_utf16le_bom_crlf(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
+void transcode_utf8_to_utf16le_crlf(
+    const uint8_t*        data,
+    size_t                size,
+    bool                  include_bom,
+    std::vector<uint8_t>& out) {
     out.clear();
     size_t i = 0;
     if (size >= 3 && data[0] == 0xEFu && data[1] == 0xBBu && data[2] == 0xBFu) {
         i = 3;
     }
 
-    out.reserve(2 + (size - i) * 2 + 16);
-    out.push_back(0xFFu);
-    out.push_back(0xFEu);
+    out.reserve((include_bom ? 2u : 0u) + (size - i) * 2 + 16);
+    if (include_bom) {
+        out.push_back(0xFFu);
+        out.push_back(0xFEu);
+    }
 
     auto push_u16 = [&out](uint16_t cu) {
         out.push_back(static_cast<uint8_t>(cu & 0xFFu));
@@ -123,8 +150,10 @@ void maybe_transcode_poe_text_inplace(const std::string& normalized_path, std::v
     if (!needs_utf8_to_utf16le_transcode(normalized_path, bytes.data(), bytes.size())) {
         return;
     }
+    const bool include_bom =
+        classify_poe_utf16_text_extension(normalized_path) == PoeTextFormat::Utf16LeBomCrlf;
     std::vector<uint8_t> transcoded;
-    transcode_utf8_to_utf16le_bom_crlf(bytes.data(), bytes.size(), transcoded);
+    transcode_utf8_to_utf16le_crlf(bytes.data(), bytes.size(), include_bom, transcoded);
     bytes = std::move(transcoded);
 }
 
@@ -201,13 +230,48 @@ void walk_dir_win32(
 
 } // namespace
 
+OverlayAndChannels::ScopedOverlayIndex::~ScopedOverlayIndex() {
+    if (owner_) {
+        owner_->active_readers_.fetch_sub(1, std::memory_order_seq_cst);
+        if (owner_->retired_count_.load(std::memory_order_acquire) > 0) {
+            owner_->try_reclaim_retired();
+        }
+    }
+}
+
+OverlayAndChannels::ScopedOverlayIndex OverlayAndChannels::acquire_index() const noexcept {
+    active_readers_.fetch_add(1, std::memory_order_seq_cst);
+    const OverlayIndex* idx = active_index_.load(std::memory_order_seq_cst);
+    return ScopedOverlayIndex(this, idx);
+}
+
+size_t OverlayAndChannels::retired_index_count() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return retired_indices_.size();
+}
+
+void OverlayAndChannels::try_reclaim_retired() const {
+    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return;
+    }
+    if (active_readers_.load(std::memory_order_seq_cst) == 0 && !retired_indices_.empty()) {
+        for (OverlayIndex* old : retired_indices_) {
+            delete old;
+        }
+        retired_indices_.clear();
+        retired_count_.store(0, std::memory_order_release);
+    }
+}
+
 OverlayAndChannels::~OverlayAndChannels() {
-    const OverlayIndex* cur = active_index_.exchange(nullptr, std::memory_order_acq_rel);
+    const OverlayIndex* cur = active_index_.exchange(nullptr, std::memory_order_seq_cst);
     delete cur;
     for (OverlayIndex* old : retired_indices_) {
         delete old;
     }
     retired_indices_.clear();
+    retired_count_.store(0, std::memory_order_release);
 }
 
 std::string OverlayAndChannels::normalize_virtual_path(const char* path) {
@@ -388,9 +452,18 @@ void OverlayAndChannels::rebuild_index_locked() {
 
     next->empty = !next->has_unfiltered_callbacks && next->ci_hash_table.empty();
 
-    const OverlayIndex* prev = active_index_.exchange(next, std::memory_order_acq_rel);
+    const OverlayIndex* prev = active_index_.exchange(next, std::memory_order_seq_cst);
     if (prev != nullptr) {
         retired_indices_.push_back(const_cast<OverlayIndex*>(prev));
+    }
+    if (active_readers_.load(std::memory_order_seq_cst) == 0) {
+        for (OverlayIndex* old : retired_indices_) {
+            delete old;
+        }
+        retired_indices_.clear();
+        retired_count_.store(0, std::memory_order_release);
+    } else {
+        retired_count_.store(static_cast<uint32_t>(retired_indices_.size()), std::memory_order_release);
     }
 }
 
@@ -538,7 +611,8 @@ nm_status_t OverlayAndChannels::has_file_overlay(const char* virtual_path_utf8, 
         *out_size = 0;
     }
 
-    const OverlayIndex* idx = get_active_index();
+    ScopedOverlayIndex idx_guard = acquire_index();
+    const OverlayIndex* idx = idx_guard.get();
     if (!idx || idx->empty) {
         return NM_ERR_SYMBOL_NOT_FOUND;
     }
@@ -578,8 +652,10 @@ nm_status_t OverlayAndChannels::has_file_overlay(const char* virtual_path_utf8, 
         if (cb.cb(normalized.c_str(), &data, &size, cb.user_data) == NM_OK && data != nullptr) {
             size_t final_size = size;
             if (out_size && needs_utf8_to_utf16le_transcode(normalized, data, size)) {
+                const bool include_bom =
+                    classify_poe_utf16_text_extension(normalized) == PoeTextFormat::Utf16LeBomCrlf;
                 std::vector<uint8_t> transcoded;
-                transcode_utf8_to_utf16le_bom_crlf(data, size, transcoded);
+                transcode_utf8_to_utf16le_crlf(data, size, include_bom, transcoded);
                 final_size = transcoded.size();
             }
             if (cb.free_cb) {
@@ -610,7 +686,8 @@ bool OverlayAndChannels::resolve_file_overlay_owned(const char* virtual_path_utf
         return false;
     }
 
-    const OverlayIndex* idx = get_active_index();
+    ScopedOverlayIndex idx_guard = acquire_index();
+    const OverlayIndex* idx = idx_guard.get();
     if (!idx || idx->empty) {
         return false;
     }
@@ -675,7 +752,8 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
     *out_data = nullptr;
     *out_size = 0;
 
-    const OverlayIndex* idx = get_active_index();
+    ScopedOverlayIndex idx_guard = acquire_index();
+    const OverlayIndex* idx = idx_guard.get();
     if (!idx || idx->empty) {
         return NM_ERR_SYMBOL_NOT_FOUND;
     }
@@ -713,8 +791,10 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
         size_t size = 0;
         if (cb.cb(normalized.c_str(), &data, &size, cb.user_data) == NM_OK && data != nullptr) {
             if (needs_utf8_to_utf16le_transcode(normalized, data, size)) {
+                const bool include_bom =
+                    classify_poe_utf16_text_extension(normalized) == PoeTextFormat::Utf16LeBomCrlf;
                 std::vector<uint8_t> transcoded;
-                transcode_utf8_to_utf16le_bom_crlf(data, size, transcoded);
+                transcode_utf8_to_utf16le_crlf(data, size, include_bom, transcoded);
                 if (cb.free_cb) {
                     cb.free_cb(data, cb.user_data);
                 }
@@ -788,6 +868,16 @@ nm_status_t OverlayAndChannels::free_file_overlay_buffer(uint8_t* data) {
         rec.free_cb(data, rec.user_data);
     }
     return NM_OK;
+}
+
+uint8_t* OverlayAndChannels::allocate_owned_buffer_copy(const uint8_t* data, size_t size) {
+    auto* buf = new uint8_t[std::max<size_t>(1, size)];
+    if (size > 0 && data != nullptr) {
+        std::memcpy(buf, data, size);
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    owned_buffers_[buf] = OwnedBufferRecord{nullptr, nullptr, true};
+    return buf;
 }
 
 nm_status_t OverlayAndChannels::register_ruleset_handler(
@@ -916,19 +1006,26 @@ nm_status_t OverlayAndChannels::unregister_chat_handler(uint64_t token) {
     return NM_OK;
 }
 
+bool OverlayAndChannels::has_chat_handlers() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !chat_handlers_.empty();
+}
+
 int32_t OverlayAndChannels::dispatch_chat_rx(const char* sender_utf8, const char* text_utf8) {
     if (text_utf8 == nullptr) {
         return 0;
     }
     constexpr size_t kPrefixLen = 5; // "##NM "
-    if (std::strncmp(text_utf8, NM_CHAT_FALLBACK_PREFIX, kPrefixLen) != 0) {
-        return 0; // Normal game chat; pass through to original ChatPanel::OnChatMessage.
-    }
+    const bool is_nm_prefixed = (std::strncmp(text_utf8, NM_CHAT_FALLBACK_PREFIX, kPrefixLen) == 0);
 
     std::vector<ChatEntry> snapshot;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         snapshot = chat_handlers_;
+    }
+
+    if (snapshot.empty()) {
+        return is_nm_prefixed ? 1 : 0;
     }
 
     struct ChatCtx {
@@ -939,16 +1036,132 @@ int32_t OverlayAndChannels::dispatch_chat_rx(const char* sender_utf8, const char
     };
     auto trampoline = [](void* raw) -> int64_t {
         auto* c = static_cast<ChatCtx*>(raw);
-        c->cb(c->sender ? c->sender : "", c->text, c->ud);
-        return 0;
+        return static_cast<int64_t>(c->cb(c->sender ? c->sender : "", c->text, c->ud));
     };
 
+    bool suppress = false;
     for (const auto& entry : snapshot) {
         ChatCtx ctx{entry.cb, sender_utf8, text_utf8, entry.user_data};
+        int64_t rc = 0;
         nm_exception_info_t ex{};
-        (void)invoke_guarded(trampoline, &ctx, nullptr, &ex);
+        if (invoke_guarded(trampoline, &ctx, &rc, &ex) == NM_OK && rc != 0) {
+            suppress = true;
+        }
     }
-    return 1; // Intercepted; suppress from game chat panel.
+    return suppress ? 1 : 0;
+}
+
+nm_status_t OverlayAndChannels::register_opcode_handler_group(
+    uint16_t            min_opcode,
+    uint16_t            max_opcode,
+    nm_opcode_handler_t cb,
+    void*               user_data,
+    uint64_t*           out_token) {
+    if (cb == nullptr || out_token == nullptr || min_opcode > max_opcode) {
+        return NM_ERR_INVALID_ARG;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint64_t token = next_token_++;
+    opcode_groups_.push_back(OpcodeGroupEntry{token, min_opcode, max_opcode, cb, user_data});
+    *out_token = token;
+    return NM_OK;
+}
+
+nm_status_t OverlayAndChannels::unregister_opcode_handler_group(uint64_t token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = std::remove_if(opcode_groups_.begin(), opcode_groups_.end(),
+                             [token](const OpcodeGroupEntry& e) { return e.token == token; });
+    if (it == opcode_groups_.end()) {
+        return NM_ERR_INVALID_ARG;
+    }
+    opcode_groups_.erase(it, opcode_groups_.end());
+    return NM_OK;
+}
+
+bool OverlayAndChannels::has_opcode_handlers() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !opcode_groups_.empty();
+}
+
+nm_status_t OverlayAndChannels::dispatch_opcode_rx(
+    uint16_t       opcode,
+    void*          stream_handle,
+    const uint8_t* payload,
+    uint32_t       length,
+    int32_t*       out_handled) {
+    if (out_handled) {
+        *out_handled = 0;
+    }
+    if (length > 0 && payload == nullptr && stream_handle == nullptr) {
+        return NM_ERR_INVALID_ARG;
+    }
+
+    std::vector<OpcodeGroupEntry> matched;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& g : opcode_groups_) {
+            if (opcode >= g.min_opcode && opcode <= g.max_opcode) {
+                matched.push_back(g);
+            }
+        }
+    }
+
+    if (matched.empty()) {
+        return NM_OK;
+    }
+
+    SyntheticPacketStream synth_stream{};
+    void* effective_stream = stream_handle;
+    if (effective_stream == nullptr) {
+        synth_stream.data = payload;
+        synth_stream.size = length;
+        synth_stream.cursor = 0;
+        effective_stream = &synth_stream;
+    }
+
+    struct OpcodeCtx {
+        nm_opcode_handler_t cb;
+        uint16_t            opcode;
+        void*               stream;
+        const uint8_t*      payload;
+        uint32_t            length;
+        void*               ud;
+    };
+    auto trampoline = [](void* raw) -> int64_t {
+        auto* c = static_cast<OpcodeCtx*>(raw);
+        return static_cast<int64_t>(c->cb(c->opcode, c->stream, c->payload, c->length, c->ud));
+    };
+
+    bool handled = false;
+    for (const auto& entry : matched) {
+        OpcodeCtx ctx{entry.cb, opcode, effective_stream, payload, length, entry.user_data};
+        int64_t rc = 0;
+        nm_exception_info_t ex{};
+        if (invoke_guarded(trampoline, &ctx, &rc, &ex) == NM_OK && rc != 0) {
+            handled = true;
+        }
+    }
+    if (out_handled) {
+        *out_handled = handled ? 1 : 0;
+    }
+    return NM_OK;
+}
+
+nm_status_t OverlayAndChannels::try_send_raw_packet_override(
+    uint16_t       opcode,
+    const uint8_t* payload,
+    uint32_t       length) {
+    nm_packet_tx_override_t tx = nullptr;
+    void* ud = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        tx = tx_override_;
+        ud = tx_override_ud_;
+    }
+    if (tx) {
+        return tx(opcode, 0, payload, length, ud);
+    }
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
 }
 
 nm_status_t OverlayAndChannels::send_chat_line(const char* text_utf8) {
@@ -982,12 +1195,13 @@ void OverlayAndChannels::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     overlays_.clear();
     overlay_dirs_.clear();
-    const OverlayIndex* cur = active_index_.exchange(nullptr, std::memory_order_acq_rel);
+    const OverlayIndex* cur = active_index_.exchange(nullptr, std::memory_order_seq_cst);
     delete cur;
     for (OverlayIndex* old : retired_indices_) {
         delete old;
     }
     retired_indices_.clear();
+    retired_count_.store(0, std::memory_order_release);
     for (auto& kv : owned_buffers_) {
         if (kv.second.cpp_delete_array) {
             delete[] kv.first;
@@ -998,6 +1212,7 @@ void OverlayAndChannels::clear() {
     owned_buffers_.clear();
     rulesets_.clear();
     chat_handlers_.clear();
+    opcode_groups_.clear();
     tx_override_ = nullptr;
     tx_override_ud_ = nullptr;
 }

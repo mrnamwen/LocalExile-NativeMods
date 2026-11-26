@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -20,6 +21,12 @@
 
 #if !defined(_WIN32)
 #  include <sys/mman.h>
+#else
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#  ifdef exception_code
+#    undef exception_code
+#  endif
 #endif
 
 namespace {
@@ -40,13 +47,41 @@ int test_abi_table_and_build_recognition() {
     CHECK(table != nullptr);
     CHECK(table->struct_size == sizeof(nm_abi_table_t));
     CHECK(table->abi_version == NM_ABI_VERSION);
+    CHECK(NM_ABI_VERSION == 0x00000200u);
     CHECK(table->get_host_info != nullptr);
     CHECK(table->lookup_symbol != nullptr);
     CHECK(table->install_inline_hook != nullptr);
     CHECK(table->install_vtable_hook != nullptr);
+    CHECK(table->install_inline_chain_hook != nullptr);
+    CHECK(table->install_inline_chain_hook_sym != nullptr);
+    CHECK(table->install_vtable_chain_hook != nullptr);
     CHECK(table->call_guarded != nullptr);
+    CHECK(table->call_native_guarded != nullptr);
     CHECK(table->game_alloc != nullptr);
     CHECK(table->send_ruleset_packet != nullptr);
+    CHECK(table->files_read_stock != nullptr);
+    CHECK(table->files_invalidate != nullptr);
+    CHECK(table->send_raw_packet != nullptr);
+    CHECK(table->register_opcode_handler_group != nullptr);
+    CHECK(table->unregister_opcode_handler_group != nullptr);
+    CHECK(table->stream_read != nullptr);
+    CHECK(table->ui_create_window_into != nullptr);
+    CHECK(table->ui_get_rect != nullptr);
+    CHECK(table->ui_set_position != nullptr);
+    CHECK(table->ui_set_size != nullptr);
+    CHECK(table->ui_set_enabled != nullptr);
+    CHECK(table->ui_remove_child != nullptr);
+    CHECK(table->ui_destroy_control != nullptr);
+    CHECK(table->ui_textbox_get_text != nullptr);
+    CHECK(table->ui_textbox_set_text != nullptr);
+    CHECK(table->ui_textbox_subscribe_changed != nullptr);
+    CHECK(table->ui_textbox_subscribe_submitted != nullptr);
+    CHECK(table->ui_checkbox_get_checked != nullptr);
+    CHECK(table->ui_checkbox_set_checked != nullptr);
+    CHECK(table->ui_checkbox_subscribe_changed != nullptr);
+    CHECK(table->ui_unsubscribe != nullptr);
+    CHECK(table->clipboard_get_text != nullptr);
+    CHECK(table->clipboard_set_text != nullptr);
 
     // SHA-256 build recognition matches LocalExile ClientBuilds.cs verbatim
     CHECK(nativemods::identify_build_by_sha256("e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d")
@@ -79,13 +114,38 @@ int test_address_table_3293d_and_3293c() {
     CHECK(host.build_id == NM_BUILD_3_29_3D_328228);
     CHECK(std::strcmp(host.build_version, "3.29.3d") == 0);
     CHECK(host.image_base == kRebased);
-    CHECK(host.symbol_count >= 50);
+    CHECK(host.symbol_count == 122u);
 
     nm_symbol_info_t sym{};
     CHECK(nm_lookup_symbol("frame.state_stack_pass_a_hook", &sym) == NM_OK);
     CHECK(sym.rva == 0x1528fbfull);
     CHECK(sym.runtime_address == kRebased + 0x1528fbfull);
     CHECK(std::strcmp(sym.expected_bytes_hex, "488b5d284883eb10") == 0);
+
+    CHECK(nm_lookup_symbol("files.hash_to_wstring_view", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0e40af0ull);
+    CHECK(nm_lookup_symbol("files.hash_and_register_path", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0e40a90ull);
+    CHECK(nm_lookup_symbol("runtime.wstring_destroy", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0134500ull);
+    CHECK(nm_lookup_symbol("ui.control_set_position", &sym) == NM_OK);
+    CHECK(sym.rva == 0x18b1080ull);
+    CHECK(nm_lookup_symbol("ui.control_set_size", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1906a30ull);
+    CHECK(nm_lookup_symbol("ui.control_get_abs_pos", &sym) == NM_OK);
+    CHECK(sym.rva == 0x18b1250ull);
+    CHECK(nm_lookup_symbol("ui.control_detach", &sym) == NM_OK);
+    CHECK(sym.rva == 0x18b5a00ull);
+    CHECK(nm_lookup_symbol("ui.children_remove_at", &sym) == NM_OK);
+    CHECK(sym.rva == 0x18b6720ull);
+    CHECK(nm_lookup_symbol("ui.event_list_get_ctrl", &sym) == NM_OK);
+    CHECK(sym.rva == 0x055ae30ull);
+    CHECK(nm_lookup_symbol("files.filesystem_holder_get", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0e571d0ull);
+    CHECK(nm_lookup_symbol("files.hot_reload_singleton", &sym) == NM_OK);
+    CHECK(sym.rva == 0x10062a0ull);
+    CHECK(nm_lookup_symbol("network.stream_reader", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0df9ed0ull);
 
     CHECK(nm_lookup_symbol("rulesets.creator_table", &sym) == NM_OK);
     CHECK(sym.rva == 0x475dc70ull);
@@ -103,9 +163,20 @@ int test_address_table_3293d_and_3293c() {
               0x4d9a000u,
               "01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf") == NM_OK);
 
+    CHECK(nm_get_host_info(&host) == NM_OK);
+    CHECK(host.symbol_count == 122u);
+
     CHECK(nm_lookup_symbol("frame.state_stack_pass_a_hook", &sym) == NM_OK);
     CHECK(sym.rva == 0x1528fbfull);
     CHECK(sym.status == NM_SYM_STATUS_CODE_SHARED);
+
+    CHECK(nm_lookup_symbol("files.hash_to_wstring_view", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0e40af0ull);
+    CHECK(sym.status == NM_SYM_STATUS_CODE_SHARED);
+
+    CHECK(nm_lookup_symbol("runtime.wstring_destroy", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym.rva == 0ull);
+    CHECK(sym.status == NM_SYM_STATUS_UNVERIFIED);
 
     CHECK(nm_lookup_symbol("network.hnc_mask", &sym) == NM_OK);
     CHECK(sym.rva == 0x2feaed0ull);
@@ -139,17 +210,26 @@ int test_byte_verification_wildcards() {
 using TestAddFn = int(*)(int);
 #if !defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 TestAddFn g_inline_trampoline = nullptr;
+TestAddFn g_inline_trampoline2 = nullptr;
 int g_detour_hits = 0;
+int g_detour_hits2 = 0;
 
 int inline_detour_fn(int x) {
     ++g_detour_hits;
     return g_inline_trampoline(x) + 100;
 }
+
+int inline_detour_fn2(int x) {
+    ++g_detour_hits2;
+    return g_inline_trampoline2(x) + 1000;
+}
 #endif
 
 int vtable_orig_fn(int x) { return x * 2; }
 TestAddFn g_vtable_orig = nullptr;
+TestAddFn g_vtable_orig2 = nullptr;
 int vtable_detour_fn(int x) { return g_vtable_orig(x) + 7; }
+int vtable_detour_fn2(int x) { return g_vtable_orig2(x) + 50; }
 
 int test_inline_and_vtable_hooks() {
     CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
@@ -194,29 +274,40 @@ int test_inline_and_vtable_hooks() {
     CHECK(tramp_raw != nullptr);
     g_inline_trampoline = reinterpret_cast<TestAddFn>(tramp_raw);
 
-    // Duplicate hook at same address MUST be rejected
-    nm_hook_handle_t dup = NM_HOOK_INVALID;
+    // Multi-mod raw detour chaining at same address MUST compose cleanly and unhook independently!
+    void* tramp_raw2 = nullptr;
+    nm_hook_handle_t handle2 = NM_HOOK_INVALID;
+    g_detour_hits2 = 0;
     CHECK(nm_install_inline_hook_at(
               reinterpret_cast<uint64_t>(code_page),
-              nullptr,
-              reinterpret_cast<void*>(&inline_detour_fn),
-              nullptr,
-              &dup) == NM_ERR_HOOK_ALREADY_INSTALLED);
+              "9090909090909090",
+              reinterpret_cast<void*>(&inline_detour_fn2),
+              &tramp_raw2,
+              &handle2) == NM_OK);
+    CHECK(handle2 != NM_HOOK_INVALID && handle2 != handle && tramp_raw2 != nullptr);
+    g_inline_trampoline2 = reinterpret_cast<TestAddFn>(tramp_raw2);
 
-    // Call target: runs detour -> trampoline -> original -> +100
-    CHECK(target_fn(10) == 115);
+    // Call target: runs detour2 -> detour1 -> trampoline -> original -> +1100
+    CHECK(target_fn(10) == 1115);
     CHECK(g_detour_hits == 1);
+    CHECK(g_detour_hits2 == 1);
 
-    // Remove hook: restores original 14 bytes and original behavior
+    // Remove first detour independently: detour2 still runs!
     CHECK(nm_remove_hook(handle) == NM_OK);
     CHECK(nm_remove_hook(handle) == NM_ERR_HOOK_NOT_FOUND);
+    CHECK(target_fn(10) == 1015);
+    CHECK(g_detour_hits == 1);
+    CHECK(g_detour_hits2 == 2);
+
+    // Remove second detour: restores original 14 bytes and original behavior
+    CHECK(nm_remove_hook(handle2) == NM_OK);
     CHECK(target_fn(10) == 15);
     CHECK(code[0] == 0x90 && code[13] == 0x90);
 
     munmap(code_page, 4096);
 #endif
 
-    // Vtable hook test
+    // Vtable hook + multi-mod vtable raw chaining test
     void* vtable[4] = {
         nullptr,
         reinterpret_cast<void*>(&vtable_orig_fn),
@@ -229,7 +320,17 @@ int test_inline_and_vtable_hooks() {
     g_vtable_orig = reinterpret_cast<TestAddFn>(orig_slot);
     CHECK(reinterpret_cast<TestAddFn>(vtable[1])(10) == 27);
 
+    void* orig_slot2 = nullptr;
+    nm_hook_handle_t vt_handle2 = NM_HOOK_INVALID;
+    CHECK(nm_install_vtable_hook(vtable, 1, reinterpret_cast<void*>(&vtable_detour_fn2), &orig_slot2, &vt_handle2) == NM_OK);
+    g_vtable_orig2 = reinterpret_cast<TestAddFn>(orig_slot2);
+    CHECK(reinterpret_cast<TestAddFn>(vtable[1])(10) == 77);
+
+    // Remove first vtable hook independently: second keeps running
     CHECK(nm_remove_hook(vt_handle) == NM_OK);
+    CHECK(reinterpret_cast<TestAddFn>(vtable[1])(10) == 70);
+
+    CHECK(nm_remove_hook(vt_handle2) == NM_OK);
     CHECK(vtable[1] == reinterpret_cast<void*>(&vtable_orig_fn));
     CHECK(reinterpret_cast<TestAddFn>(vtable[1])(10) == 20);
 
@@ -433,20 +534,61 @@ int test_file_overlay_and_channels() {
     CHECK(tx_cap.ruleset == 0xA0u);
     CHECK(tx_cap.bytes.size() == 4);
 
-    // Chat fallback (S4: ##NM prefix intercepted, normal chat passed through)
+    // Chat fallback & suppression return value:
+    // Callback returns 1 to suppress from game chat panel, 0 to pass through.
     std::string chat_captured;
     uint64_t chat_tok = 0;
-    auto chat_cb = [](const char*, const char* text, void* ud) {
+    auto chat_cb = [](const char*, const char* text, void* ud) -> int32_t {
         *static_cast<std::string*>(ud) = text;
+        if (std::strncmp(text, "##NM ", 5) == 0 || std::strcmp(text, "/suppress_me") == 0) {
+            return 1;
+        }
+        return 0;
     };
     CHECK(nm_register_chat_channel_handler(chat_cb, &chat_captured, &chat_tok) == NM_OK);
     CHECK(nm_dispatch_chat_rx("System", "Hello Wraeclast") == 0);
-    CHECK(chat_captured.empty());
+    CHECK(chat_captured == "Hello Wraeclast");
+    CHECK(nm_dispatch_chat_rx("System", "/suppress_me") == 1);
+    CHECK(chat_captured == "/suppress_me");
     CHECK(nm_dispatch_chat_rx("System", "##NM open garden") == 1);
     CHECK(chat_captured == "##NM open garden");
 
     CHECK(nm_send_chat_line("/nm plant WildSeed") == NM_OK);
     CHECK(tx_cap.opcode == NM_OPCODE_CHAT_C2S);
+
+    // Raw packet TX & 0x02FC+ opcode handler group + nm_stream_read
+    const uint8_t raw_tx[] = {0x11, 0x22, 0x33};
+    CHECK(nm_send_raw_packet(0x02FDu, raw_tx, sizeof(raw_tx)) == NM_OK);
+    CHECK(tx_cap.opcode == 0x02FDu);
+    CHECK(tx_cap.bytes == std::vector<uint8_t>({0x11, 0x22, 0x33}));
+
+    struct OpcodeCapture {
+        uint16_t             opcode = 0;
+        std::vector<uint8_t> streamed;
+        std::vector<uint8_t> direct;
+    } op_cap;
+    auto op_cb = [](uint16_t opcode, void* stream, const uint8_t* payload, uint32_t len, void* ud) -> int32_t {
+        auto* c = static_cast<OpcodeCapture*>(ud);
+        c->opcode = opcode;
+        c->direct.assign(payload, payload + len);
+        c->streamed.resize(len);
+        if (len > 0 && nm_stream_read(stream, c->streamed.data(), len) != NM_OK) {
+            return 0;
+        }
+        return 1;
+    };
+    uint64_t op_tok = 0;
+    CHECK(nm_register_opcode_handler_group(0x02FCu, 0x0310u, op_cb, &op_cap, &op_tok) == NM_OK);
+    const uint8_t op_rx[] = {0xCA, 0xFE, 0xBA, 0xBE};
+    int32_t op_handled = 0;
+    CHECK(nm_dispatch_opcode_rx(0x0300u, op_rx, sizeof(op_rx), &op_handled) == NM_OK);
+    CHECK(op_handled == 1 && op_cap.opcode == 0x0300u);
+    CHECK(op_cap.direct == std::vector<uint8_t>({0xCA, 0xFE, 0xBA, 0xBE}));
+    CHECK(op_cap.streamed == std::vector<uint8_t>({0xCA, 0xFE, 0xBA, 0xBE}));
+    op_handled = 1;
+    CHECK(nm_dispatch_opcode_rx(0x0200u, op_rx, sizeof(op_rx), &op_handled) == NM_OK);
+    CHECK(op_handled == 0);
+    CHECK(nm_unregister_opcode_handler_group(op_tok) == NM_OK);
 
     // Non-Windows bootstrapper cleanly reports platform unsupported rather than crashing
 #if !defined(_WIN32)
@@ -710,6 +852,639 @@ int test_overlay_hash_prefilter_and_connection_token() {
     return 0;
 }
 
+int test_x64_decoder_and_rip_relocation() {
+    using nativemods::HookEngine;
+
+    // 1. Verify full x64 instruction length decoder coverage
+    const uint8_t rex_mov[]   = {0x48, 0x89, 0x5C, 0x24, 0x10};                 // 5B
+    const uint8_t vex2_zero[] = {0xC5, 0xF8, 0x77};                             // vzeroupper (3B)
+    const uint8_t vex2_mov[]  = {0xC5, 0xF8, 0x28, 0xC1};                       // vmovaps xmm0, xmm1 (4B)
+    const uint8_t vex3_op[]   = {0xC4, 0xE2, 0x7D, 0x18, 0x05, 0, 0, 0, 0};     // vbroadcastss ymm0, [rip+0] (9B)
+    const uint8_t vex3_3a[]   = {0xC4, 0xE3, 0x79, 0x0F, 0xC1, 0x04};           // vpalignr (6B)
+    const uint8_t evex_mov[]  = {0x62, 0xF1, 0x7C, 0x48, 0x28, 0xC1};           // vmovaps zmm0, zmm1 (6B)
+    const uint8_t op_0f38[]   = {0x66, 0x0F, 0x38, 0x00, 0xC1};                 // pshufb (5B)
+    const uint8_t op_0f3a[]   = {0x66, 0x0F, 0x3A, 0x0F, 0xC1, 0x04};           // palignr imm8 (6B)
+    const uint8_t f6_test[]   = {0xF6, 0x05, 0x00, 0x00, 0x00, 0x00, 0x01};     // test byte [rip+0], 1 (7B)
+    const uint8_t f6_not[]    = {0xF6, 0xD0};                                   // not al (2B)
+    const uint8_t f7_test[]   = {0x48, 0xF7, 0xC1, 0x01, 0x00, 0x00, 0x00};     // test rcx, 1 (7B)
+    const uint8_t f7_neg[]    = {0x48, 0xF7, 0xD8};                             // neg rax (3B)
+    const uint8_t call_rel[]  = {0xE8, 0x10, 0x00, 0x00, 0x00};                 // call +16 (5B)
+    const uint8_t jcc_near[]  = {0x0F, 0x84, 0x20, 0x00, 0x00, 0x00};           // je near (6B)
+    const uint8_t jcc_short[] = {0x75, 0x05};                                   // jne short (2B)
+    const uint8_t jmp_short[] = {0xEB, 0xFE};                                   // jmp short (2B)
+    const uint8_t mov_imm64[] = {0x48, 0xB8, 1, 2, 3, 4, 5, 6, 7, 8};           // movabs rax, imm64 (10B)
+    const uint8_t invalid64[] = {0x06, 0x90, 0x90};                             // push es (invalid in x64)
+
+    CHECK(HookEngine::decode_x64_insn(rex_mov, sizeof(rex_mov)).length == 5);
+    CHECK(HookEngine::decode_x64_insn(vex2_zero, sizeof(vex2_zero)).length == 3);
+    CHECK(HookEngine::decode_x64_insn(vex2_mov, sizeof(vex2_mov)).length == 4);
+    const auto d_vex3 = HookEngine::decode_x64_insn(vex3_op, sizeof(vex3_op));
+    CHECK(d_vex3.length == 9 && d_vex3.is_rip_relative && d_vex3.disp_offset == 5);
+    CHECK(HookEngine::decode_x64_insn(vex3_3a, sizeof(vex3_3a)).length == 6);
+    CHECK(HookEngine::decode_x64_insn(evex_mov, sizeof(evex_mov)).length == 6);
+    CHECK(HookEngine::decode_x64_insn(op_0f38, sizeof(op_0f38)).length == 5);
+    CHECK(HookEngine::decode_x64_insn(op_0f3a, sizeof(op_0f3a)).length == 6);
+    const auto d_f6 = HookEngine::decode_x64_insn(f6_test, sizeof(f6_test));
+    CHECK(d_f6.length == 7 && d_f6.is_rip_relative && d_f6.disp_offset == 2);
+    CHECK(HookEngine::decode_x64_insn(f6_not, sizeof(f6_not)).length == 2);
+    CHECK(HookEngine::decode_x64_insn(f7_test, sizeof(f7_test)).length == 7);
+    CHECK(HookEngine::decode_x64_insn(f7_neg, sizeof(f7_neg)).length == 3);
+    CHECK(HookEngine::decode_x64_insn(call_rel, sizeof(call_rel)).is_rel_branch);
+    CHECK(HookEngine::decode_x64_insn(jcc_near, sizeof(jcc_near)).length == 6);
+    CHECK(HookEngine::decode_x64_insn(jcc_short, sizeof(jcc_short)).length == 2);
+    CHECK(HookEngine::decode_x64_insn(jmp_short, sizeof(jmp_short)).length == 2);
+    CHECK(HookEngine::decode_x64_insn(mov_imm64, sizeof(mov_imm64)).length == 10);
+    CHECK(HookEngine::decode_x64_insn(invalid64, sizeof(invalid64)).length == 0);
+    // compute_stolen_length MUST return 0 on unknown/invalid opcodes rather than splitting!
+    CHECK(HookEngine::compute_stolen_length(invalid64, 14) == 0);
+
+    // 2. Verify RIP-relative relocation unit logic (disp32, E8, E9, 0F 8x, short 7x/EB promotion)
+    const uint8_t sample_stolen[] = {
+        0x8B, 0x05, 0x10, 0x00, 0x00, 0x00, // mov eax, [rip+0x10] -> target = orig + 6 + 0x10 = orig + 0x16
+        0x74, 0x03,                         // je +3 (internal -> off 8+3=11)
+        0x83, 0xC0, 0x01,                   // add eax, 1 (3B -> off 8..11)
+        0xEB, 0x20,                         // jmp short +0x20 -> target = orig + 0x0D + 0x20 = orig + 0x2D
+        0xE8, 0x40, 0x00, 0x00, 0x00,       // call +0x40 -> target = orig + 0x12 + 0x40 = orig + 0x52
+    };
+    const uint64_t orig_base = 0x100000000ull;
+    const uint64_t tramp_base = 0x100020000ull;
+    std::vector<uint8_t> relocated;
+    CHECK(HookEngine::relocate_instructions(orig_base, sample_stolen, sizeof(sample_stolen), tramp_base, relocated));
+    // Expected layout:
+    //   0..5:   8B 05 <disp32 = (orig_base+0x16) - (tramp_base+6)> (6B)
+    //   6..11:  0F 84 <rel32 = +3> (promoted je skipping 3B add eax, 1!) (6B)
+    //   12..14: 83 C0 01 (3B)
+    //   15..19: E9 <rel32 = (orig_base+0x2D) - (tramp_base+20)> (promoted jmp!) (5B)
+    //   20..24: E8 <rel32 = (orig_base+0x52) - (tramp_base+25)> (5B)
+    //   25..38: FF 25 00 00 00 00 <u64 (orig_base+18)> (14B)
+    CHECK(relocated.size() == 39);
+    int32_t d_rip = 0, d_je = 0, d_jmp = 0, d_call = 0;
+    std::memcpy(&d_rip, &relocated[2], 4);
+    std::memcpy(&d_je, &relocated[8], 4);
+    std::memcpy(&d_jmp, &relocated[16], 4);
+    std::memcpy(&d_call, &relocated[21], 4);
+    CHECK(static_cast<int64_t>(tramp_base + 6) + d_rip == static_cast<int64_t>(orig_base + 0x16));
+    CHECK(relocated[6] == 0x0Fu && relocated[7] == 0x84u && d_je == 3);
+    CHECK(relocated[15] == 0xE9u && static_cast<int64_t>(tramp_base + 20) + d_jmp == static_cast<int64_t>(orig_base + 0x2D));
+    CHECK(relocated[20] == 0xE8u && static_cast<int64_t>(tramp_base + 25) + d_call == static_cast<int64_t>(orig_base + 0x52));
+
+    // 3. Live execution of a hooked function whose prologue contains [rip+disp32] + short branch + call!
+#if !defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+    void* exec_page = HookEngine::alloc_exec_page(4096);
+    CHECK(exec_page != nullptr);
+    auto* mem = static_cast<uint8_t*>(exec_page);
+    // Data word at mem + 0x200 = 100
+    const int32_t data_val = 100;
+    std::memcpy(mem + 0x200, &data_val, 4);
+    // Helper at mem + 0x100: eax = edi * 2; ret
+    mem[0x100] = 0x8D; mem[0x101] = 0x04; mem[0x102] = 0x3F; // lea eax, [rdi+rdi]
+    mem[0x103] = 0xC3;
+    // Target function at mem + 0x00:
+    //   0:  8B 05 <0x200 - 6>  (mov eax, [rip + data_val])  (6B)
+    //   6:  85 FF              (test edi, edi)              (2B)
+    //   8:  74 05              (je +5 -> +15)               (2B)
+    //   10: E8 <0x100 - 15>    (call helper)                (5B -> 15B stolen!)
+    //   15: 03 C7              (add eax, edi)               (2B)
+    //   17: C3                 (ret)                        (1B)
+    const int32_t disp_data = 0x200 - 6;
+    const int32_t disp_call = 0x100 - 15;
+    mem[0] = 0x8B; mem[1] = 0x05; std::memcpy(mem + 2, &disp_data, 4);
+    mem[6] = 0x85; mem[7] = 0xFF;
+    mem[8] = 0x74; mem[9] = 0x05;
+    mem[10] = 0xE8; std::memcpy(mem + 11, &disp_call, 4);
+    mem[15] = 0x03; mem[16] = 0xC7;
+    mem[17] = 0xC3;
+
+    using Fn = int(*)(int);
+    auto fn = reinterpret_cast<Fn>(mem);
+    CHECK(fn(0) == 100); // skips call helper -> 100 + 0
+    CHECK(fn(7) == 21);  // calls helper (14) + 7 = 21
+
+    nm_hook_handle_t h = NM_HOOK_INVALID;
+    int pre_seen = 0;
+    auto pre_cb = [](nm_hook_context_t* ctx, void* ud) {
+        ++(*static_cast<int*>(ud));
+        if (ctx->args[0] == 5) ctx->args[0] = 7;
+    };
+    CHECK(nm_install_inline_chain_hook(reinterpret_cast<uint64_t>(mem), nullptr, NM_HOOK_PHASE_PRE, 0, pre_cb, &pre_seen, &h) == NM_OK);
+    CHECK(fn(0) == 100);
+    CHECK(fn(5) == 21);
+    CHECK(pre_seen == 2);
+    CHECK(nm_remove_hook(h) == NM_OK);
+    CHECK(fn(5) == 15);
+    HookEngine::free_exec_page(exec_page, 4096);
+    CHECK(nm_shutdown() == NM_OK);
+#elif defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+    void* exec_page = HookEngine::alloc_exec_page(4096);
+    CHECK(exec_page != nullptr);
+    auto* mem = static_cast<uint8_t*>(exec_page);
+    const int32_t data_val = 100;
+    std::memcpy(mem + 0x200, &data_val, 4);
+    // Helper at mem + 0x100: eax = ecx * 2; ret
+    mem[0x100] = 0x8D; mem[0x101] = 0x04; mem[0x102] = 0x09; // lea eax, [rcx+rcx]
+    mem[0x103] = 0xC3;
+    // Target function (Win64 arg0 = ecx):
+    //   0:  8B 05 <0x200 - 6>  (mov eax, [rip + data_val])  (6B)
+    //   6:  85 C9              (test ecx, ecx)              (2B)
+    //   8:  74 05              (je +5 -> +15)               (2B)
+    //   10: E8 <0x100 - 15>    (call helper)                (5B -> 15B stolen!)
+    //   15: 03 C1              (add eax, ecx)               (2B)
+    //   17: C3                 (ret)                        (1B)
+    const int32_t disp_data = 0x200 - 6;
+    const int32_t disp_call = 0x100 - 15;
+    mem[0] = 0x8B; mem[1] = 0x05; std::memcpy(mem + 2, &disp_data, 4);
+    mem[6] = 0x85; mem[7] = 0xC9;
+    mem[8] = 0x74; mem[9] = 0x05;
+    mem[10] = 0xE8; std::memcpy(mem + 11, &disp_call, 4);
+    mem[15] = 0x03; mem[16] = 0xC1;
+    mem[17] = 0xC3;
+
+    using Fn = int(NM_CALL*)(int);
+    auto fn = reinterpret_cast<Fn>(mem);
+    CHECK(fn(0) == 100);
+    CHECK(fn(7) == 21);
+
+    nm_hook_handle_t h = NM_HOOK_INVALID;
+    int pre_seen = 0;
+    auto pre_cb = [](nm_hook_context_t* ctx, void* ud) {
+        ++(*static_cast<int*>(ud));
+        if (ctx->args[0] == 5) ctx->args[0] = 7;
+    };
+    CHECK(nm_install_inline_chain_hook(reinterpret_cast<uint64_t>(mem), nullptr, NM_HOOK_PHASE_PRE, 0, pre_cb, &pre_seen, &h) == NM_OK);
+    CHECK(fn(0) == 100);
+    CHECK(fn(5) == 21);
+    CHECK(pre_seen == 2);
+    CHECK(nm_remove_hook(h) == NM_OK);
+    CHECK(fn(5) == 15);
+    HookEngine::free_exec_page(exec_page, 4096);
+    CHECK(nm_shutdown() == NM_OK);
+#endif
+
+    ++g_tests_passed;
+    return 0;
+}
+
+namespace {
+#if defined(__GNUC__) || defined(__clang__)
+#  define NM_NOINLINE __attribute__((noinline))
+#else
+#  define NM_NOINLINE __declspec(noinline)
+#endif
+
+NM_NOINLINE int64_t NM_CALL chain_target_fn(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h) {
+    return a + b + c + d + e + f + g + h;
+}
+
+NM_NOINLINE double NM_CALL chain_vtable_float_target(int64_t a, double b) {
+    return static_cast<double>(a) + b;
+}
+} // namespace
+
+int test_multimod_pre_post_hook_chains() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // 1. Inline pre/post chain: priority ordering, arg rewrite, return mutation, skip_original, independent unhook
+    using Chain8Fn = int64_t(NM_CALL*)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+    volatile Chain8Fn call_target = &chain_target_fn;
+    std::vector<int> trace;
+    auto pre_low = [](nm_hook_context_t* ctx, void* ud) {
+        static_cast<std::vector<int>*>(ud)->push_back(1);
+        ctx->args[0] += 10;
+    };
+    auto pre_high = [](nm_hook_context_t* ctx, void* ud) {
+        static_cast<std::vector<int>*>(ud)->push_back(2);
+        if (ctx->args[7] == 999) {
+            ctx->return_value = 7777;
+            ctx->skip_original = 1;
+        }
+    };
+    auto post_one = [](nm_hook_context_t* ctx, void* ud) {
+        static_cast<std::vector<int>*>(ud)->push_back(3);
+        ctx->return_value += 100;
+    };
+    auto post_two = [](nm_hook_context_t* ctx, void* ud) {
+        static_cast<std::vector<int>*>(ud)->push_back(4);
+        ctx->return_value *= 2;
+    };
+
+    nm_hook_handle_t h_pre_low = 0, h_pre_high = 0, h_post_1 = 0, h_post_2 = 0;
+    const uint64_t target_addr = reinterpret_cast<uint64_t>(&chain_target_fn);
+    CHECK(nm_install_inline_chain_hook(target_addr, nullptr, NM_HOOK_PHASE_PRE, 10, pre_high, &trace, &h_pre_high) == NM_OK);
+    CHECK(nm_install_inline_chain_hook(target_addr, nullptr, NM_HOOK_PHASE_PRE, -5, pre_low, &trace, &h_pre_low) == NM_OK);
+    CHECK(nm_install_inline_chain_hook(target_addr, nullptr, NM_HOOK_PHASE_POST, 1, post_one, &trace, &h_post_1) == NM_OK);
+    CHECK(nm_install_inline_chain_hook(target_addr, nullptr, NM_HOOK_PHASE_POST, 2, post_two, &trace, &h_post_2) == NM_OK);
+
+    // Normal call: args[0] += 10 -> sum = (1+10)+2+3+4+5+6+7+8 = 46; post_1 (+100) = 146; post_2 (*2) = 292
+    trace.clear();
+    CHECK(call_target(1, 2, 3, 4, 5, 6, 7, 8) == 292);
+    CHECK((trace == std::vector<int>{1, 2, 3, 4}));
+
+    // Skip original: return = 7777 -> post_1 (+100) = 7877 -> post_2 (*2) = 15754
+    trace.clear();
+    CHECK(call_target(1, 2, 3, 4, 5, 6, 7, 999) == 15754);
+    CHECK((trace == std::vector<int>{1, 2, 3, 4}));
+
+    // Independent unhooking: remove post_one & pre_low; remaining pre_high + post_two stay active!
+    CHECK(nm_remove_hook(h_post_1) == NM_OK);
+    CHECK(nm_remove_hook(h_pre_low) == NM_OK);
+    trace.clear();
+    CHECK(call_target(1, 2, 3, 4, 5, 6, 7, 8) == 72); // 36 * 2
+    CHECK((trace == std::vector<int>{2, 4}));
+
+    CHECK(nm_remove_hook(h_pre_high) == NM_OK);
+    CHECK(nm_remove_hook(h_post_2) == NM_OK);
+    CHECK(call_target(1, 2, 3, 4, 5, 6, 7, 8) == 36);
+
+    // 2. Vtable pre/post chain with float return value mutation
+    void* vt[2] = {nullptr, reinterpret_cast<void*>(&chain_vtable_float_target)};
+    nm_hook_handle_t hv_pre = 0, hv_post = 0;
+    auto vt_pre = [](nm_hook_context_t* ctx, void*) {
+        ctx->args[0] += 5;
+    };
+    auto vt_post = [](nm_hook_context_t* ctx, void*) {
+        double d = 0.0;
+        std::memcpy(&d, &ctx->return_float, sizeof(d));
+        d += 0.5;
+        std::memcpy(&ctx->return_float, &d, sizeof(d));
+    };
+    CHECK(nm_install_vtable_chain_hook(vt, 1, NM_HOOK_PHASE_PRE, 0, vt_pre, nullptr, &hv_pre) == NM_OK);
+    CHECK(nm_install_vtable_chain_hook(vt, 1, NM_HOOK_PHASE_POST, 0, vt_post, nullptr, &hv_post) == NM_OK);
+    using VtFloatFn = double(NM_CALL*)(int64_t, double);
+    const double r = reinterpret_cast<VtFloatFn>(vt[1])(10, 2.25);
+    CHECK(std::fabs(r - 17.75) < 1e-9);
+    CHECK(nm_remove_hook(hv_pre) == NM_OK);
+    CHECK(nm_remove_hook(hv_post) == NM_OK);
+    CHECK(vt[1] == reinterpret_cast<void*>(&chain_vtable_float_target));
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
+namespace {
+NM_NOINLINE double NM_CALL mix_8args_double(int64_t a0, float f1, double d2, int64_t a3, float f4, double d5, int64_t a6, int64_t a7) {
+    return static_cast<double>(a0 + a3 + a6 + a7) + static_cast<double>(f1) + d2 + static_cast<double>(f4) + d5;
+}
+
+NM_NOINLINE int64_t NM_CALL throw_8args(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t) {
+    throw nativemods::SimulatedMsvcException("8-arg fault");
+}
+
+#if defined(_WIN32)
+NM_NOINLINE int64_t NM_CALL raise_seh_8args(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t) {
+    RaiseException(NM_MSVC_CXX_EXCEPTION_CODE, 0, 0, nullptr);
+    return 0;
+}
+#endif
+} // namespace
+
+int test_guarded_8arg_int_float_calls() {
+    nm_native_call_desc_t desc{};
+    desc.target_address = reinterpret_cast<uint64_t>(&mix_8args_double);
+    desc.arg_count = 8;
+    desc.float_arg_mask = (1u << 1) | (1u << 2) | (1u << 4) | (1u << 5);
+    desc.return_is_float = 1;
+
+    float f1 = 1.5f, f4 = 2.5f;
+    double d2 = 3.25, d5 = 4.75;
+    uint32_t f1_bits = 0, f4_bits = 0;
+    std::memcpy(&f1_bits, &f1, 4);
+    std::memcpy(&f4_bits, &f4, 4);
+
+    desc.args[0] = 10;
+    desc.args[1] = f1_bits;
+    std::memcpy(&desc.args[2], &d2, 8);
+    desc.args[3] = 20;
+    desc.args[4] = f4_bits;
+    std::memcpy(&desc.args[5], &d5, 8);
+    desc.args[6] = 30;
+    desc.args[7] = 40;
+
+    nm_exception_info_t ex{};
+    CHECK(nm_call_native_guarded(&desc, &ex) == NM_OK);
+    double out_d = 0.0;
+    std::memcpy(&out_d, &desc.out_float_bits, 8);
+    CHECK(std::fabs(out_d - 112.0) < 1e-9);
+
+    // Fault isolation on 8-arg call
+    nm_native_call_desc_t bad{};
+    bad.target_address = reinterpret_cast<uint64_t>(&throw_8args);
+    bad.arg_count = 8;
+    CHECK(nm_call_native_guarded(&bad, &ex) == NM_ERR_GAME_EXCEPTION);
+    CHECK(ex.exception_code == NM_MSVC_CXX_EXCEPTION_CODE);
+
+#if defined(_WIN32)
+    nm_native_call_desc_t bad_seh{};
+    bad_seh.target_address = reinterpret_cast<uint64_t>(&raise_seh_8args);
+    bad_seh.arg_count = 8;
+    CHECK(nm_call_native_guarded(&bad_seh, &ex) == NM_ERR_GAME_EXCEPTION);
+    CHECK(ex.exception_code == NM_MSVC_CXX_EXCEPTION_CODE);
+#endif
+
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_utf16_extensions_nobom_and_overlay_reclaim() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // Verify all 15 ClientTextEncoding extensions: .otc/.it/.trl -> BOM+CRLF, .sm/.mat/.amd -> NO BOM+CRLF!
+    static uint8_t kUtf8Sample[] = {'a', '\n', 'b', '\n'};
+    uint64_t tok = 0;
+    auto cb = [](const char*, uint8_t** out_data, size_t* out_size, void*) -> nm_status_t {
+        *out_data = kUtf8Sample;
+        *out_size = sizeof(kUtf8Sample);
+        return NM_OK;
+    };
+    CHECK(nm_register_file_overlay(cb, nullptr, nullptr, &tok) == NM_OK);
+
+    const char* bom_exts[] = {"a.ui", "a.ot", "a.otc", "a.it", "a.itc", "a.ao", "a.aoc", "a.act", "a.epk", "a.ddt", "a.pet", "a.trl"};
+    for (const char* p : bom_exts) {
+        uint8_t* data = nullptr;
+        size_t sz = 0;
+        CHECK(nm_resolve_file_overlay(p, &data, &sz) == NM_OK);
+        // 2 (BOM) + 6 code units ("a\r\nb\r\n") * 2 = 14 bytes
+        CHECK(sz == 14u && data[0] == 0xFFu && data[1] == 0xFEu && data[2] == 'a' && data[3] == 0x00u);
+        CHECK(nm_free_file_overlay_buffer(data) == NM_OK);
+    }
+
+    const char* nobom_exts[] = {"a.sm", "a.mat", "a.amd"};
+    for (const char* p : nobom_exts) {
+        uint8_t* data = nullptr;
+        size_t sz = 0;
+        CHECK(nm_resolve_file_overlay(p, &data, &sz) == NM_OK);
+        // NO BOM: 6 code units ("a\r\nb\r\n") * 2 = 12 bytes, starts directly with 'a', 0x00
+        CHECK(sz == 12u && data[0] == 'a' && data[1] == 0x00u && data[2] == '\r' && data[3] == 0x00u);
+        CHECK(nm_free_file_overlay_buffer(data) == NM_OK);
+    }
+    CHECK(nm_unregister_file_overlay(tok) == NM_OK);
+
+    // Verify OverlayAndChannels ScopedOverlayIndex safely defers & reclaims retired_indices_
+    nativemods::OverlayAndChannels ov;
+    uint64_t t1 = 0;
+    CHECK(ov.register_file_overlay(cb, nullptr, nullptr, &t1) == NM_OK);
+    CHECK(ov.retired_index_count() == 0);
+    {
+        auto pinned = ov.acquire_index();
+        CHECK(static_cast<bool>(pinned));
+        for (int i = 0; i < 10; ++i) {
+            const char* p = "Data/Test.datc64";
+            CHECK(ov.set_file_overlay_known_paths(t1, &p, 1) == NM_OK);
+        }
+        CHECK(ov.retired_index_count() == 10u);
+    }
+    CHECK(ov.retired_index_count() == 0u);
+
+    // Clipboard round-trip (mutex-backed stub on Linux, CF_UNICODETEXT on Windows)
+    CHECK(nm_clipboard_set_text("LocalExile-0.2.0") == NM_OK);
+    size_t clip_len = 0;
+    CHECK(nm_clipboard_get_text(nullptr, 0, &clip_len) == NM_OK);
+    CHECK(clip_len == std::strlen("LocalExile-0.2.0"));
+    char small_buf[4] = {};
+    CHECK(nm_clipboard_get_text(small_buf, sizeof(small_buf), &clip_len) == NM_ERR_BUFFER_TOO_SMALL);
+    char full_buf[64] = {};
+    CHECK(nm_clipboard_get_text(full_buf, sizeof(full_buf), &clip_len) == NM_OK);
+    CHECK(std::strcmp(full_buf, "LocalExile-0.2.0") == 0);
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
+namespace {
+nm_hook_handle_t   g_self_inline_handle = NM_HOOK_INVALID;
+TestAddFn          g_self_inline_tramp = nullptr;
+std::atomic<int>   g_self_inline_hits{0};
+nm_status_t        g_self_inline_remove_st = NM_ERR_INVALID_ARG;
+
+int self_removing_inline_detour(int x) {
+    g_self_inline_hits.fetch_add(1, std::memory_order_relaxed);
+    const nm_hook_handle_t h = g_self_inline_handle;
+    g_self_inline_handle = NM_HOOK_INVALID;
+    g_self_inline_remove_st = nm_remove_hook(h);
+    return g_self_inline_tramp(x) + 100;
+}
+
+nm_hook_handle_t   g_self_vt_handle = NM_HOOK_INVALID;
+TestAddFn          g_self_vt_orig = nullptr;
+std::atomic<int>   g_self_vt_hits{0};
+nm_status_t        g_self_vt_remove_st = NM_ERR_INVALID_ARG;
+
+int self_removing_vtable_detour(int x) {
+    g_self_vt_hits.fetch_add(1, std::memory_order_relaxed);
+    const nm_hook_handle_t h = g_self_vt_handle;
+    g_self_vt_handle = NM_HOOK_INVALID;
+    g_self_vt_remove_st = nm_remove_hook(h);
+    return g_self_vt_orig(x) + 50;
+}
+
+NM_NOINLINE int64_t NM_CALL vt_stress_target(int64_t x) {
+    return x * 3 + 1;
+}
+} // namespace
+
+int test_relocate_internal_jump_over_2gb() {
+    using nativemods::HookEngine;
+
+    // Stolen bytes containing an internal `je` jumping past a 5B external `jmp` (which
+    // expands to 14B when tramp_base is >2GB from orig_base), plus a trailing external `jmp short`.
+    const uint8_t stolen[] = {
+        0x85, 0xFF,                         // 0:  test edi, edi (2B)
+        0x74, 0x05,                         // 2:  je +5 -> orig + 9 (2B, internal!)
+        0xE9, 0x40, 0x00, 0x00, 0x00,       // 4:  jmp +0x40 -> orig + 0x49 (5B, external -> 14B)
+        0x83, 0xC7, 0x01,                   // 9:  add edi, 1 (3B, internal target!)
+        0xEB, 0x20,                         // 12: jmp short +0x20 -> orig + 0x34 (2B, external -> 14B)
+    };
+    const uint64_t orig_base  = 0x100000000ull;
+    const uint64_t tramp_base = 0x300000000ull; // +8GB (> 2GB!)
+
+    std::vector<uint8_t> out;
+    CHECK(HookEngine::relocate_instructions(orig_base, stolen, sizeof(stolen), tramp_base, out));
+    // Expected layout:
+    //   0..1:   85 FF (2B)
+    //   2..7:   0F 84 <rel32 = 14> (6B) -> target = tramp_base + 8 + 14 = tramp_base + 22
+    //   8..21:  FF 25 00 00 00 00 <orig_base + 0x49> (14B)
+    //   22..24: 83 C7 01 (3B)  <-- exact internal target!
+    //   25..38: FF 25 00 00 00 00 <orig_base + 0x34> (14B)
+    //   39..52: FF 25 00 00 00 00 <orig_base + 14> (14B)
+    CHECK(out.size() == 53u);
+    CHECK(out[2] == 0x0Fu && out[3] == 0x84u);
+    int32_t je_disp = 0;
+    std::memcpy(&je_disp, &out[4], 4);
+    CHECK(je_disp == 14);
+    CHECK(out[22] == 0x83u && out[23] == 0xC7u && out[24] == 0x01u);
+
+    // Also verify internal backward `jmp short` + internal `jrcxz` over >2GB
+    const uint8_t stolen_loop[] = {
+        0x83, 0xC7, 0x01,                   // 0: add edi, 1 (3B, internal target)
+        0xE3, 0x05,                         // 3: jrcxz +5 -> orig + 10 (2B, internal!)
+        0xE9, 0x50, 0x00, 0x00, 0x00,       // 5: jmp +0x50 -> external (5B -> 14B)
+        0xEB, 0xF4,                         // 10: jmp short -12 -> orig + 0 (2B, internal backward!)
+        0x90, 0x90,                         // 12: nop; nop (2B)
+    };
+    out.clear();
+    CHECK(HookEngine::relocate_instructions(orig_base, stolen_loop, sizeof(stolen_loop), tramp_base, out));
+    // Expected layout:
+    //   0..2:   83 C7 01 (3B)
+    //   3..11:  E3 02 EB 05 E9 <rel32 = 14> (9B) -> target = tramp_base + 12 + 14 = tramp_base + 26
+    //   12..25: FF 25 ... (14B)
+    //   26..30: E9 <rel32 = -31> (5B) -> target = tramp_base + 31 - 31 = tramp_base + 0
+    //   31..32: 90 90 (2B)
+    //   33..46: FF 25 ... (14B)
+    CHECK(out.size() == 47u);
+    CHECK(out[3] == 0xE3u && out[7] == 0xE9u);
+    int32_t jrcxz_disp = 0;
+    std::memcpy(&jrcxz_disp, &out[8], 4);
+    CHECK(jrcxz_disp == 14);
+    CHECK(out[26] == 0xE9u);
+    int32_t back_disp = 0;
+    std::memcpy(&back_disp, &out[27], 4);
+    CHECK(back_disp == -31);
+
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_raw_detour_self_removal() {
+    using nativemods::HookEngine;
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // 1. Inline raw detour calling nm_remove_hook(self) BEFORE calling out_trampoline
+    void* code_page = HookEngine::alloc_exec_page(4096);
+    CHECK(code_page != nullptr);
+    auto* code = static_cast<uint8_t*>(code_page);
+    std::memset(code, 0x90, 16);
+#if defined(_WIN32)
+    // lea eax, [rcx + 10] ; ret
+    code[16] = 0x8D; code[17] = 0x41; code[18] = 0x0A; code[19] = 0xC3;
+#else
+    // lea eax, [rdi + 10] ; ret
+    code[16] = 0x8D; code[17] = 0x47; code[18] = 0x0A; code[19] = 0xC3;
+#endif
+#if defined(_WIN32)
+    FlushInstructionCache(GetCurrentProcess(), code_page, 4096);
+#else
+    __builtin___clear_cache(static_cast<char*>(code_page), static_cast<char*>(code_page) + 4096);
+#endif
+
+    auto target_fn = reinterpret_cast<TestAddFn>(code_page);
+    CHECK(target_fn(5) == 15);
+
+    g_self_inline_hits.store(0, std::memory_order_relaxed);
+    g_self_inline_remove_st = NM_ERR_INVALID_ARG;
+    g_self_inline_handle = NM_HOOK_INVALID;
+    void* tramp = nullptr;
+    CHECK(nm_install_inline_hook_at(
+              reinterpret_cast<uint64_t>(code_page),
+              "9090909090909090",
+              reinterpret_cast<void*>(&self_removing_inline_detour),
+              &tramp,
+              &g_self_inline_handle) == NM_OK);
+    CHECK(tramp != nullptr && g_self_inline_handle != NM_HOOK_INVALID);
+    g_self_inline_tramp = reinterpret_cast<TestAddFn>(tramp);
+
+    // Detour removes itself, then invokes next_stub (must NOT UAF/SEGV!)
+    CHECK(target_fn(5) == 115);
+    CHECK(g_self_inline_remove_st == NM_OK);
+    CHECK(g_self_inline_hits.load(std::memory_order_relaxed) == 1);
+    // Subsequent call runs restored original directly
+    CHECK(target_fn(5) == 15);
+    CHECK(g_self_inline_hits.load(std::memory_order_relaxed) == 1);
+
+    HookEngine::free_exec_page(code_page, 4096);
+
+    // 2. Vtable raw detour calling nm_remove_hook(self) BEFORE calling out_original_fn
+    void* vtable[2] = {nullptr, reinterpret_cast<void*>(&vtable_orig_fn)};
+    g_self_vt_hits.store(0, std::memory_order_relaxed);
+    g_self_vt_remove_st = NM_ERR_INVALID_ARG;
+    g_self_vt_handle = NM_HOOK_INVALID;
+    void* vt_orig = nullptr;
+    CHECK(nm_install_vtable_hook(
+              vtable,
+              1u,
+              reinterpret_cast<void*>(&self_removing_vtable_detour),
+              &vt_orig,
+              &g_self_vt_handle) == NM_OK);
+    CHECK(vt_orig != nullptr && g_self_vt_handle != NM_HOOK_INVALID);
+    g_self_vt_orig = reinterpret_cast<TestAddFn>(vt_orig);
+
+    CHECK(reinterpret_cast<TestAddFn>(vtable[1])(10) == 70);
+    CHECK(g_self_vt_remove_st == NM_OK);
+    CHECK(g_self_vt_hits.load(std::memory_order_relaxed) == 1);
+    CHECK(vtable[1] == reinterpret_cast<void*>(&vtable_orig_fn));
+    CHECK(reinterpret_cast<TestAddFn>(vtable[1])(10) == 20);
+    CHECK(g_self_vt_hits.load(std::memory_order_relaxed) == 1);
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_concurrent_vtable_chain_install_remove_stress() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    void* vt[2] = {nullptr, reinterpret_cast<void*>(&vt_stress_target)};
+    using StressFn = int64_t(NM_CALL*)(int64_t);
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> bad_results{0};
+    std::atomic<uint64_t> total_calls{0};
+
+    std::vector<std::thread> callers;
+    for (int t = 0; t < 3; ++t) {
+        callers.emplace_back([&]() {
+            while (!stop.load(std::memory_order_acquire)) {
+                StressFn fn = __atomic_load_n(reinterpret_cast<StressFn*>(&vt[1]), __ATOMIC_ACQUIRE);
+                const int64_t r = fn(7);
+                if (r != 22 && r != 52 && r != 122 && r != 152) {
+                    bad_results.fetch_add(1, std::memory_order_relaxed);
+                }
+                total_calls.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    auto pre_cb = [](nm_hook_context_t* ctx, void*) {
+        ctx->args[0] += 10;
+    };
+    auto post_cb = [](nm_hook_context_t* ctx, void*) {
+        ctx->return_value += 100;
+    };
+
+    for (int iter = 0; iter < 250; ++iter) {
+        nm_hook_handle_t h_pre = NM_HOOK_INVALID;
+        nm_hook_handle_t h_post = NM_HOOK_INVALID;
+        CHECK(nm_install_vtable_chain_hook(vt, 1u, NM_HOOK_PHASE_PRE, 0, pre_cb, nullptr, &h_pre) == NM_OK);
+        CHECK(nm_install_vtable_chain_hook(vt, 1u, NM_HOOK_PHASE_POST, 0, post_cb, nullptr, &h_post) == NM_OK);
+        if ((iter % 8) == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } else {
+            std::this_thread::yield();
+        }
+        if ((iter & 1) == 0) {
+            CHECK(nm_remove_hook(h_pre) == NM_OK);
+            CHECK(nm_remove_hook(h_post) == NM_OK);
+        } else {
+            CHECK(nm_remove_hook(h_post) == NM_OK);
+            CHECK(nm_remove_hook(h_pre) == NM_OK);
+        }
+    }
+
+    stop.store(true, std::memory_order_release);
+    for (auto& th : callers) {
+        th.join();
+    }
+
+    CHECK(bad_results.load() == 0);
+    CHECK(total_calls.load() > 0);
+    CHECK(vt[1] == reinterpret_cast<void*>(&vt_stress_target));
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -724,6 +1499,13 @@ int main() {
     if (test_prologue_length_and_sha256() != 0) return 1;
     if (test_disk_overlays_audio_and_wire_encoders() != 0) return 1;
     if (test_overlay_hash_prefilter_and_connection_token() != 0) return 1;
+    if (test_x64_decoder_and_rip_relocation() != 0) return 1;
+    if (test_multimod_pre_post_hook_chains() != 0) return 1;
+    if (test_guarded_8arg_int_float_calls() != 0) return 1;
+    if (test_utf16_extensions_nobom_and_overlay_reclaim() != 0) return 1;
+    if (test_relocate_internal_jump_over_2gb() != 0) return 1;
+    if (test_raw_detour_self_removal() != 0) return 1;
+    if (test_concurrent_vtable_chain_install_remove_stress() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

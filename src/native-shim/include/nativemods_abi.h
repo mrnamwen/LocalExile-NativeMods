@@ -36,7 +36,7 @@ extern "C" {
 
 /* Semantic ABI version encoded as (major << 16) | (minor << 8) | patch. */
 #define NM_ABI_VERSION_MAJOR 0u
-#define NM_ABI_VERSION_MINOR 1u
+#define NM_ABI_VERSION_MINOR 2u
 #define NM_ABI_VERSION_PATCH 0u
 #define NM_ABI_VERSION ((NM_ABI_VERSION_MAJOR << 16) | (NM_ABI_VERSION_MINOR << 8) | NM_ABI_VERSION_PATCH)
 
@@ -122,6 +122,34 @@ typedef enum nm_hook_kind_t {
     NM_HOOK_VTABLE_SLOT   = 2
 } nm_hook_kind_t;
 
+typedef enum nm_hook_phase_t {
+    NM_HOOK_PHASE_PRE  = 0,
+    NM_HOOK_PHASE_POST = 1
+} nm_hook_phase_t;
+
+/* Shared register/argument context for multi-mod pre/post hook chains (0.2.0). */
+typedef struct nm_hook_context_t {
+    uint64_t args[8];         /* arg0..3 from RCX..R9 (Win64) or RDI..RCX (SysV); arg4..7 from stack / SysV R8..R9+stack */
+    uint64_t float_args[4];   /* raw 64-bit bits of XMM0..XMM3 */
+    uint64_t return_value;    /* RAX (captured after original, editable by pre-skip or post-hook) */
+    uint64_t return_float;    /* raw 64-bit bits of XMM0 return */
+    uint64_t target_address;  /* hooked target address */
+    uint8_t  skip_original;   /* pre-hook sets to non-zero to bypass original invocation */
+    uint8_t  reserved[7];
+} nm_hook_context_t;
+
+/* Descriptor for up to 8-arg int/ptr/float/double guarded native calls (0.2.0). */
+typedef struct nm_native_call_desc_t {
+    uint64_t target_address;
+    uint32_t arg_count;        /* 0..8 */
+    uint32_t float_arg_mask;   /* bit i = 1 if arg i is float/double (bits in args[i]) */
+    uint8_t  return_is_float;  /* non-zero to capture XMM0 into out_float_bits */
+    uint8_t  reserved[7];
+    uint64_t args[8];
+    uint64_t out_int;          /* captured RAX */
+    uint64_t out_float_bits;   /* captured XMM0 */
+} nm_native_call_desc_t;
+
 /* Snapshot of host shim state & detected client build. */
 typedef struct nm_host_info_t {
     uint32_t      struct_size;
@@ -192,7 +220,7 @@ typedef void        (NM_CALL *nm_ruleset_rx_callback_t)(
     const uint8_t* payload,
     uint32_t       length,
     void*          user_data);
-typedef void        (NM_CALL *nm_chat_rx_callback_t)(
+typedef int32_t     (NM_CALL *nm_chat_rx_callback_t)(
     const char* sender_utf8,
     const char* text_utf8,
     void*       user_data);
@@ -205,6 +233,15 @@ typedef nm_status_t (NM_CALL *nm_packet_tx_override_t)(
 typedef void        (NM_CALL *nm_ui_event_callback_t)(
     void* control,
     void* user_data);
+typedef void        (NM_CALL *nm_hook_chain_callback_t)(
+    nm_hook_context_t* ctx,
+    void*              user_data);
+typedef int32_t     (NM_CALL *nm_opcode_handler_t)(
+    uint16_t       opcode,
+    void*          stream_handle,
+    const uint8_t* payload,
+    uint32_t       length,
+    void*          user_data);
 
 /*
  * Versioned function-pointer table passed to the managed host entry point:
@@ -336,6 +373,106 @@ typedef struct nm_abi_table_t {
         const char* const* paths_utf8,
         size_t             path_count);
     nm_status_t (NM_CALL *get_active_connection_token)(uint64_t* out_token);
+
+    /* ABI 0.2.0: Multi-mod pre/post hook chains & 8-arg/float guarded native calls (4) */
+    nm_status_t (NM_CALL *install_inline_chain_hook)(
+        uint64_t                  address,
+        const char*               expected_bytes_hex,
+        int32_t                   phase,
+        int32_t                   priority,
+        nm_hook_chain_callback_t  cb,
+        void*                     user_data,
+        nm_hook_handle_t*         out_handle);
+    nm_status_t (NM_CALL *install_inline_chain_hook_sym)(
+        const char*               symbol_name,
+        int32_t                   phase,
+        int32_t                   priority,
+        nm_hook_chain_callback_t  cb,
+        void*                     user_data,
+        nm_hook_handle_t*         out_handle);
+    nm_status_t (NM_CALL *install_vtable_chain_hook)(
+        void*                     vtable_address,
+        uint32_t                  slot_index,
+        int32_t                   phase,
+        int32_t                   priority,
+        nm_hook_chain_callback_t  cb,
+        void*                     user_data,
+        nm_hook_handle_t*         out_handle);
+    nm_status_t (NM_CALL *call_native_guarded)(
+        nm_native_call_desc_t* desc,
+        nm_exception_info_t*   out_exception);
+
+    /* ABI 0.2.0: Stock game file reads & hot-reload invalidation (2) */
+    nm_status_t (NM_CALL *files_read_stock)(
+        const char* virtual_path_utf8,
+        uint8_t**   out_data,
+        size_t*     out_size);
+    nm_status_t (NM_CALL *files_invalidate)(const char* virtual_path_utf8);
+
+    /* ABI 0.2.0: Raw packets & 0x02FC+ opcode handler group (4) */
+    nm_status_t (NM_CALL *send_raw_packet)(
+        uint16_t       opcode,
+        const uint8_t* payload,
+        uint32_t       length);
+    nm_status_t (NM_CALL *register_opcode_handler_group)(
+        uint16_t             min_opcode,
+        uint16_t             max_opcode,
+        nm_opcode_handler_t  cb,
+        void*                user_data,
+        uint64_t*            out_token);
+    nm_status_t (NM_CALL *unregister_opcode_handler_group)(uint64_t token);
+    nm_status_t (NM_CALL *stream_read)(
+        void*    stream_handle,
+        void*    dst,
+        uint64_t length);
+
+    /* ABI 0.2.0: Extended live native UI controls (15) */
+    nm_status_t (NM_CALL *ui_create_window_into)(
+        void*       parent_control,
+        const char* virtual_path_utf8,
+        void**      out_control);
+    nm_status_t (NM_CALL *ui_get_rect)(
+        void*  control,
+        float* out_x,
+        float* out_y,
+        float* out_w,
+        float* out_h);
+    nm_status_t (NM_CALL *ui_set_position)(void* control, float x, float y);
+    nm_status_t (NM_CALL *ui_set_size)(void* control, float w, float h);
+    nm_status_t (NM_CALL *ui_set_enabled)(void* control, int32_t enabled);
+    nm_status_t (NM_CALL *ui_remove_child)(void* parent_control, void* child_control);
+    nm_status_t (NM_CALL *ui_destroy_control)(void* control);
+    nm_status_t (NM_CALL *ui_textbox_get_text)(
+        void*   textbox_control,
+        char*   out_utf8,
+        size_t  capacity,
+        size_t* out_length);
+    nm_status_t (NM_CALL *ui_textbox_set_text)(void* textbox_control, const char* text_utf8);
+    nm_status_t (NM_CALL *ui_textbox_subscribe_changed)(
+        void*                  textbox_control,
+        nm_ui_event_callback_t cb,
+        void*                  user_data,
+        uint64_t*              out_token);
+    nm_status_t (NM_CALL *ui_textbox_subscribe_submitted)(
+        void*                  textbox_control,
+        nm_ui_event_callback_t cb,
+        void*                  user_data,
+        uint64_t*              out_token);
+    nm_status_t (NM_CALL *ui_checkbox_get_checked)(void* checkbox_control, int32_t* out_checked);
+    nm_status_t (NM_CALL *ui_checkbox_set_checked)(void* checkbox_control, int32_t checked);
+    nm_status_t (NM_CALL *ui_checkbox_subscribe_changed)(
+        void*                  checkbox_control,
+        nm_ui_event_callback_t cb,
+        void*                  user_data,
+        uint64_t*              out_token);
+    nm_status_t (NM_CALL *ui_unsubscribe)(uint64_t token);
+
+    /* ABI 0.2.0: Clipboard (2) */
+    nm_status_t (NM_CALL *clipboard_get_text)(
+        char*   out_utf8,
+        size_t  capacity,
+        size_t* out_length);
+    nm_status_t (NM_CALL *clipboard_set_text)(const char* text_utf8);
 } nm_abi_table_t;
 
 /* Exported C ABI functions. */
@@ -362,6 +499,29 @@ NM_API nm_status_t NM_CALL nm_install_vtable_hook(
     void*             detour_fn,
     void**            out_original_fn,
     nm_hook_handle_t* out_handle);
+NM_API nm_status_t NM_CALL nm_install_inline_chain_hook(
+    uint64_t                  address,
+    const char*               expected_bytes_hex,
+    int32_t                   phase,
+    int32_t                   priority,
+    nm_hook_chain_callback_t  cb,
+    void*                     user_data,
+    nm_hook_handle_t*         out_handle);
+NM_API nm_status_t NM_CALL nm_install_inline_chain_hook_sym(
+    const char*               symbol_name,
+    int32_t                   phase,
+    int32_t                   priority,
+    nm_hook_chain_callback_t  cb,
+    void*                     user_data,
+    nm_hook_handle_t*         out_handle);
+NM_API nm_status_t NM_CALL nm_install_vtable_chain_hook(
+    void*                     vtable_address,
+    uint32_t                  slot_index,
+    int32_t                   phase,
+    int32_t                   priority,
+    nm_hook_chain_callback_t  cb,
+    void*                     user_data,
+    nm_hook_handle_t*         out_handle);
 NM_API nm_status_t NM_CALL nm_remove_hook(nm_hook_handle_t handle);
 
 NM_API nm_status_t NM_CALL nm_register_frame_callback(
@@ -377,6 +537,9 @@ NM_API nm_status_t NM_CALL nm_call_guarded(
     void*                context,
     int64_t*             out_result,
     nm_exception_info_t* out_exception);
+NM_API nm_status_t NM_CALL nm_call_native_guarded(
+    nm_native_call_desc_t* desc,
+    nm_exception_info_t*   out_exception);
 
 NM_API nm_status_t NM_CALL nm_game_alloc(
     size_t   size,
@@ -408,6 +571,11 @@ NM_API nm_status_t NM_CALL nm_set_file_overlay_known_paths(
     const char* const* paths_utf8,
     size_t             path_count);
 NM_API nm_status_t NM_CALL nm_get_active_connection_token(uint64_t* out_token);
+NM_API nm_status_t NM_CALL nm_files_read_stock(
+    const char* virtual_path_utf8,
+    uint8_t**   out_data,
+    size_t*     out_size);
+NM_API nm_status_t NM_CALL nm_files_invalidate(const char* virtual_path_utf8);
 
 NM_API nm_status_t NM_CALL nm_audio_play_ogg(
     const char* virtual_or_disk_path_utf8,
@@ -432,6 +600,50 @@ NM_API nm_status_t NM_CALL nm_ui_subscribe_click(
     nm_ui_event_callback_t cb,
     void*                  user_data,
     uint64_t*              out_token);
+NM_API nm_status_t NM_CALL nm_ui_create_window_into(
+    void*       parent_control,
+    const char* virtual_path_utf8,
+    void**      out_control);
+NM_API nm_status_t NM_CALL nm_ui_get_rect(
+    void*  control,
+    float* out_x,
+    float* out_y,
+    float* out_w,
+    float* out_h);
+NM_API nm_status_t NM_CALL nm_ui_set_position(void* control, float x, float y);
+NM_API nm_status_t NM_CALL nm_ui_set_size(void* control, float w, float h);
+NM_API nm_status_t NM_CALL nm_ui_set_enabled(void* control, int32_t enabled);
+NM_API nm_status_t NM_CALL nm_ui_remove_child(void* parent_control, void* child_control);
+NM_API nm_status_t NM_CALL nm_ui_destroy_control(void* control);
+NM_API nm_status_t NM_CALL nm_ui_textbox_get_text(
+    void*   textbox_control,
+    char*   out_utf8,
+    size_t  capacity,
+    size_t* out_length);
+NM_API nm_status_t NM_CALL nm_ui_textbox_set_text(void* textbox_control, const char* text_utf8);
+NM_API nm_status_t NM_CALL nm_ui_textbox_subscribe_changed(
+    void*                  textbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token);
+NM_API nm_status_t NM_CALL nm_ui_textbox_subscribe_submitted(
+    void*                  textbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token);
+NM_API nm_status_t NM_CALL nm_ui_checkbox_get_checked(void* checkbox_control, int32_t* out_checked);
+NM_API nm_status_t NM_CALL nm_ui_checkbox_set_checked(void* checkbox_control, int32_t checked);
+NM_API nm_status_t NM_CALL nm_ui_checkbox_subscribe_changed(
+    void*                  checkbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token);
+NM_API nm_status_t NM_CALL nm_ui_unsubscribe(uint64_t token);
+NM_API nm_status_t NM_CALL nm_clipboard_get_text(
+    char*   out_utf8,
+    size_t  capacity,
+    size_t* out_length);
+NM_API nm_status_t NM_CALL nm_clipboard_set_text(const char* text_utf8);
 
 NM_API nm_status_t NM_CALL nm_register_ruleset_handler(
     uint32_t                 ruleset_id,
@@ -449,6 +661,21 @@ NM_API nm_status_t NM_CALL nm_register_chat_channel_handler(
     uint64_t*             out_token);
 NM_API nm_status_t NM_CALL nm_unregister_chat_channel_handler(uint64_t token);
 NM_API nm_status_t NM_CALL nm_send_chat_line(const char* text_utf8);
+NM_API nm_status_t NM_CALL nm_send_raw_packet(
+    uint16_t       opcode,
+    const uint8_t* payload,
+    uint32_t       length);
+NM_API nm_status_t NM_CALL nm_register_opcode_handler_group(
+    uint16_t             min_opcode,
+    uint16_t             max_opcode,
+    nm_opcode_handler_t  cb,
+    void*                user_data,
+    uint64_t*            out_token);
+NM_API nm_status_t NM_CALL nm_unregister_opcode_handler_group(uint64_t token);
+NM_API nm_status_t NM_CALL nm_stream_read(
+    void*    stream_handle,
+    void*    dst,
+    uint64_t length);
 
 /* Inbound dispatch & lifecycle helpers (used by internal hooks and host-side tests). */
 NM_API nm_status_t NM_CALL nm_dispatch_ruleset_rx(
@@ -458,6 +685,11 @@ NM_API nm_status_t NM_CALL nm_dispatch_ruleset_rx(
 NM_API int32_t     NM_CALL nm_dispatch_chat_rx(
     const char* sender_utf8,
     const char* text_utf8);
+NM_API nm_status_t NM_CALL nm_dispatch_opcode_rx(
+    uint16_t       opcode,
+    const uint8_t* payload,
+    uint32_t       length,
+    int32_t*       out_handled);
 NM_API nm_status_t NM_CALL nm_set_packet_tx_override(
     nm_packet_tx_override_t tx_fn,
     void*                   user_data);

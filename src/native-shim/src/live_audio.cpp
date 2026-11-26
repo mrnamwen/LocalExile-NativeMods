@@ -371,6 +371,22 @@ nm_status_t LiveAudioManager::play_event(
         base = game_image_base_;
         build = build_id_;
         tracks_[handle] = ActiveTrack{handle, nullptr, nullptr, fmod_event_utf8, clamped_vol, false, true};
+
+        // Bound fire-and-forget event tracks (those without an FMOD channel/sound) to at most 64 entries.
+        constexpr size_t kMaxEventTracks = 64;
+        size_t event_count = 0;
+        int32_t oldest_event_handle = 0;
+        for (const auto& kv : tracks_) {
+            if (!kv.second.loop && kv.second.fmod_channel == nullptr && kv.second.fmod_sound == nullptr) {
+                ++event_count;
+                if (oldest_event_handle == 0 || kv.first < oldest_event_handle) {
+                    oldest_event_handle = kv.first;
+                }
+            }
+        }
+        if (event_count > kMaxEventTracks && oldest_event_handle != 0 && oldest_event_handle != handle) {
+            tracks_.erase(oldest_event_handle);
+        }
     }
     (void)base;
     (void)build;
@@ -379,10 +395,11 @@ nm_status_t LiveAudioManager::play_event(
     // Route named FMOD Studio events through PoE's native Audio::GetHolder -> WrapRequest -> SubmitRequest
     // when running inside a live 3.29 client process (08-deep-analysis.md §6).
     if (build != NM_BUILD_SYNTHETIC && build != NM_BUILD_UNKNOWN && base != 0) {
-        const EmbeddedSymbol* sym_holder = find_symbol(build, "audio.get_holder");
-        const EmbeddedSymbol* sym_wrap   = find_symbol(build, "audio.wrap_request");
-        const EmbeddedSymbol* sym_submit = find_symbol(build, "audio.submit_request");
-        const EmbeddedSymbol* sym_assign = find_symbol(build, "runtime.wstring_assign");
+        const EmbeddedSymbol* sym_holder  = find_symbol(build, "audio.get_holder");
+        const EmbeddedSymbol* sym_wrap    = find_symbol(build, "audio.wrap_request");
+        const EmbeddedSymbol* sym_submit  = find_symbol(build, "audio.submit_request");
+        const EmbeddedSymbol* sym_assign  = find_symbol(build, "runtime.wstring_assign");
+        const EmbeddedSymbol* sym_destroy = find_symbol(build, "runtime.wstring_destroy");
         if (sym_holder && sym_wrap && sym_submit && sym_assign &&
             sym_holder->rva && sym_wrap->rva && sym_submit->rva && sym_assign->rva) {
             struct EventCallCtx {
@@ -390,6 +407,7 @@ nm_status_t LiveAudioManager::play_event(
                 uint64_t    wrap_addr;
                 uint64_t    submit_addr;
                 uint64_t    assign_addr;
+                uint64_t    destroy_addr;
                 std::wstring wide_name;
                 float       vol;
             };
@@ -398,6 +416,7 @@ nm_status_t LiveAudioManager::play_event(
                 base + sym_wrap->rva,
                 base + sym_submit->rva,
                 base + sym_assign->rva,
+                (sym_destroy && sym_destroy->rva) ? (base + sym_destroy->rva) : 0ull,
                 utf8_to_wide_audio(fmod_event_utf8),
                 clamped_vol,
             };
@@ -405,11 +424,15 @@ nm_status_t LiveAudioManager::play_event(
                 auto* c = static_cast<EventCallCtx*>(raw);
                 using GetHolderFn = void*(NM_CALL*)();
                 using AssignFn    = void*(NM_CALL*)(void*, const wchar_t*, uint64_t);
+                using DestroyFn   = void(NM_CALL*)(void*);
                 using WrapFn      = void(NM_CALL*)(void*, void*);
                 using SubmitFn    = void(NM_CALL*)(void*, void*);
 
                 auto get_holder = reinterpret_cast<GetHolderFn>(static_cast<uintptr_t>(c->holder_addr));
                 auto w_assign   = reinterpret_cast<AssignFn>(static_cast<uintptr_t>(c->assign_addr));
+                auto w_destroy  = c->destroy_addr
+                                      ? reinterpret_cast<DestroyFn>(static_cast<uintptr_t>(c->destroy_addr))
+                                      : nullptr;
                 auto wrap_req   = reinterpret_cast<WrapFn>(static_cast<uintptr_t>(c->wrap_addr));
                 auto submit_req = reinterpret_cast<SubmitFn>(static_cast<uintptr_t>(c->submit_addr));
 
@@ -427,6 +450,11 @@ nm_status_t LiveAudioManager::play_event(
                 wrap_req(req, &ws);
                 std::memcpy(req + 0x64, &c->vol, sizeof(float));
                 submit_req(mgr, req);
+                if (w_destroy) {
+                    // Destroy req+0x00 and req+0x20 std::wstring buffers (matching Game.exe 0x14010995c).
+                    w_destroy(req + 0x20);
+                    w_destroy(req + 0x00);
+                }
                 return 0;
             };
 
@@ -514,9 +542,16 @@ nm_status_t LiveAudioManager::is_playing(int32_t channel_handle, int32_t* out_pl
 #if defined(_WIN32)
     if (it->second.fmod_channel && g_fmod.Channel_IsPlaying) {
         int32_t playing = 0;
-        if (g_fmod.Channel_IsPlaying(it->second.fmod_channel, &playing) == 0) {
-            *out_playing = playing ? 1 : 0;
+        const int32_t rc = g_fmod.Channel_IsPlaying(it->second.fmod_channel, &playing);
+        if (rc == 0 && playing != 0) {
+            *out_playing = 1;
             return NM_OK;
+        }
+        if (!it->second.loop) {
+            if (it->second.fmod_sound && g_fmod.Sound_Release) {
+                (void)g_fmod.Sound_Release(it->second.fmod_sound);
+            }
+            tracks_.erase(it);
         }
         *out_playing = 0;
         return NM_OK;
@@ -531,6 +566,22 @@ void LiveAudioManager::tick_update() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (fmod_system_ && g_fmod.System_Update) {
         (void)g_fmod.System_Update(fmod_system_);
+    }
+    if (g_fmod.Channel_IsPlaying) {
+        for (auto it = tracks_.begin(); it != tracks_.end();) {
+            if (!it->second.loop && it->second.fmod_channel != nullptr) {
+                int32_t playing = 0;
+                const int32_t rc = g_fmod.Channel_IsPlaying(it->second.fmod_channel, &playing);
+                if (rc != 0 || playing == 0) {
+                    if (it->second.fmod_sound && g_fmod.Sound_Release) {
+                        (void)g_fmod.Sound_Release(it->second.fmod_sound);
+                    }
+                    it = tracks_.erase(it);
+                    continue;
+                }
+            }
+            ++it;
+        }
     }
 #endif
 }

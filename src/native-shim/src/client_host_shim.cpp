@@ -96,6 +96,33 @@ const nm_abi_table_t kAbiTable = {
     &nm_ui_subscribe_click,
     &nm_set_file_overlay_known_paths,
     &nm_get_active_connection_token,
+    &nm_install_inline_chain_hook,
+    &nm_install_inline_chain_hook_sym,
+    &nm_install_vtable_chain_hook,
+    &nm_call_native_guarded,
+    &nm_files_read_stock,
+    &nm_files_invalidate,
+    &nm_send_raw_packet,
+    &nm_register_opcode_handler_group,
+    &nm_unregister_opcode_handler_group,
+    &nm_stream_read,
+    &nm_ui_create_window_into,
+    &nm_ui_get_rect,
+    &nm_ui_set_position,
+    &nm_ui_set_size,
+    &nm_ui_set_enabled,
+    &nm_ui_remove_child,
+    &nm_ui_destroy_control,
+    &nm_ui_textbox_get_text,
+    &nm_ui_textbox_set_text,
+    &nm_ui_textbox_subscribe_changed,
+    &nm_ui_textbox_subscribe_submitted,
+    &nm_ui_checkbox_get_checked,
+    &nm_ui_checkbox_set_checked,
+    &nm_ui_checkbox_subscribe_changed,
+    &nm_ui_unsubscribe,
+    &nm_clipboard_get_text,
+    &nm_clipboard_set_text,
 };
 
 #if defined(_WIN32)
@@ -183,7 +210,7 @@ void trigger_auto_coreclr_bootstrap(const char* trigger_reason) {
                 trigger_reason);
 }
 
-// Invoked on the game thread by our register-preserving StateStack::PassA (0x1528f40) stub.
+// Invoked on the game thread by our register-preserving frame.state_stack_pass_a stub.
 // Returns the trampoline address in RAX so the stub can tail-jump directly to the original function.
 extern "C" void* NM_CALL on_live_game_frame_tick() {
     const uint64_t frame_num = g_live_frame_count.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -201,7 +228,7 @@ extern "C" void* NM_CALL on_live_game_frame_tick() {
     g_last_frame_qpc = now;
 
     if (frame_num == 1) {
-        logger_logf("INFO", "First frame hook hit on game thread (tid=%lu, rva=0x1528f40)",
+        logger_logf("INFO", "First frame hook hit on game thread (tid=%lu)",
                     static_cast<unsigned long>(GetCurrentThreadId()));
         trigger_auto_coreclr_bootstrap("first-frame");
     } else if (frame_num == 10 || frame_num == 60 || frame_num == 120 || (frame_num % 300) == 0) {
@@ -225,7 +252,7 @@ extern "C" void* NM_CALL on_live_game_frame_tick() {
     return tramp;
 }
 
-// Builds a register-preserving x86-64 entry stub for StateStack::PassA (0x1528f40).
+// Builds a register-preserving x86-64 entry stub for frame.state_stack_pass_a.
 // Preserves rcx, rdx, r8, r9, xmm0..xmm3 and Win64 16-byte stack alignment across on_live_game_frame_tick(),
 // then jumps to the returned trampoline address in RAX.
 void* build_pass_a_frame_stub() {
@@ -517,6 +544,49 @@ NM_API nm_status_t NM_CALL nm_install_vtable_hook(
     return state().hooks.install_vtable(vtable_address, slot_index, detour_fn, out_original_fn, out_handle);
 }
 
+NM_API nm_status_t NM_CALL nm_install_inline_chain_hook(
+    uint64_t                 address,
+    const char*              expected_bytes_hex,
+    int32_t                  phase,
+    int32_t                  priority,
+    nm_hook_chain_callback_t cb,
+    void*                    user_data,
+    nm_hook_handle_t*        out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().hooks.install_inline_chain(
+        address, expected_bytes_hex, static_cast<nm_hook_phase_t>(phase), priority, cb, user_data, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_install_inline_chain_hook_sym(
+    const char*              symbol_name,
+    int32_t                  phase,
+    int32_t                  priority,
+    nm_hook_chain_callback_t cb,
+    void*                    user_data,
+    nm_hook_handle_t*        out_handle) {
+    if (!symbol_name || !cb || !out_handle) return NM_ERR_INVALID_ARG;
+    nm_symbol_info_t info{};
+    const nm_status_t lookup_st = nm_lookup_symbol(symbol_name, &info);
+    if (lookup_st != NM_OK) {
+        return lookup_st;
+    }
+    return state().hooks.install_inline_chain(
+        info.runtime_address, info.expected_bytes_hex, static_cast<nm_hook_phase_t>(phase), priority, cb, user_data, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_install_vtable_chain_hook(
+    void*                    vtable_address,
+    uint32_t                 slot_index,
+    int32_t                  phase,
+    int32_t                  priority,
+    nm_hook_chain_callback_t cb,
+    void*                    user_data,
+    nm_hook_handle_t*        out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().hooks.install_vtable_chain(
+        vtable_address, slot_index, static_cast<nm_hook_phase_t>(phase), priority, cb, user_data, out_handle);
+}
+
 NM_API nm_status_t NM_CALL nm_remove_hook(nm_hook_handle_t handle) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
     return state().hooks.remove(handle);
@@ -551,6 +621,12 @@ NM_API nm_status_t NM_CALL nm_call_guarded(
     int64_t*             out_result,
     nm_exception_info_t* out_exception) {
     return invoke_guarded(fn, context, out_result, out_exception);
+}
+
+NM_API nm_status_t NM_CALL nm_call_native_guarded(
+    nm_native_call_desc_t* desc,
+    nm_exception_info_t*   out_exception) {
+    return invoke_native_guarded(desc, out_exception);
 }
 
 NM_API nm_status_t NM_CALL nm_game_alloc(size_t size, size_t alignment, uint16_t tag, void** out_ptr) {
@@ -620,6 +696,17 @@ NM_API nm_status_t NM_CALL nm_get_active_connection_token(uint64_t* out_token) {
     return state().live_hooks.get_active_connection_token(out_token);
 }
 
+NM_API nm_status_t NM_CALL nm_files_read_stock(const char* virtual_path_utf8, uint8_t** out_data, size_t* out_size) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    auto& s = state();
+    return s.live_hooks.files_read_stock(virtual_path_utf8, s.channels, s.allocator, out_data, out_size);
+}
+
+NM_API nm_status_t NM_CALL nm_files_invalidate(const char* virtual_path_utf8) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.files_invalidate(virtual_path_utf8);
+}
+
 NM_API nm_status_t NM_CALL nm_audio_play_ogg(
     const char* virtual_or_disk_path_utf8,
     float       volume,
@@ -686,6 +773,103 @@ NM_API nm_status_t NM_CALL nm_ui_subscribe_click(
     return state().live_hooks.ui_subscribe_click(button_control, cb, user_data, out_token);
 }
 
+NM_API nm_status_t NM_CALL nm_ui_create_window_into(void* parent_control, const char* virtual_path_utf8, void** out_control) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_create_window_into(parent_control, virtual_path_utf8, out_control);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_rect(void* control, float* out_x, float* out_y, float* out_w, float* out_h) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_get_rect(control, out_x, out_y, out_w, out_h);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_position(void* control, float x, float y) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_set_position(control, x, y);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_size(void* control, float w, float h) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_set_size(control, w, h);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_enabled(void* control, int32_t enabled) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_set_enabled(control, enabled);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_remove_child(void* parent_control, void* child_control) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_remove_child(parent_control, child_control);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_destroy_control(void* control) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_destroy_control(control);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_textbox_get_text(void* textbox_control, char* out_utf8, size_t capacity, size_t* out_length) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_textbox_get_text(textbox_control, out_utf8, capacity, out_length);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_textbox_set_text(void* textbox_control, const char* text_utf8) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_textbox_set_text(textbox_control, text_utf8);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_textbox_subscribe_changed(
+    void*                  textbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_textbox_subscribe_changed(textbox_control, cb, user_data, out_token);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_textbox_subscribe_submitted(
+    void*                  textbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_textbox_subscribe_submitted(textbox_control, cb, user_data, out_token);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_checkbox_get_checked(void* checkbox_control, int32_t* out_checked) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_checkbox_get_checked(checkbox_control, out_checked);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_checkbox_set_checked(void* checkbox_control, int32_t checked) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_checkbox_set_checked(checkbox_control, checked);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_checkbox_subscribe_changed(
+    void*                  checkbox_control,
+    nm_ui_event_callback_t cb,
+    void*                  user_data,
+    uint64_t*              out_token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_checkbox_subscribe_changed(checkbox_control, cb, user_data, out_token);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_unsubscribe(uint64_t token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_unsubscribe(token);
+}
+
+NM_API nm_status_t NM_CALL nm_clipboard_get_text(char* out_utf8, size_t capacity, size_t* out_length) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.clipboard_get_text(out_utf8, capacity, out_length);
+}
+
+NM_API nm_status_t NM_CALL nm_clipboard_set_text(const char* text_utf8) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.clipboard_set_text(text_utf8);
+}
+
 NM_API nm_status_t NM_CALL nm_register_ruleset_handler(
     uint32_t                 ruleset_id,
     nm_ruleset_rx_callback_t cb,
@@ -734,6 +918,37 @@ NM_API nm_status_t NM_CALL nm_send_chat_line(const char* text_utf8) {
     return st;
 }
 
+NM_API nm_status_t NM_CALL nm_send_raw_packet(uint16_t opcode, const uint8_t* payload, uint32_t length) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    if (length > 1048576u) return NM_ERR_PAYLOAD_TOO_LARGE;
+    if (length > 0 && payload == nullptr) return NM_ERR_INVALID_ARG;
+    const nm_status_t st = state().channels.try_send_raw_packet_override(opcode, payload, length);
+    if (st == NM_ERR_NOT_SUPPORTED_ON_PLATFORM) {
+        return state().live_hooks.send_live_raw_packet(opcode, payload, length);
+    }
+    return st;
+}
+
+NM_API nm_status_t NM_CALL nm_register_opcode_handler_group(
+    uint16_t            min_opcode,
+    uint16_t            max_opcode,
+    nm_opcode_handler_t cb,
+    void*               user_data,
+    uint64_t*           out_token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.register_opcode_handler_group(min_opcode, max_opcode, cb, user_data, out_token);
+}
+
+NM_API nm_status_t NM_CALL nm_unregister_opcode_handler_group(uint64_t token) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.unregister_opcode_handler_group(token);
+}
+
+NM_API nm_status_t NM_CALL nm_stream_read(void* stream_handle, void* dst, uint64_t length) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.stream_read(stream_handle, dst, length);
+}
+
 NM_API nm_status_t NM_CALL nm_dispatch_ruleset_rx(
     uint32_t       ruleset_id,
     const uint8_t* payload,
@@ -745,6 +960,15 @@ NM_API nm_status_t NM_CALL nm_dispatch_ruleset_rx(
 NM_API int32_t NM_CALL nm_dispatch_chat_rx(const char* sender_utf8, const char* text_utf8) {
     if (!state().initialized) return 0;
     return state().channels.dispatch_chat_rx(sender_utf8, text_utf8);
+}
+
+NM_API nm_status_t NM_CALL nm_dispatch_opcode_rx(
+    uint16_t       opcode,
+    const uint8_t* payload,
+    uint32_t       length,
+    int32_t*       out_handled) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().channels.dispatch_opcode_rx(opcode, nullptr, payload, length, out_handled);
 }
 
 NM_API nm_status_t NM_CALL nm_set_packet_tx_override(nm_packet_tx_override_t tx_fn, void* user_data) {
@@ -828,22 +1052,32 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
     nm_build_id_t detected_build = identify_build_by_sha256(exe_sha256);
     const char* match_source = (detected_build != NM_BUILD_UNKNOWN) ? "exact-sha256" : "none";
 
-    // Check in-memory 3.29 code signatures (handles LocalExile key-patched Game.patched.exe and .nmimp builds).
-    bool pass_a_ok = false;
-    bool pass_a_hook_ok = false;
-    bool app_global_ok = false;
+    // Check in-memory 3.29 code signatures from address table (handles key-patched and .nmimp builds).
+    const nm_build_id_t probe_build = (detected_build != NM_BUILD_UNKNOWN) ? detected_build : NM_BUILD_3_29_3D_328228;
+    const EmbeddedSymbol* pass_a_sym      = find_symbol(probe_build, "frame.state_stack_pass_a");
+    const EmbeddedSymbol* pass_a_hook_sym = find_symbol(probe_build, "frame.state_stack_pass_a_hook");
+    const EmbeddedSymbol* app_global_sym  = find_symbol(probe_build, "network.app_global_ref");
 
-    if (image_size > 0x1529100u &&
-        is_memory_readable(base + 0x1528f40ull, 16) &&
-        is_memory_readable(base + 0x1528fbfull, 18) &&
-        is_memory_readable(base + 0x00f3b30ull, 16)) {
-        pass_a_ok = verify_memory_bytes(base + 0x1528f40ull, "48895c241048896c24184889742420") == NM_OK;
-        pass_a_hook_ok = verify_memory_bytes(base + 0x1528fbfull, "488b5d284883eb10") == NM_OK;
-        app_global_ok = verify_memory_bytes(base + 0x00f3b30ull, "488b05????????488907488b05") == NM_OK;
+    auto check_sym = [&](const EmbeddedSymbol* sym) -> bool {
+        if (!sym || sym->rva == 0 || !sym->expected_bytes_hex) return false;
+        const size_t sig_bytes = std::strlen(sym->expected_bytes_hex) / 2u;
+        if (sig_bytes == 0 || sym->rva + sig_bytes > image_size) return false;
+        const uint64_t addr = base + sym->rva;
+        if (!is_memory_readable(addr, sig_bytes)) return false;
+        return verify_memory_bytes(addr, sym->expected_bytes_hex) == NM_OK;
+    };
 
-        logger_logf("INFO", "3.29 signature check: pass_a(0x1528f40)=%s pass_a_hook(0x1528fbf)=%s app_global_ref(0x00f3b30)=%s",
+    const bool pass_a_ok      = check_sym(pass_a_sym);
+    const bool pass_a_hook_ok = check_sym(pass_a_hook_sym);
+    const bool app_global_ok  = check_sym(app_global_sym);
+
+    if (pass_a_sym && pass_a_hook_sym && app_global_sym) {
+        logger_logf("INFO", "3.29 signature check: pass_a(0x%llX)=%s pass_a_hook(0x%llX)=%s app_global_ref(0x%llX)=%s",
+                    static_cast<unsigned long long>(pass_a_sym->rva),
                     pass_a_ok ? "OK" : "MISMATCH",
+                    static_cast<unsigned long long>(pass_a_hook_sym->rva),
                     pass_a_hook_ok ? "OK" : "MISMATCH",
+                    static_cast<unsigned long long>(app_global_sym->rva),
                     app_global_ok ? "OK" : "MISMATCH");
 
         if (detected_build == NM_BUILD_UNKNOWN && pass_a_ok && pass_a_hook_ok && app_global_ok) {
@@ -879,19 +1113,19 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
         s.live_hooks.install_live_hooks(detected_build, base, s.hooks, s.allocator, s.channels);
     }
 
-    // Install register-preserving 15-byte prologue hook at frame.state_stack_pass_a (0x1528f40)
-    // after confirming both 0x1528f40 (15B prologue) and 0x1528fbf (weak-ref sweep) match.
-    if (pass_a_ok && pass_a_hook_ok) {
+    // Install register-preserving prologue hook at frame.state_stack_pass_a
+    // after confirming both pass_a and pass_a_hook match.
+    const EmbeddedSymbol* active_pass_a_sym = find_symbol(detected_build, "frame.state_stack_pass_a");
+    if (pass_a_ok && pass_a_hook_ok && active_pass_a_sym && active_pass_a_sym->rva != 0) {
         void* stub = build_pass_a_frame_stub();
         if (!stub) {
             logger_logf("ERROR", "Failed to allocate executable frame hook stub page");
         } else {
             void* trampoline = nullptr;
             nm_hook_handle_t handle = NM_HOOK_INVALID;
-            const uint64_t pass_a_addr = base + 0x1528f40ull;
-            const nm_status_t hook_st = nm_install_inline_hook_at(
-                pass_a_addr,
-                "48895c241048896c24184889742420",
+            const uint64_t pass_a_addr = base + active_pass_a_sym->rva;
+            const nm_status_t hook_st = nm_install_inline_hook(
+                "frame.state_stack_pass_a",
                 stub,
                 &trampoline,
                 &handle);
@@ -902,8 +1136,9 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
                 s.frame_hook_handle = handle;
                 s.frame_stub_page = stub;
                 s.flags |= NM_HOST_FLAG_FRAME_HOOK_ARMED;
-                logger_logf("INFO", "Frame hook armed at 0x%llX (RVA 0x1528f40, 15B prologue + 0x1528fbf verified; stub=%p tramp=%p handle=%llu)",
+                logger_logf("INFO", "Frame hook armed at 0x%llX (RVA 0x%llX; stub=%p tramp=%p handle=%llu)",
                             static_cast<unsigned long long>(pass_a_addr),
+                            static_cast<unsigned long long>(active_pass_a_sym->rva),
                             stub,
                             trampoline,
                             static_cast<unsigned long long>(handle));
