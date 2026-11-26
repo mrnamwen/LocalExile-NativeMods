@@ -4,12 +4,15 @@ using LocalExile.Client.Sdk.Addresses;
 namespace LocalExile.Client.Host.Native;
 
 /// <summary>
-/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.3.0).
+/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.4.0).
 /// </summary>
 public static class NativeShimConstants
 {
-    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (3 &lt;&lt; 8) | 0</c>.</summary>
-    public const uint AbiVersion = 0x00000300u;
+    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (4 &lt;&lt; 8) | 0</c>.</summary>
+    public const uint AbiVersion = 0x00000400u;
+
+    /// <summary>Maximum number of active ruleset identifiers carried in <see cref="NmAreaInfo"/>.</summary>
+    public const int AreaMaxRulesets = 16;
 
     /// <summary>First custom opcode above the 3.29.3d stock instance dispatcher bound (<c>0x02FC</c>).</summary>
     public const ushort OpcodeReservedMin = 0x02FC;
@@ -188,6 +191,32 @@ public enum NmCursorMode : int
     Empty = 0,
     Holding = 1,
     UseMode = 2,
+}
+
+/// <summary>Matches <c>nm_world_entity_kind_t</c> in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[Flags]
+public enum NmWorldEntityKind : uint
+{
+    None = 0u,
+    Player = 1u << 0,
+    Monster = 1u << 1,
+    WorldItem = 1u << 2,
+    Chest = 1u << 3,
+    Npc = 1u << 4,
+    Portal = 1u << 5,
+    AreaTransition = 1u << 6,
+    MinimapIcon = 1u << 7,
+    Targetable = 1u << 8,
+    Alive = 1u << 9,
+    Opened = 1u << 10,
+    LocalPlayer = 1u << 11,
+}
+
+/// <summary>Matches <c>nm_area_event_kind_t</c> in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+public enum NmAreaEventKind : int
+{
+    Entered = 1,
+    Left = 2,
 }
 
 /// <summary>Matches <c>nm_host_info_t</c> in <c>nativemods_abi.h</c>.</summary>
@@ -456,8 +485,192 @@ public unsafe struct NmHoverState
     public NmItemSnapshot CursorItem;
 }
 
+/// <summary>Matches <c>nm_world_entity_query_t</c> (160 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmWorldEntityQuery
+{
+    public uint StructSize;
+    public uint RequiredKinds;
+    public uint ExcludedKinds;
+    public uint MaxResults;
+    public float OriginX;
+    public float OriginY;
+    public float MaxDistance;
+    public byte UseOrigin;
+    public byte FilterVisibleOnly;
+    public byte IncludeWorldItem;
+    public byte Reserved;
+    public fixed byte MetadataPrefix[128];
+}
+
+/// <summary>Matches <c>nm_world_entity_snapshot_t</c> (760 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmWorldEntitySnapshot
+{
+    public uint StructSize;
+    public uint EntityId;
+    public void* EntityPtr;
+    public uint KindFlags;
+    public int GridX;
+    public int GridY;
+    public float WorldX;
+    public float WorldY;
+    public float WorldZ;
+    public int Hp;
+    public int MaxHp;
+    public uint Rarity;
+    public byte FilterVisible;
+    public byte IsAlive;
+    public byte IsTargetable;
+    public byte IsOpened;
+    public fixed byte MetadataPath[256];
+    public NmItemSnapshot WorldItem;
+
+    public readonly string GetMetadataPath()
+    {
+        fixed (byte* p = MetadataPath)
+        {
+            return Marshal.PtrToStringUTF8((nint)p, 256).TrimEnd('\0');
+        }
+    }
+}
+
+/// <summary>Matches <c>nm_stat_entry_t</c> (8 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct NmStatEntry
+{
+    public int StatId;
+    public int Value;
+}
+
+/// <summary>Matches <c>nm_area_info_t</c> (352 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmAreaInfo
+{
+    public uint StructSize;
+    public byte InGame;
+    public byte IsTown;
+    public byte IsHideout;
+    public byte IsGuildHideout;
+    public int Act;
+    public int AreaLevel;
+    public int EffectiveLevel;
+    public ushort Hash16;
+    public ushort Reserved;
+    public uint AreaSeed;
+    public uint RulesetCount;
+    public fixed uint RulesetIds[16];
+    public fixed byte AreaId[128];
+    public fixed byte AreaName[128];
+
+    public readonly string GetAreaId()
+    {
+        fixed (byte* p = AreaId)
+        {
+            return Marshal.PtrToStringUTF8((nint)p, 128).TrimEnd('\0');
+        }
+    }
+
+    public readonly string GetAreaName()
+    {
+        fixed (byte* p = AreaName)
+        {
+            return Marshal.PtrToStringUTF8((nint)p, 128).TrimEnd('\0');
+        }
+    }
+}
+
+/// <summary>Matches <c>nm_item_filter_state_t</c> (784 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmItemFilterState
+{
+    public uint StructSize;
+    public byte Loaded;
+    public byte HideFilteredGroundItems;
+    public byte AltHighlightActive;
+    public byte Reserved;
+    public uint FilterKind;
+    public uint RuleCount;
+    public fixed byte FilterName[128];
+    public fixed byte FilterFolder[256];
+    public fixed byte FilterPath[384];
+
+    public readonly string GetFilterName()
+    {
+        fixed (byte* p = FilterName)
+        {
+            return Marshal.PtrToStringUTF8((nint)p, 128).TrimEnd('\0');
+        }
+    }
+
+    public readonly string GetFilterFolder()
+    {
+        fixed (byte* p = FilterFolder)
+        {
+            return Marshal.PtrToStringUTF8((nint)p, 256).TrimEnd('\0');
+        }
+    }
+
+    public readonly string GetFilterPath()
+    {
+        fixed (byte* p = FilterPath)
+        {
+            return Marshal.PtrToStringUTF8((nint)p, 384).TrimEnd('\0');
+        }
+    }
+}
+
+/// <summary>Matches <c>nm_item_filter_result_t</c> (72 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct NmItemFilterResult
+{
+    public uint StructSize;
+    public byte Evaluated;
+    public byte IsVisible;
+    public byte BeamTemporary;
+    public byte HasLabelRect;
+    public uint StyleFlags;
+    public uint FontSize;
+    public uint TextRgba;
+    public uint BorderRgba;
+    public uint BgRgba;
+    public int AlertSoundId;
+    public uint AlertSoundVolume;
+    public int MinimapIconShape;
+    public int MinimapIconColor;
+    public int MinimapIconSize;
+    public int BeamColor;
+    public float LabelX;
+    public float LabelY;
+    public float LabelW;
+    public float LabelH;
+    public uint Reserved;
+}
+
+/// <summary>Matches <c>nm_camera_state_t</c> (120 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.4.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmCameraState
+{
+    public uint StructSize;
+    public byte Valid;
+    public fixed byte Reserved[3];
+    public float PosX;
+    public float PosY;
+    public float PosZ;
+    public float TargetX;
+    public float TargetY;
+    public float TargetZ;
+    public float Zoom;
+    public float ZoomOverride;
+    public float ZoomTarget;
+    public float Fov;
+    public uint ViewportW;
+    public uint ViewportH;
+    public fixed float ViewProj[16];
+}
+
 /// <summary>
-/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.3.0, 89 function pointers, 720 bytes).
+/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.4.0, 107 function pointers, 864 bytes).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct NmAbiTable
@@ -597,4 +810,32 @@ public unsafe struct NmAbiTable
 
     /* ABI 0.3.0: Pre-Game character creation hooks (1; slot 88) */
     public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<byte*, byte*, byte*, byte*, nuint, void*, int>, delegate* unmanaged[Cdecl]<byte*, byte*, ushort, void*, void>, void*, NmStatus> PreGameSetCallbacks;
+
+    /* ABI 0.4.0: Live World entities & client objects (5; slots 89..93) */
+    public delegate* unmanaged[Cdecl]<NmWorldEntitySnapshot*, NmStatus> WorldGetLocalPlayer;
+    public delegate* unmanaged[Cdecl]<NmWorldEntityQuery*, NmWorldEntitySnapshot*, uint, uint*, uint*, NmStatus> WorldListEntities;
+    public delegate* unmanaged[Cdecl]<uint, NmWorldEntitySnapshot*, NmStatus> WorldGetEntity;
+    public delegate* unmanaged[Cdecl]<byte*, float, float, float, ulong*, NmStatus> WorldCreateClientObject;
+    public delegate* unmanaged[Cdecl]<ulong, NmStatus> WorldRemoveClientObject;
+
+    /* ABI 0.4.0: Live Stats reads, local writes & high-ID enumeration (3; slots 94..96) */
+    public delegate* unmanaged[Cdecl]<uint, int, int*, NmStatus> StatsReadEntity;
+    public delegate* unmanaged[Cdecl]<uint, int, int, NmStatus> StatsSetLocalEntity;
+    public delegate* unmanaged[Cdecl]<uint, NmStatEntry*, uint, uint*, uint*, NmStatus> StatsListEntity;
+
+    /* ABI 0.4.0: Live Area lifecycle metadata & hooks (2; slots 97..98) */
+    public delegate* unmanaged[Cdecl]<NmAreaInfo*, NmStatus> LifecycleGetAreaInfo;
+    public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<int, NmAreaInfo*, void*, void>, void*, NmStatus> LifecycleSetAreaCallback;
+
+    /* ABI 0.4.0: Item Filter state, cached world-item results, evaluation & reload hook (5; slots 99..103) */
+    public delegate* unmanaged[Cdecl]<NmItemFilterState*, NmStatus> FilterGetState;
+    public delegate* unmanaged[Cdecl]<NmStatus> FilterReload;
+    public delegate* unmanaged[Cdecl]<uint, NmItemFilterResult*, NmStatus> FilterGetWorldItemResult;
+    public delegate* unmanaged[Cdecl]<uint, NmItemFilterResult*, NmStatus> FilterEvaluateEntity;
+    public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<int, NmItemFilterState*, void*, void>, void*, NmStatus> FilterSetReloadCallback;
+
+    /* ABI 0.4.0: Camera state, world-to-screen projection & zoom override (3; slots 104..106) */
+    public delegate* unmanaged[Cdecl]<NmCameraState*, NmStatus> CameraGetState;
+    public delegate* unmanaged[Cdecl]<float, float, float, float*, float*, int*, NmStatus> CameraWorldToScreen;
+    public delegate* unmanaged[Cdecl]<float, NmStatus> CameraSetZoomOverride;
 }

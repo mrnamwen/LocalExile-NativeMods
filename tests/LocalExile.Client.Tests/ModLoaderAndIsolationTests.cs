@@ -218,7 +218,7 @@ public sealed class ModLoaderAndIsolationTests
         il.Emit(OpCodes.Callvirt, typeof(IGameServices).GetProperty(nameof(IGameServices.Stats))!.GetGetMethod()!);
         il.Emit(OpCodes.Ldstr, statKey);
         il.Emit(OpCodes.Ldc_I4, statValue);
-        il.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat))!);
+        il.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat), [typeof(string), typeof(int)])!);
         il.Emit(OpCodes.Ret);
 
         tb.DefineMethodOverride(loadMethod, loadInterfaceMethod);
@@ -268,7 +268,7 @@ public sealed class ModLoaderAndIsolationTests
         onPingIl.Emit(OpCodes.Ldstr, "netmod_received");
         onPingIl.Emit(OpCodes.Ldarg_1);
         onPingIl.Emit(OpCodes.Callvirt, getVal);
-        onPingIl.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat))!);
+        onPingIl.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat), [typeof(string), typeof(int)])!);
         onPingIl.Emit(OpCodes.Ret);
 
         MethodInfo loadInterfaceMethod = typeof(IClientMod).GetMethod(nameof(IClientMod.Load))!;

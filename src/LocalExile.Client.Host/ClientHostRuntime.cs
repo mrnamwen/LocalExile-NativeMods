@@ -150,6 +150,12 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Pre-game Login-TCP character creation hook service.</summary>
     public PreGameService PreGame { get; }
 
+    /// <summary>Client item-filter visibility, style inspection, on-demand evaluation, and reload service.</summary>
+    public ItemFilterService ItemFilter { get; }
+
+    /// <summary>Live camera projection, world-to-screen transform, and per-mod zoom override service.</summary>
+    public CameraService Camera { get; }
+
     /// <summary>Client-side Tier 1 ServerBridge 0.3.0 protocol dispatcher (slots, toasts, hotkeys, screen/hover queries).</summary>
     public ServerBridgeTier1Handler Tier1Handler { get; }
 
@@ -199,7 +205,7 @@ public sealed class ClientHostRuntime : IDisposable
         Scripts = new ScriptService(_bridge, GealBuiltins, Chat);
         Audio = new AudioService(_bridge);
         Stats = new StatsService(_bridge);
-        Lifecycle = new GameLifecycle();
+        Lifecycle = new GameLifecycle(_bridge);
         Screens = new ScreensService(_bridge, Ui, FileOverlayService);
         Keybinds = new KeybindRegistry(_options.KeybindsPath, Log);
         Input = new InputService(_bridge, Keybinds);
@@ -207,6 +213,8 @@ public sealed class ClientHostRuntime : IDisposable
         Toasts = new ToastService(Ui, FileOverlayService, Screens);
         PreGame = new PreGameService(_bridge, Log);
         World = new WorldService(_bridge, Lifecycle);
+        ItemFilter = new ItemFilterService(_bridge, World, Log);
+        Camera = new CameraService(_bridge);
         Rulesets = new RulesetRegistry(_bridge);
         Opcodes = new OpcodeRegistry(_bridge);
         Content = new ContentRegistry(FileOverlayService);
@@ -219,6 +227,7 @@ public sealed class ClientHostRuntime : IDisposable
         _systemChannel = Router.CreateChannel(MessageCodec.SystemChannel);
         _systemSubs.Add(_systemChannel.On<ServerHandshake>(HandleServerHandshake));
         _systemSubs.Add(_systemChannel.On<ServerUiCommand>(HandleServerUiCommand));
+        _systemSubs.Add(_bridge.RegisterAreaLifecycleCallback(HandleNativeAreaEntered, HandleNativeAreaLeft));
         Tier1Handler = new ServerBridgeTier1Handler(_systemChannel, Scheduler, Screens, Input, Hover, Toasts, Log);
 
         // Passive S->C ##NM chat fallback listener when HostRuleset is primary so servers
@@ -279,6 +288,11 @@ public sealed class ClientHostRuntime : IDisposable
                 "hover.items",
                 "toasts.hud",
                 "pregame.options",
+                "world.entities",
+                "stats.live",
+                "lifecycle.areas",
+                "itemfilter.live",
+                "camera.projection",
             ]);
 
         _systemChannel.Send(handshake);
@@ -311,6 +325,30 @@ public sealed class ClientHostRuntime : IDisposable
         var args = new AreaEventArgs(areaId, seed, activeRulesets ?? []);
         Lifecycle.RaiseAreaEntered(args);
         Rulesets.NotifyAreaEntered(args);
+    }
+
+    private void HandleNativeAreaEntered(AreaInfo area)
+    {
+        if (Volatile.Read(ref _disposed))
+        {
+            return;
+        }
+
+        byte[] byteRulesets = [.. area.ActiveRulesetIds.Where(id => id <= byte.MaxValue).Select(id => (byte)id)];
+        uint seed = area.AreaSeed != 0 ? area.AreaSeed : area.Hash16;
+        var args = new AreaEventArgs(area.AreaId, seed, byteRulesets) { Area = area };
+        Lifecycle.RaiseAreaEntered(args);
+        Rulesets.NotifyAreaEntered(args);
+    }
+
+    private void HandleNativeAreaLeft(string areaId)
+    {
+        if (Volatile.Read(ref _disposed))
+        {
+            return;
+        }
+
+        NotifyAreaLeft(areaId);
     }
 
     /// <summary>Notifies lifecycle and rulesets that the client left an area.</summary>
@@ -676,6 +714,8 @@ public sealed class ClientHostRuntime : IDisposable
         _frameSub.Dispose();
         Tier1Handler.Dispose();
         Loader.Dispose();
+        Camera.Dispose();
+        ItemFilter.Dispose();
         Toasts.Dispose();
         Screens.Dispose();
         Input.Dispose();

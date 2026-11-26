@@ -881,6 +881,31 @@ public sealed class StatsService(INativeBridge bridge) : IStatsService
             }
         });
     }
+
+    /// <inheritdoc/>
+    public int ReadStat(uint entityId, int statId) =>
+        bridge.TryReadEntityStat(entityId, statId, out int value) ? value : 0;
+
+    /// <inheritdoc/>
+    public bool TryReadStat(uint entityId, int statId, out int value) =>
+        bridge.TryReadEntityStat(entityId, statId, out value);
+
+    /// <inheritdoc/>
+    public void SetLocalStat(uint entityId, int statId, int value) =>
+        bridge.SetLocalEntityStat(entityId, statId, value);
+
+    /// <inheritdoc/>
+    public IReadOnlyDictionary<int, int> GetAllStats(uint entityId) =>
+        bridge.GetAllEntityStats(entityId);
+
+    /// <inheritdoc/>
+    public int ReadLocalPlayerStat(int statId) => ReadStat(0u, statId);
+
+    /// <inheritdoc/>
+    public bool TryReadLocalPlayerStat(int statId, out int value) => TryReadStat(0u, statId, out value);
+
+    /// <inheritdoc/>
+    public IReadOnlyDictionary<int, int> GetLocalPlayerStats() => GetAllStats(0u);
 }
 
 /// <summary>Managed <see cref="IWorldService"/> implementation.</summary>
@@ -912,12 +937,141 @@ public sealed class WorldService(INativeBridge bridge, GameLifecycle lifecycle) 
         ArgumentException.ThrowIfNullOrWhiteSpace(effectPath);
         bridge.PlayEffect(targetObjectId, effectPath);
     }
+
+    /// <inheritdoc/>
+    public WorldEntitySnapshot? GetLocalPlayer() => bridge.GetLocalPlayerEntity();
+
+    /// <inheritdoc/>
+    public IReadOnlyList<WorldEntitySnapshot> GetEntities(WorldEntityQuery? query = null)
+    {
+        WorldEntityQuery? effectiveQuery = query;
+        if (query is { MaxDistance: not null, Origin: null })
+        {
+            WorldEntitySnapshot? player = bridge.GetLocalPlayerEntity();
+            if (player is not null)
+            {
+                effectiveQuery = query with { Origin = player.Position };
+            }
+        }
+
+        IReadOnlyList<WorldEntitySnapshot> entities = bridge.GetWorldEntities(effectiveQuery);
+        if (effectiveQuery is null)
+        {
+            return entities;
+        }
+
+        // Apply client-side guard filtering so Managed + Native + Simulated bridges have 100% identical query semantics.
+        List<WorldEntitySnapshot>? filtered = null;
+        float? maxDistSq = effectiveQuery.MaxDistance is float md && md >= 0f ? md * md : null;
+        WorldPosition3D? origin = effectiveQuery.Origin;
+        int maxResults = effectiveQuery.MaxResults ?? int.MaxValue;
+
+        for (int i = 0; i < entities.Count; i++)
+        {
+            WorldEntitySnapshot e = entities[i];
+            if (!MatchesQuery(e, effectiveQuery, origin, maxDistSq))
+            {
+                filtered ??= [.. entities.Take(i)];
+                continue;
+            }
+
+            if (filtered is not null)
+            {
+                if (filtered.Count >= maxResults)
+                {
+                    break;
+                }
+
+                filtered.Add(e);
+            }
+            else if (i >= maxResults)
+            {
+                filtered = [.. entities.Take(maxResults)];
+                break;
+            }
+        }
+
+        return filtered ?? entities;
+    }
+
+    /// <inheritdoc/>
+    public WorldEntitySnapshot? GetEntity(uint entityId) => bridge.GetWorldEntity(entityId);
+
+    /// <inheritdoc/>
+    public IReadOnlyList<WorldEntitySnapshot> GetWorldItems(bool filterVisibleOnly = false, float? maxDistance = null) =>
+        GetEntities(new WorldEntityQuery(
+            RequiredKind: WorldEntityKind.WorldItem,
+            MaxDistance: maxDistance,
+            FilterVisibleOnly: filterVisibleOnly));
+
+    /// <inheritdoc/>
+    public WorldPosition3D? GetEntityPosition(uint entityId)
+    {
+        if (bridge.GetWorldEntity(entityId) is { } entity)
+        {
+            return entity.Position;
+        }
+
+        if (FindObject(entityId) is { } obj)
+        {
+            return new WorldPosition3D(obj.X, obj.Y, obj.Z);
+        }
+
+        return null;
+    }
+
+    private static bool MatchesQuery(WorldEntitySnapshot entity, WorldEntityQuery query, WorldPosition3D? origin, float? maxDistSq)
+    {
+        if (query.RequiredKind != WorldEntityKind.None && (entity.Kind & query.RequiredKind) != query.RequiredKind)
+        {
+            return false;
+        }
+
+        if (query.ExcludedKind != WorldEntityKind.None && (entity.Kind & query.ExcludedKind) != 0)
+        {
+            return false;
+        }
+
+        if (query.FilterVisibleOnly && !entity.IsFilterVisible)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(query.MetadataPrefix) &&
+            !entity.MetadataPath.StartsWith(query.MetadataPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (maxDistSq.HasValue && origin.HasValue)
+        {
+            float dx = entity.Position.X - origin.Value.X;
+            float dy = entity.Position.Y - origin.Value.Y;
+            float dz = entity.Position.Z - origin.Value.Z;
+            if ((dx * dx) + (dy * dy) + (dz * dz) > maxDistSq.Value)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 }
 
 /// <summary>Managed <see cref="IGameLifecycle"/> implementation.</summary>
 public sealed class GameLifecycle : IGameLifecycle
 {
+    private readonly INativeBridge? _bridge;
     private long _frameCount;
+    private string? _currentAreaId;
+    private AreaInfo? _currentArea;
+    private bool _hasObservedAreaState;
+
+    /// <summary>Creates a new <see cref="GameLifecycle"/> optionally backed by <paramref name="bridge"/> for live area queries.</summary>
+    public GameLifecycle(INativeBridge? bridge = null)
+    {
+        _bridge = bridge;
+    }
 
     /// <inheritdoc/>
     public long FrameCount => Interlocked.Read(ref _frameCount);
@@ -926,7 +1080,10 @@ public sealed class GameLifecycle : IGameLifecycle
     public bool IsConnected { get; private set; }
 
     /// <inheritdoc/>
-    public string? CurrentAreaId { get; private set; }
+    public string? CurrentAreaId => _hasObservedAreaState ? _currentAreaId : (_currentAreaId ?? _bridge?.GetAreaInfo()?.AreaId);
+
+    /// <inheritdoc/>
+    public AreaInfo? CurrentArea => _hasObservedAreaState ? _currentArea : (_currentArea ?? _bridge?.GetAreaInfo());
 
     /// <inheritdoc/>
     public event Action<float>? Frame;
@@ -961,7 +1118,9 @@ public sealed class GameLifecycle : IGameLifecycle
 
     internal void RaiseAreaEntered(AreaEventArgs args)
     {
-        CurrentAreaId = args.AreaId;
+        _hasObservedAreaState = true;
+        _currentAreaId = args.AreaId;
+        _currentArea = args.Area ?? _bridge?.GetAreaInfo();
         Action<AreaEventArgs>? snapshot = AreaEntered;
         if (snapshot is null)
         {
@@ -977,9 +1136,16 @@ public sealed class GameLifecycle : IGameLifecycle
 
     internal void RaiseAreaLeft(string areaId)
     {
-        if (string.Equals(CurrentAreaId, areaId, StringComparison.Ordinal))
+        _hasObservedAreaState = true;
+        if (string.Equals(_currentAreaId, areaId, StringComparison.Ordinal) ||
+            string.IsNullOrEmpty(areaId))
         {
-            CurrentAreaId = null;
+            _currentAreaId = null;
+            _currentArea = null;
+        }
+        else if (_currentArea is not null && string.Equals(_currentArea.AreaId, areaId, StringComparison.Ordinal))
+        {
+            _currentArea = null;
         }
 
         Action<string>? snapshot = AreaLeft;
@@ -1014,7 +1180,9 @@ public sealed class GameLifecycle : IGameLifecycle
     internal void RaiseDisconnected(string? reason)
     {
         IsConnected = false;
-        CurrentAreaId = null;
+        _hasObservedAreaState = true;
+        _currentAreaId = null;
+        _currentArea = null;
         Action<string?>? snapshot = Disconnected;
         if (snapshot is null)
         {

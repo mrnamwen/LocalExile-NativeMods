@@ -327,6 +327,63 @@ public interface INativeBridge : IDisposable
 
     /// <summary>Plays an effect on a world object.</summary>
     void PlayEffect(uint targetObjectId, string effectPath);
+
+    /// <summary>Returns the live local player entity snapshot, or <c>null</c> when outside an area.</summary>
+    WorldEntitySnapshot? GetLocalPlayerEntity() => null;
+
+    /// <summary>Enumerates live world entities matching <paramref name="query"/> (or all entities when <c>null</c>).</summary>
+    IReadOnlyList<WorldEntitySnapshot> GetWorldEntities(WorldEntityQuery? query = null) => [];
+
+    /// <summary>Looks up a single live world entity by its id, or <c>null</c> if absent.</summary>
+    WorldEntitySnapshot? GetWorldEntity(uint entityId) => null;
+
+    /// <summary>Reads a numeric stat on an entity (<c>entityId == 0</c> targets the local player).</summary>
+    bool TryReadEntityStat(uint entityId, int statId, out int value)
+    {
+        value = 0;
+        return false;
+    }
+
+    /// <summary>Sets a display-only local numeric stat on an entity (<c>entityId == 0</c> targets the local player).</summary>
+    void SetLocalEntityStat(uint entityId, int statId, int value) { }
+
+    /// <summary>Enumerates all numeric stats on an entity (<c>entityId == 0</c> targets the local player), including high-ID (<c>&gt;= 0x10000</c>) stats.</summary>
+    IReadOnlyDictionary<int, int> GetAllEntityStats(uint entityId) => new Dictionary<int, int>();
+
+    /// <summary>Reads the current live area metadata snapshot, or <c>null</c> when outside an area.</summary>
+    AreaInfo? GetAreaInfo() => null;
+
+    /// <summary>Registers native area entered/left lifecycle callbacks.</summary>
+    IDisposable RegisterAreaLifecycleCallback(Action<AreaInfo> onAreaEntered, Action<string> onAreaLeft) => NoopDisposable.Instance;
+
+    /// <summary>Reads the current active item-filter state snapshot.</summary>
+    ItemFilterState GetItemFilterState() => ItemFilterState.Empty;
+
+    /// <summary>Triggers a game-thread reload of the active item filter.</summary>
+    bool ReloadItemFilter() => false;
+
+    /// <summary>Reads cached filter visibility/style/label-rect for a ground world-item entity.</summary>
+    ItemFilterResult GetWorldItemFilterResult(uint entityId) => ItemFilterResult.Unevaluated;
+
+    /// <summary>Evaluates an item or world-item entity against the active item filter.</summary>
+    ItemFilterResult EvaluateItemFilter(uint entityId) => ItemFilterResult.Unevaluated;
+
+    /// <summary>Registers a callback fired when the client finishes loading/reloading/clearing an item filter.</summary>
+    IDisposable RegisterItemFilterReloadCallback(Action<bool, string, ItemFilterState?> onReloaded) => NoopDisposable.Instance;
+
+    /// <summary>Reads the current live in-game camera state snapshot.</summary>
+    CameraState GetCameraState() => CameraState.Invalid;
+
+    /// <summary>Projects a 3D world point to 2D screen pixel coordinates via the active camera.</summary>
+    bool TryCameraWorldToScreen(float worldX, float worldY, float worldZ, out float screenX, out float screenY)
+    {
+        screenX = 0f;
+        screenY = 0f;
+        return false;
+    }
+
+    /// <summary>Sets the camera zoom override (<c>&lt; 0f</c> clears back to stock <c>-1.0f</c>).</summary>
+    void SetCameraZoomOverride(float zoomOverride) { }
 }
 
 /// <summary>
@@ -459,6 +516,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     private readonly ConcurrentDictionary<(CallbackKind Kind, nint Control), UiEventSlot> _uiEventSlots = new();
     private readonly ConcurrentDictionary<string, int> _localStats = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<uint, WorldObjectInfo> _clientObjects = new();
+    private readonly ConcurrentDictionary<uint, ulong> _nativeClientObjectHandles = new();
     private readonly ConcurrentDictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawReceivers = new();
     private readonly Lock _phase1Gate = new();
     private readonly List<Action<nint, IReadOnlyList<LeagueCardInfo>>> _leagueFillCallbacks = [];
@@ -466,10 +524,14 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     private readonly List<Func<MouseEventArgs, bool>> _mouseCallbacks = [];
     private readonly List<Func<string, string, string, string?>> _charCreatingCallbacks = [];
     private readonly List<Action<string, string, ushort>> _charCreatedCallbacks = [];
+    private readonly List<(Action<AreaInfo> OnEntered, Action<string> OnLeft)> _areaLifecycleCallbacks = [];
+    private readonly List<Action<bool, string, ItemFilterState?>> _filterReloadCallbacks = [];
     private GCHandle _selfCallbackHandle;
     private bool _screensNativeHooked;
     private bool _inputNativeHooked;
     private bool _preGameNativeHooked;
+    private bool _areaNativeHooked;
+    private bool _filterNativeHooked;
     private int _nextAudioChannel = 1;
     private uint _nextClientObjectId = 0x8000_0001u;
     private ulong _managedFileOverlayToken;
@@ -2616,16 +2678,572 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     /// <inheritdoc/>
     public uint SpawnClientObject(string metadataPath, float x, float y, float z)
     {
+        if (_table->WorldCreateClientObject is not null)
+        {
+            byte[] utf8 = ToNullTerminatedUtf8(metadataPath);
+            ulong nativeHandle = 0;
+            fixed (byte* pMeta = utf8)
+            {
+                NmStatus status = _table->WorldCreateClientObject(pMeta, x, y, z, &nativeHandle);
+                EnsureOk(status, $"WorldCreateClientObject({metadataPath})");
+            }
+
+            uint nativeId = unchecked((uint)nativeHandle);
+            if (nativeId == 0 || _nativeClientObjectHandles.ContainsKey(nativeId))
+            {
+                nativeId = Interlocked.Increment(ref _nextClientObjectId);
+            }
+
+            _nativeClientObjectHandles[nativeId] = nativeHandle;
+            _clientObjects[nativeId] = new WorldObjectInfo(nativeId, metadataPath, x, y, z, true, new Dictionary<string, string>());
+            return nativeId;
+        }
+
         uint id = Interlocked.Increment(ref _nextClientObjectId);
         _clientObjects[id] = new WorldObjectInfo(id, metadataPath, x, y, z, true, new Dictionary<string, string>());
         return id;
     }
 
     /// <inheritdoc/>
-    public bool RemoveClientObject(uint objectId) => _clientObjects.TryRemove(objectId, out _);
+    public bool RemoveClientObject(uint objectId)
+    {
+        if (_nativeClientObjectHandles.TryRemove(objectId, out ulong nativeHandle) && _table->WorldRemoveClientObject is not null)
+        {
+            _clientObjects.TryRemove(objectId, out _);
+            return _table->WorldRemoveClientObject(nativeHandle) == NmStatus.Ok;
+        }
+
+        return _clientObjects.TryRemove(objectId, out _);
+    }
 
     /// <inheritdoc/>
     public void PlayEffect(uint targetObjectId, string effectPath) { }
+
+    // --- Phase 2 (ABI 0.4.0, Slots 89..106) ---
+
+    /// <inheritdoc/>
+    public WorldEntitySnapshot? GetLocalPlayerEntity()
+    {
+        if (_table->WorldGetLocalPlayer is null)
+        {
+            return null;
+        }
+
+        NmWorldEntitySnapshot snap = default;
+        snap.StructSize = (uint)sizeof(NmWorldEntitySnapshot);
+        if (_table->WorldGetLocalPlayer(&snap) != NmStatus.Ok || snap.EntityId == 0)
+        {
+            return null;
+        }
+
+        return MapWorldEntitySnapshot(in snap);
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<WorldEntitySnapshot> GetWorldEntities(WorldEntityQuery? query = null)
+    {
+        if (_table->WorldListEntities is null)
+        {
+            return [];
+        }
+
+        NmWorldEntityQuery nativeQuery = default;
+        NmWorldEntityQuery* queryPtr = null;
+        if (query is not null)
+        {
+            nativeQuery = BuildNativeWorldQuery(query);
+            queryPtr = &nativeQuery;
+        }
+
+        int capacity = query?.MaxResults is int maxReq and > 0
+            ? Math.Min(maxReq, 65536)
+            : 256;
+
+        NmWorldEntitySnapshot[] buffer = new NmWorldEntitySnapshot[capacity];
+        uint count = 0;
+        uint total = 0;
+        NmStatus status;
+        fixed (NmWorldEntitySnapshot* pBuf = buffer)
+        {
+            status = _table->WorldListEntities(queryPtr, pBuf, (uint)buffer.Length, &count, &total);
+        }
+
+        if ((status == NmStatus.ErrBufferTooSmall || (status == NmStatus.Ok && total > count && total > (uint)buffer.Length)) &&
+            total > 0 &&
+            (query?.MaxResults is null || count < (uint)Math.Min(query.MaxResults.Value, 65536)))
+        {
+            int grownCap = (int)Math.Min(total, (uint)(query?.MaxResults is int mr and > 0 ? Math.Min(mr, 65536) : 65536));
+            if (grownCap > buffer.Length)
+            {
+                buffer = new NmWorldEntitySnapshot[grownCap];
+                count = 0;
+                fixed (NmWorldEntitySnapshot* pBuf = buffer)
+                {
+                    status = _table->WorldListEntities(queryPtr, pBuf, (uint)buffer.Length, &count, &total);
+                }
+            }
+        }
+
+        if (status != NmStatus.Ok || count == 0)
+        {
+            return [];
+        }
+
+        int finalCount = (int)Math.Min(count, (uint)buffer.Length);
+        var list = new List<WorldEntitySnapshot>(finalCount);
+        for (int i = 0; i < finalCount; i++)
+        {
+            list.Add(MapWorldEntitySnapshot(in buffer[i]));
+        }
+
+        return list;
+    }
+
+    /// <inheritdoc/>
+    public WorldEntitySnapshot? GetWorldEntity(uint entityId)
+    {
+        if (_table->WorldGetEntity is null)
+        {
+            return null;
+        }
+
+        NmWorldEntitySnapshot snap = default;
+        snap.StructSize = (uint)sizeof(NmWorldEntitySnapshot);
+        if (_table->WorldGetEntity(entityId, &snap) != NmStatus.Ok || snap.EntityId == 0)
+        {
+            return null;
+        }
+
+        return MapWorldEntitySnapshot(in snap);
+    }
+
+    /// <inheritdoc/>
+    public bool TryReadEntityStat(uint entityId, int statId, out int value)
+    {
+        if (_table->StatsReadEntity is null)
+        {
+            value = 0;
+            return false;
+        }
+
+        int v = 0;
+        if (_table->StatsReadEntity(entityId, statId, &v) == NmStatus.Ok)
+        {
+            value = v;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    /// <inheritdoc/>
+    public void SetLocalEntityStat(uint entityId, int statId, int value)
+    {
+        if (_table->StatsSetLocalEntity is not null)
+        {
+            _table->StatsSetLocalEntity(entityId, statId, value);
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyDictionary<int, int> GetAllEntityStats(uint entityId)
+    {
+        var result = new Dictionary<int, int>();
+        if (_table->StatsListEntity is null)
+        {
+            return result;
+        }
+
+        NmStatEntry[] buffer = new NmStatEntry[256];
+        uint count = 0;
+        uint total = 0;
+        NmStatus status;
+        fixed (NmStatEntry* pBuf = buffer)
+        {
+            status = _table->StatsListEntity(entityId, pBuf, (uint)buffer.Length, &count, &total);
+        }
+
+        if ((status == NmStatus.ErrBufferTooSmall || (status == NmStatus.Ok && total > count && total > (uint)buffer.Length)) && total > 0)
+        {
+            int grownCap = (int)Math.Min(total, 65536u);
+            if (grownCap > buffer.Length)
+            {
+                buffer = new NmStatEntry[grownCap];
+                count = 0;
+                fixed (NmStatEntry* pBuf = buffer)
+                {
+                    status = _table->StatsListEntity(entityId, pBuf, (uint)buffer.Length, &count, &total);
+                }
+            }
+        }
+
+        if (status != NmStatus.Ok || count == 0)
+        {
+            return result;
+        }
+
+        int finalCount = (int)Math.Min(count, (uint)buffer.Length);
+        for (int i = 0; i < finalCount; i++)
+        {
+            result[buffer[i].StatId] = buffer[i].Value;
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc/>
+    public AreaInfo? GetAreaInfo()
+    {
+        if (_table->LifecycleGetAreaInfo is null)
+        {
+            return null;
+        }
+
+        NmAreaInfo info = default;
+        info.StructSize = (uint)sizeof(NmAreaInfo);
+        if (_table->LifecycleGetAreaInfo(&info) != NmStatus.Ok || info.InGame == 0)
+        {
+            return null;
+        }
+
+        return MapAreaInfo(in info);
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterAreaLifecycleCallback(Action<AreaInfo> onAreaEntered, Action<string> onAreaLeft)
+    {
+        ArgumentNullException.ThrowIfNull(onAreaEntered);
+        ArgumentNullException.ThrowIfNull(onAreaLeft);
+        var entry = (onAreaEntered, onAreaLeft);
+        lock (_phase1Gate)
+        {
+            _areaLifecycleCallbacks.Add(entry);
+            if (!_areaNativeHooked && _table->LifecycleSetAreaCallback is not null)
+            {
+                void* ud = EnsureSelfCallbackUserDataLocked();
+                if (_table->LifecycleSetAreaCallback(&OnNativeAreaEvent, ud) == NmStatus.Ok)
+                {
+                    _areaNativeHooked = true;
+                }
+            }
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _areaLifecycleCallbacks.Remove(entry);
+                if (_areaLifecycleCallbacks.Count == 0 && _areaNativeHooked && _table->LifecycleSetAreaCallback is not null)
+                {
+                    _table->LifecycleSetAreaCallback(null, null);
+                    _areaNativeHooked = false;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public ItemFilterState GetItemFilterState()
+    {
+        if (_table->FilterGetState is null)
+        {
+            return ItemFilterState.Empty;
+        }
+
+        NmItemFilterState state = default;
+        state.StructSize = (uint)sizeof(NmItemFilterState);
+        if (_table->FilterGetState(&state) != NmStatus.Ok)
+        {
+            return ItemFilterState.Empty;
+        }
+
+        return MapItemFilterState(in state);
+    }
+
+    /// <inheritdoc/>
+    public bool ReloadItemFilter() =>
+        _table->FilterReload is not null && _table->FilterReload() == NmStatus.Ok;
+
+    /// <inheritdoc/>
+    public ItemFilterResult GetWorldItemFilterResult(uint entityId)
+    {
+        if (_table->FilterGetWorldItemResult is null)
+        {
+            return ItemFilterResult.Unevaluated;
+        }
+
+        NmItemFilterResult res = default;
+        res.StructSize = (uint)sizeof(NmItemFilterResult);
+        if (_table->FilterGetWorldItemResult(entityId, &res) != NmStatus.Ok)
+        {
+            return ItemFilterResult.Unevaluated;
+        }
+
+        return MapItemFilterResult(in res);
+    }
+
+    /// <inheritdoc/>
+    public ItemFilterResult EvaluateItemFilter(uint entityId)
+    {
+        if (_table->FilterEvaluateEntity is null)
+        {
+            return ItemFilterResult.Unevaluated;
+        }
+
+        NmItemFilterResult res = default;
+        res.StructSize = (uint)sizeof(NmItemFilterResult);
+        if (_table->FilterEvaluateEntity(entityId, &res) != NmStatus.Ok)
+        {
+            return ItemFilterResult.Unevaluated;
+        }
+
+        return MapItemFilterResult(in res);
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterItemFilterReloadCallback(Action<bool, string, ItemFilterState?> onReloaded)
+    {
+        ArgumentNullException.ThrowIfNull(onReloaded);
+        lock (_phase1Gate)
+        {
+            _filterReloadCallbacks.Add(onReloaded);
+            if (!_filterNativeHooked && _table->FilterSetReloadCallback is not null)
+            {
+                void* ud = EnsureSelfCallbackUserDataLocked();
+                if (_table->FilterSetReloadCallback(&OnNativeFilterReloaded, ud) == NmStatus.Ok)
+                {
+                    _filterNativeHooked = true;
+                }
+            }
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _filterReloadCallbacks.Remove(onReloaded);
+                if (_filterReloadCallbacks.Count == 0 && _filterNativeHooked && _table->FilterSetReloadCallback is not null)
+                {
+                    _table->FilterSetReloadCallback(null, null);
+                    _filterNativeHooked = false;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public CameraState GetCameraState()
+    {
+        if (_table->CameraGetState is null)
+        {
+            return CameraState.Invalid;
+        }
+
+        NmCameraState cam = default;
+        cam.StructSize = (uint)sizeof(NmCameraState);
+        if (_table->CameraGetState(&cam) != NmStatus.Ok || cam.Valid == 0)
+        {
+            return CameraState.Invalid;
+        }
+
+        float[] matrix = new float[16];
+        for (int i = 0; i < 16; i++)
+        {
+            matrix[i] = cam.ViewProj[i];
+        }
+
+        return new CameraState(
+            IsValid: true,
+            Position: new WorldPosition3D(cam.PosX, cam.PosY, cam.PosZ),
+            Target: new WorldPosition3D(cam.TargetX, cam.TargetY, cam.TargetZ),
+            Zoom: cam.Zoom,
+            ZoomOverride: cam.ZoomOverride,
+            ZoomTarget: cam.ZoomTarget,
+            Fov: cam.Fov,
+            ViewportWidth: cam.ViewportW,
+            ViewportHeight: cam.ViewportH,
+            ViewProjectionMatrix: matrix);
+    }
+
+    /// <inheritdoc/>
+    public bool TryCameraWorldToScreen(float worldX, float worldY, float worldZ, out float screenX, out float screenY)
+    {
+        if (_table->CameraWorldToScreen is not null)
+        {
+            float sx = 0f;
+            float sy = 0f;
+            int inFront = 0;
+            if (_table->CameraWorldToScreen(worldX, worldY, worldZ, &sx, &sy, &inFront) == NmStatus.Ok && inFront != 0)
+            {
+                screenX = sx;
+                screenY = sy;
+                return true;
+            }
+
+            screenX = 0f;
+            screenY = 0f;
+            return false;
+        }
+
+        return GetCameraState().TryProjectWorldToScreen(worldX, worldY, worldZ, out screenX, out screenY);
+    }
+
+    /// <inheritdoc/>
+    public void SetCameraZoomOverride(float zoomOverride)
+    {
+        if (_table->CameraSetZoomOverride is null)
+        {
+            return;
+        }
+
+        float normalized = float.IsNaN(zoomOverride) || float.IsInfinity(zoomOverride) || zoomOverride < 0f
+            ? -1.0f
+            : zoomOverride;
+        _table->CameraSetZoomOverride(normalized);
+    }
+
+    private static NmWorldEntityQuery BuildNativeWorldQuery(WorldEntityQuery query)
+    {
+        NmWorldEntityQuery q = default;
+        q.StructSize = (uint)sizeof(NmWorldEntityQuery);
+        q.RequiredKinds = (uint)query.RequiredKind & 0x0FFFu;
+        q.ExcludedKinds = (uint)query.ExcludedKind & 0x0FFFu;
+        q.MaxResults = query.MaxResults is int mr and > 0 ? (uint)mr : 0u;
+        if (query.Origin is { } origin)
+        {
+            q.OriginX = origin.X;
+            q.OriginY = origin.Y;
+            q.UseOrigin = 1;
+        }
+
+        q.MaxDistance = query.MaxDistance is float md and > 0f ? md : 0f;
+        q.FilterVisibleOnly = query.FilterVisibleOnly ? (byte)1 : (byte)0;
+        q.IncludeWorldItem = 1;
+        if (!string.IsNullOrEmpty(query.MetadataPrefix))
+        {
+            byte[] prefixUtf8 = Encoding.UTF8.GetBytes(query.MetadataPrefix);
+            int copyLen = Math.Min(prefixUtf8.Length, 127);
+            for (int i = 0; i < copyLen; i++)
+            {
+                q.MetadataPrefix[i] = prefixUtf8[i];
+            }
+
+            q.MetadataPrefix[copyLen] = 0;
+        }
+
+        return q;
+    }
+
+    private static WorldEntitySnapshot MapWorldEntitySnapshot(in NmWorldEntitySnapshot snap)
+    {
+        WorldEntityKind kind = (WorldEntityKind)(snap.KindFlags & 0x0FFFu);
+        if (snap.IsAlive != 0)
+        {
+            kind |= WorldEntityKind.Alive;
+        }
+
+        if (snap.IsTargetable != 0)
+        {
+            kind |= WorldEntityKind.Targetable;
+        }
+
+        if (snap.IsOpened != 0)
+        {
+            kind |= WorldEntityKind.Opened;
+        }
+
+        if (snap.EntityId >= 0x4000_0000u)
+        {
+            kind |= WorldEntityKind.ClientOnly;
+        }
+
+        HoveredItemInfo? worldItem = null;
+        if (snap.WorldItem.Present != 0)
+        {
+            NmItemSnapshot item = snap.WorldItem;
+            worldItem = new HoveredItemInfo(
+                EntityHandle: (nint)item.ItemEntity,
+                ControlHandle: (nint)item.ItemView,
+                ItemId: item.ItemId,
+                InventoryId: item.InventoryId,
+                GridX: item.GridX,
+                GridY: item.GridY,
+                Width: item.GridW,
+                Height: item.GridH,
+                MetadataPath: item.GetMetadataPath(),
+                BaseName: item.GetBaseName(),
+                StackSize: item.StackSize,
+                MaxStackSize: item.MaxStackSize,
+                Rarity: MapItemRarity(item.Rarity),
+                IsIdentified: item.Identified != 0,
+                IsCorrupted: item.Corrupted != 0,
+                ItemLevel: item.ItemLevel,
+                ItemClassId: item.ItemClassId);
+        }
+
+        return new WorldEntitySnapshot(
+            EntityId: snap.EntityId,
+            EntityHandle: (nint)snap.EntityPtr,
+            Kind: kind,
+            MetadataPath: snap.GetMetadataPath(),
+            GridX: snap.GridX,
+            GridY: snap.GridY,
+            Position: new WorldPosition3D(snap.WorldX, snap.WorldY, snap.WorldZ),
+            Hp: snap.Hp,
+            MaxHp: snap.MaxHp,
+            Rarity: MapItemRarity(snap.Rarity),
+            IsFilterVisible: snap.FilterVisible != 0,
+            WorldItem: worldItem);
+    }
+
+    private static AreaInfo MapAreaInfo(in NmAreaInfo info)
+    {
+        int count = (int)Math.Min(info.RulesetCount, (uint)NativeShimConstants.AreaMaxRulesets);
+        uint[] rulesets = count > 0 ? new uint[count] : [];
+        for (int i = 0; i < count; i++)
+        {
+            rulesets[i] = info.RulesetIds[i];
+        }
+
+        return new AreaInfo(
+            AreaId: info.GetAreaId(),
+            AreaName: info.GetAreaName(),
+            Act: info.Act,
+            AreaLevel: info.AreaLevel,
+            EffectiveLevel: info.EffectiveLevel,
+            Hash16: info.Hash16,
+            IsTown: info.IsTown != 0,
+            IsHideout: info.IsHideout != 0,
+            IsGuildHideout: info.IsGuildHideout != 0,
+            ActiveRulesetIds: rulesets,
+            AreaSeed: info.AreaSeed);
+    }
+
+    private static ItemFilterState MapItemFilterState(in NmItemFilterState state) =>
+        new(
+            FilterName: state.GetFilterName(),
+            FilterFolder: state.GetFilterFolder(),
+            FilterPath: state.GetFilterPath(),
+            IsLoaded: state.Loaded != 0,
+            HideFilteredGroundItems: state.HideFilteredGroundItems != 0,
+            AltHighlightActive: state.AltHighlightActive != 0);
+
+    private static ItemFilterResult MapItemFilterResult(in NmItemFilterResult res) =>
+        new(
+            Evaluated: res.Evaluated != 0,
+            IsVisible: res.IsVisible != 0,
+            FontSize: unchecked((int)res.FontSize),
+            TextRgba: res.TextRgba,
+            BorderRgba: res.BorderRgba,
+            BackgroundRgba: res.BgRgba,
+            AlertSoundId: res.AlertSoundId,
+            MinimapIconShape: res.MinimapIconShape,
+            MinimapIconColor: res.MinimapIconColor,
+            MinimapIconSize: res.MinimapIconSize,
+            BeamColor: res.BeamColor,
+            BeamTemporary: res.BeamTemporary != 0,
+            LabelRect: res.HasLabelRect != 0 ? new UiRect(res.LabelX, res.LabelY, res.LabelW, res.LabelH) : null);
 
     /// <inheritdoc/>
     public void Dispose()
@@ -2656,11 +3274,25 @@ public sealed unsafe class NativeShimBridge : INativeBridge
                 _preGameNativeHooked = false;
             }
 
+            if (_areaNativeHooked && _table->LifecycleSetAreaCallback is not null)
+            {
+                _table->LifecycleSetAreaCallback(null, null);
+                _areaNativeHooked = false;
+            }
+
+            if (_filterNativeHooked && _table->FilterSetReloadCallback is not null)
+            {
+                _table->FilterSetReloadCallback(null, null);
+                _filterNativeHooked = false;
+            }
+
             _leagueFillCallbacks.Clear();
             _keyCallbacks.Clear();
             _mouseCallbacks.Clear();
             _charCreatingCallbacks.Clear();
             _charCreatedCallbacks.Clear();
+            _areaLifecycleCallbacks.Clear();
+            _filterReloadCallbacks.Clear();
 
             if (_selfCallbackHandle.IsAllocated)
             {
@@ -3326,6 +3958,99 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         catch
         {
             // Never let managed exceptions unwind across CreateCharacterState::OnCreateResult.
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeAreaEvent(int eventKind, NmAreaInfo* areaInfo, void* userData)
+    {
+        try
+        {
+            if (userData is null)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return;
+            }
+
+            (Action<AreaInfo> OnEntered, Action<string> OnLeft)[] callbacks;
+            lock (bridge._phase1Gate)
+            {
+                callbacks = [.. bridge._areaLifecycleCallbacks];
+            }
+
+            if (callbacks.Length == 0)
+            {
+                return;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            var kind = (NmAreaEventKind)eventKind;
+            if (kind == NmAreaEventKind.Entered && areaInfo is not null)
+            {
+                AreaInfo managedArea = MapAreaInfo(in *areaInfo);
+                foreach (var cb in callbacks)
+                {
+                    cb.OnEntered(managedArea);
+                }
+            }
+            else if (kind == NmAreaEventKind.Left)
+            {
+                string areaId = areaInfo is not null ? areaInfo->GetAreaId() : string.Empty;
+                foreach (var cb in callbacks)
+                {
+                    cb.OnLeft(areaId);
+                }
+            }
+        }
+        catch
+        {
+            // Never let managed exceptions unwind across native area lifecycle hooks.
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeFilterReloaded(int succeeded, NmItemFilterState* filterState, void* userData)
+    {
+        try
+        {
+            if (userData is null)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return;
+            }
+
+            Action<bool, string, ItemFilterState?>[] callbacks;
+            lock (bridge._phase1Gate)
+            {
+                callbacks = [.. bridge._filterReloadCallbacks];
+            }
+
+            if (callbacks.Length == 0)
+            {
+                return;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            ItemFilterState? managedState = filterState is not null ? MapItemFilterState(in *filterState) : null;
+            string message = succeeded != 0 ? "Item Filter loaded successfully." : "Item Filter failed to load.";
+            foreach (var cb in callbacks)
+            {
+                cb(succeeded != 0, message, managedState);
+            }
+        }
+        catch
+        {
+            // Never let managed exceptions unwind across ItemFilterManager::NotifyLoaded.
         }
     }
 

@@ -1217,7 +1217,7 @@ internal sealed class ScopedGameServices : IGameServices
         var audio = new TrackedAudioService(runtime.Audio);
         track(audio);
         Audio = audio;
-        Stats = new TrackedStatsService(runtime.Stats, track);
+        Stats = new TrackedStatsService(runtime.Stats, loader, mod.Manifest.Id, track);
         var world = new TrackedWorldService(runtime.World);
         track(world);
         World = world;
@@ -1237,6 +1237,12 @@ internal sealed class ScopedGameServices : IGameServices
         var preGame = new TrackedPreGameService(runtime.PreGame, loader, mod.Manifest.Id);
         track(preGame);
         PreGame = preGame;
+        var itemFilter = new TrackedItemFilterService(runtime.ItemFilter, loader, mod.Manifest.Id);
+        track(itemFilter);
+        ItemFilter = itemFilter;
+        var camera = new TrackedCameraService(runtime.Camera, mod.Manifest.Id);
+        track(camera);
+        Camera = camera;
         GealBuiltins = new TrackedGealBuiltinRegistry(runtime.GealBuiltins, track);
         UiControls = new TrackedUiControlRegistry(runtime.UiControls, track);
         Rulesets = new TrackedRulesetRegistry(runtime.Rulesets, loader, mod.Manifest.Id, track);
@@ -1258,6 +1264,8 @@ internal sealed class ScopedGameServices : IGameServices
     public IHoverService Hover { get; }
     public IToastService Toasts { get; }
     public IPreGameService PreGame { get; }
+    public IItemFilterService ItemFilter { get; }
+    public ICameraService Camera { get; }
     public IGealBuiltinRegistry GealBuiltins { get; }
     public IUiControlRegistry UiControls { get; }
     public IRulesetRegistry Rulesets { get; }
@@ -1431,6 +1439,11 @@ internal sealed class ScopedGameServices : IGameServices
         }
 
         public void PlayEffect(uint targetObjectId, string effectPath) => inner.PlayEffect(targetObjectId, effectPath);
+        public WorldEntitySnapshot? GetLocalPlayer() => inner.GetLocalPlayer();
+        public IReadOnlyList<WorldEntitySnapshot> GetEntities(WorldEntityQuery? query = null) => inner.GetEntities(query);
+        public WorldEntitySnapshot? GetEntity(uint entityId) => inner.GetEntity(entityId);
+        public IReadOnlyList<WorldEntitySnapshot> GetWorldItems(bool filterVisibleOnly = false, float? maxDistance = null) => inner.GetWorldItems(filterVisibleOnly, maxDistance);
+        public WorldPosition3D? GetEntityPosition(uint entityId) => inner.GetEntityPosition(entityId);
 
         public void Dispose()
         {
@@ -1460,6 +1473,7 @@ internal sealed class ScopedGameServices : IGameServices
         public long FrameCount => inner.FrameCount;
         public bool IsConnected => inner.IsConnected;
         public string? CurrentAreaId => inner.CurrentAreaId;
+        public AreaInfo? CurrentArea => inner.CurrentArea;
 
         public event Action<float>? Frame
         {
@@ -1667,11 +1681,26 @@ internal sealed class ScopedGameServices : IGameServices
             loader.ExecuteFaultIsolated(modId, inner.OnAreaLeft);
     }
 
-    private sealed class TrackedStatsService(IStatsService inner, Action<IDisposable> track) : IStatsService
+    private sealed class TrackedStatsService(IStatsService inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IStatsService
     {
         public int GetStat(string statKey, int defaultValue = 0) => inner.GetStat(statKey, defaultValue);
         public void SetLocalStat(string statKey, int value) => inner.SetLocalStat(statKey, value);
-        public IDisposable OnStatChanged(string statKey, Action<int> listener) { IDisposable d = inner.OnStatChanged(statKey, listener); track(d); return d; }
+
+        public IDisposable OnStatChanged(string statKey, Action<int> listener)
+        {
+            ArgumentNullException.ThrowIfNull(listener);
+            IDisposable d = inner.OnStatChanged(statKey, val => loader.ExecuteFaultIsolated(modId, () => listener(val)));
+            track(d);
+            return d;
+        }
+
+        public int ReadStat(uint entityId, int statId) => inner.ReadStat(entityId, statId);
+        public bool TryReadStat(uint entityId, int statId, out int value) => inner.TryReadStat(entityId, statId, out value);
+        public void SetLocalStat(uint entityId, int statId, int value) => inner.SetLocalStat(entityId, statId, value);
+        public IReadOnlyDictionary<int, int> GetAllStats(uint entityId) => inner.GetAllStats(entityId);
+        public int ReadLocalPlayerStat(int statId) => inner.ReadLocalPlayerStat(statId);
+        public bool TryReadLocalPlayerStat(int statId, out int value) => inner.TryReadLocalPlayerStat(statId, out value);
+        public IReadOnlyDictionary<int, int> GetLocalPlayerStats() => inner.GetLocalPlayerStats();
     }
 
     private sealed class TrackedGealBuiltinRegistry(IGealBuiltinRegistry inner, Action<IDisposable> track) : IGealBuiltinRegistry
@@ -2284,6 +2313,105 @@ internal sealed class ScopedGameServices : IGameServices
             {
                 inner.CharacterCreated -= item.Wrapped;
             }
+        }
+    }
+
+    private sealed class TrackedItemFilterService(ItemFilterService inner, ClientModLoader loader, string modId) : IItemFilterService, IDisposable
+    {
+        private readonly List<(Action<ItemFilterReloadedEventArgs> Original, Action<ItemFilterReloadedEventArgs> Wrapped)> _reloadSubs = [];
+        private readonly Lock _gate = new();
+        private bool _disposed;
+
+        public ItemFilterState GetState() => inner.GetState();
+        public bool Reload() => inner.Reload();
+        public bool IsWorldItemVisible(uint entityId) => inner.IsWorldItemVisible(entityId);
+        public ItemFilterResult GetWorldItemResult(uint entityId) => inner.GetWorldItemResult(entityId);
+        public IReadOnlyList<WorldEntitySnapshot> GetVisibleGroundItems(float? maxDistance = null) => inner.GetVisibleGroundItems(maxDistance);
+        public ItemFilterResult EvaluateItem(uint entityId) => inner.EvaluateItem(entityId);
+
+        public event Action<ItemFilterReloadedEventArgs>? FilterReloaded
+        {
+            add
+            {
+                if (value is null) return;
+                Action<ItemFilterReloadedEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _reloadSubs.Add((value, wrapped));
+                }
+
+                inner.FilterReloaded += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                Action<ItemFilterReloadedEventArgs>? wrapped = null;
+                lock (_gate)
+                {
+                    for (int i = _reloadSubs.Count - 1; i >= 0; i--)
+                    {
+                        if (_reloadSubs[i].Original.Equals(value))
+                        {
+                            wrapped = _reloadSubs[i].Wrapped;
+                            _reloadSubs.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+
+                if (wrapped is not null)
+                {
+                    inner.FilterReloaded -= wrapped;
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            (Action<ItemFilterReloadedEventArgs> Original, Action<ItemFilterReloadedEventArgs> Wrapped)[] snapshot;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                snapshot = [.. _reloadSubs];
+                _reloadSubs.Clear();
+            }
+
+            foreach (var item in snapshot)
+            {
+                inner.FilterReloaded -= item.Wrapped;
+            }
+        }
+    }
+
+    private sealed class TrackedCameraService(CameraService inner, string modId) : ICameraService, IDisposable
+    {
+        private bool _disposed;
+
+        public CameraState GetState() => inner.GetState();
+
+        public bool TryWorldToScreen(float worldX, float worldY, float worldZ, out float screenX, out float screenY) =>
+            inner.TryWorldToScreen(worldX, worldY, worldZ, out screenX, out screenY);
+
+        public void SetZoomOverride(float? zoomOverride)
+        {
+            if (Volatile.Read(ref _disposed))
+            {
+                return;
+            }
+
+            inner.SetZoomOverrideForOwner(modId, zoomOverride);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, true))
+            {
+                return;
+            }
+
+            inner.ClearZoomOverrideForOwner(modId);
         }
     }
 }

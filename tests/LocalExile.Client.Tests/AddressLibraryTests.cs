@@ -177,7 +177,7 @@ public sealed class AddressLibraryTests
     [Fact]
     public unsafe void NativeShimBridge_BindsToUnmanagedAbiTableAndNativeEntryPoint()
     {
-        // Exact C ABI 0.3.0 struct size parity with src/native-shim/include/nativemods_abi.h (x64).
+        // Exact C ABI 0.4.0 struct size parity with src/native-shim/include/nativemods_abi.h (x64).
         Assert.Equal(120, sizeof(NmHostInfo));
         Assert.Equal(48, sizeof(NmSymbolInfo));
         Assert.Equal(16, sizeof(NmGameAllocHeader));
@@ -188,8 +188,15 @@ public sealed class AddressLibraryTests
         Assert.Equal(40, sizeof(NmInputEvent));
         Assert.Equal(448, sizeof(NmItemSnapshot));
         Assert.Equal(952, sizeof(NmHoverState));
-        Assert.Equal(720, sizeof(NmAbiTable));
-        Assert.Equal(0x00000300u, NativeShimConstants.AbiVersion);
+        Assert.Equal(160, sizeof(NmWorldEntityQuery));
+        Assert.Equal(760, sizeof(NmWorldEntitySnapshot));
+        Assert.Equal(8, sizeof(NmStatEntry));
+        Assert.Equal(352, sizeof(NmAreaInfo));
+        Assert.Equal(784, sizeof(NmItemFilterState));
+        Assert.Equal(72, sizeof(NmItemFilterResult));
+        Assert.Equal(120, sizeof(NmCameraState));
+        Assert.Equal(864, sizeof(NmAbiTable));
+        Assert.Equal(0x00000400u, NativeShimConstants.AbiVersion);
         Assert.Equal("LocalExile.Client.Host.NativeEntryPoint", typeof(NativeEntryPoint).FullName);
 
         NmAbiTable table = default;
@@ -527,7 +534,7 @@ public sealed class AddressLibraryTests
     private static NmStatus MockUnregisterRulesetHandler(ulong token) { Interlocked.Increment(ref _unregisteredCount); return NmStatus.Ok; }
 
     [Fact]
-    public unsafe void NativeShimBridge_RejectsLegacy010_020_Future040AndTruncatedAbiTables()
+    public unsafe void NativeShimBridge_RejectsLegacy010_020_030_Future050AndTruncatedAbiTables()
     {
         NmAbiTable legacy010 = default;
         legacy010.StructSize = (uint)sizeof(NmAbiTable);
@@ -543,15 +550,22 @@ public sealed class AddressLibraryTests
         Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(legacy020Ptr));
         Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(legacy020Ptr));
 
+        NmAbiTable legacy030 = default;
+        legacy030.StructSize = (uint)sizeof(NmAbiTable);
+        legacy030.AbiVersion = 0x00000300u;
+        nint legacy030Ptr = (nint)(&legacy030);
+        Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(legacy030Ptr));
+        Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(legacy030Ptr));
+
         NmAbiTable future = default;
         future.StructSize = (uint)sizeof(NmAbiTable);
-        future.AbiVersion = 0x00000400u;
+        future.AbiVersion = 0x00000500u;
         nint futurePtr = (nint)(&future);
         Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(futurePtr));
         Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(futurePtr));
 
         NmAbiTable truncated = default;
-        truncated.StructSize = 560u;
+        truncated.StructSize = 720u;
         truncated.AbiVersion = NativeShimConstants.AbiVersion;
         nint truncatedPtr = (nint)(&truncated);
         Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(truncatedPtr));

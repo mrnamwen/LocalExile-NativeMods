@@ -113,6 +113,13 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly List<Func<MouseEventArgs, bool>> _mouseCallbacks = [];
     private readonly List<Func<string, string, string, string?>> _charCreatingCallbacks = [];
     private readonly List<Action<string, string, ushort>> _charCreatedCallbacks = [];
+    private readonly Dictionary<uint, WorldEntitySnapshot> _simulatedEntities = [];
+    private readonly Dictionary<uint, Dictionary<int, int>> _simulatedEntityStats = [];
+    private readonly List<(Action<AreaInfo> OnEntered, Action<string> OnLeft)> _areaLifecycleCallbacks = [];
+    private readonly Dictionary<uint, ItemFilterResult> _simulatedWorldItemFilterResults = [];
+    private readonly Dictionary<uint, ItemFilterResult> _simulatedEvaluatedFilterResults = [];
+    private readonly List<Action<bool, string, ItemFilterState?>> _filterReloadCallbacks = [];
+    private readonly List<float> _simulatedZoomOverrideHistory = [];
     private readonly nint _simulatedUiRootHandle = 0x0F00;
     private readonly Lock _gate = new();
 
@@ -126,6 +133,12 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private nint _simulatedHoveredControlHandle;
     private HoveredItemInfo? _simulatedHoveredItem;
     private CursorItemInfo? _simulatedCursorItem;
+    private uint _simulatedLocalPlayerId;
+    private AreaInfo? _simulatedArea;
+    private ItemFilterState _simulatedItemFilterState = ItemFilterState.Empty;
+    private int _simulatedFilterReloadCount;
+    private CameraState _simulatedCameraState = CameraState.Invalid;
+    private float _simulatedZoomOverride = -1.0f;
     private string? _clipboardText;
     private int _gameThreadId;
     private ulong _nextHookHandle = 1;
@@ -2442,6 +2455,14 @@ public sealed class SimulatedNativeBridge : INativeBridge
         {
             uint id = _nextClientObjectId++;
             _worldObjects[id] = new WorldObjectInfo(id, metadataPath, x, y, z, true, new Dictionary<string, string>());
+            _simulatedEntities[id] = new WorldEntitySnapshot(
+                EntityId: id,
+                EntityHandle: unchecked((nint)(0x7000_0000L + id)),
+                Kind: WorldEntityKind.ClientOnly,
+                MetadataPath: metadataPath,
+                GridX: (int)MathF.Round(x / 10.869565f),
+                GridY: (int)MathF.Round(y / 10.869565f),
+                Position: new WorldPosition3D(x, y, z));
             return id;
         }
     }
@@ -2451,7 +2472,13 @@ public sealed class SimulatedNativeBridge : INativeBridge
     {
         lock (_gate)
         {
-            return _worldObjects.TryGetValue(objectId, out WorldObjectInfo? info) && info.IsClientOnly && _worldObjects.Remove(objectId);
+            bool removed = _worldObjects.TryGetValue(objectId, out WorldObjectInfo? info) && info.IsClientOnly && _worldObjects.Remove(objectId);
+            if (removed)
+            {
+                _simulatedEntities.Remove(objectId);
+            }
+
+            return removed;
         }
     }
 
@@ -2461,6 +2488,429 @@ public sealed class SimulatedNativeBridge : INativeBridge
         lock (_gate)
         {
             _playedEffects.Add((targetObjectId, effectPath));
+        }
+    }
+
+    // --- Phase 2 (0.4.0) Simulation Helpers & Bridge Implementation ---
+
+    /// <summary>Gets or sets the current simulated area metadata snapshot.</summary>
+    public AreaInfo? SimulatedArea
+    {
+        get { lock (_gate) { return _simulatedArea; } }
+        set { lock (_gate) { _simulatedArea = value; } }
+    }
+
+    /// <summary>Gets or sets the simulated active item-filter state.</summary>
+    public ItemFilterState SimulatedItemFilterState
+    {
+        get { lock (_gate) { return _simulatedItemFilterState; } }
+        set { lock (_gate) { _simulatedItemFilterState = value ?? ItemFilterState.Empty; } }
+    }
+
+    /// <summary>Gets the number of times <see cref="ReloadItemFilter"/> was invoked.</summary>
+    public int SimulatedFilterReloadCount
+    {
+        get { lock (_gate) { return _simulatedFilterReloadCount; } }
+    }
+
+    /// <summary>Gets or sets the simulated in-game camera state snapshot.</summary>
+    public CameraState SimulatedCameraState
+    {
+        get { lock (_gate) { return _simulatedCameraState; } }
+        set
+        {
+            lock (_gate)
+            {
+                _simulatedCameraState = value ?? CameraState.Invalid;
+                _simulatedZoomOverride = _simulatedCameraState.ZoomOverride;
+            }
+        }
+    }
+
+    /// <summary>Gets the most recent zoom override written to the simulated camera (<c>-1.0f</c> = stock).</summary>
+    public float SimulatedZoomOverride
+    {
+        get { lock (_gate) { return _simulatedZoomOverride; } }
+    }
+
+    /// <summary>Gets the chronological history of zoom override values applied to the simulated camera.</summary>
+    public IReadOnlyList<float> SimulatedZoomOverrideHistory
+    {
+        get { lock (_gate) { return [.. _simulatedZoomOverrideHistory]; } }
+    }
+
+    /// <summary>Sets (or clears) the simulated local player entity.</summary>
+    public void SetSimulatedLocalPlayer(WorldEntitySnapshot? player)
+    {
+        lock (_gate)
+        {
+            if (_simulatedLocalPlayerId != 0 && (player is null || player.EntityId != _simulatedLocalPlayerId))
+            {
+                _simulatedEntities.Remove(_simulatedLocalPlayerId);
+            }
+
+            if (player is null)
+            {
+                _simulatedLocalPlayerId = 0;
+                return;
+            }
+
+            WorldEntitySnapshot normalized = (player.Kind & WorldEntityKind.Player) != 0
+                ? player
+                : player with { Kind = player.Kind | WorldEntityKind.Player };
+            _simulatedLocalPlayerId = normalized.EntityId;
+            _simulatedEntities[normalized.EntityId] = normalized;
+        }
+    }
+
+    /// <summary>Adds or updates a simulated live world entity.</summary>
+    public void AddSimulatedEntity(WorldEntitySnapshot entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        lock (_gate)
+        {
+            _simulatedEntities[entity.EntityId] = entity;
+        }
+    }
+
+    /// <summary>Removes a simulated live world entity by id.</summary>
+    public bool RemoveSimulatedEntity(uint entityId)
+    {
+        lock (_gate)
+        {
+            if (_simulatedLocalPlayerId == entityId)
+            {
+                _simulatedLocalPlayerId = 0;
+            }
+
+            return _simulatedEntities.Remove(entityId);
+        }
+    }
+
+    /// <summary>Clears all simulated live world entities and entity stats.</summary>
+    public void ClearSimulatedEntities()
+    {
+        lock (_gate)
+        {
+            _simulatedEntities.Clear();
+            _simulatedEntityStats.Clear();
+            _simulatedLocalPlayerId = 0;
+        }
+    }
+
+    /// <summary>Sets a simulated numeric stat for an entity (<c>entityId == 0</c> targets the local player).</summary>
+    public void SetSimulatedEntityStat(uint entityId, int statId, int value) => SetLocalEntityStat(entityId, statId, value);
+
+    /// <summary>Sets the cached simulated item-filter result for a ground world item.</summary>
+    public void SetSimulatedWorldItemFilterResult(uint entityId, ItemFilterResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        lock (_gate)
+        {
+            _simulatedWorldItemFilterResults[entityId] = result;
+        }
+    }
+
+    /// <summary>Sets the on-demand <see cref="EvaluateItemFilter"/> result for an entity.</summary>
+    public void SetSimulatedEvaluatedFilterResult(uint entityId, ItemFilterResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        lock (_gate)
+        {
+            _simulatedEvaluatedFilterResults[entityId] = result;
+        }
+    }
+
+    /// <summary>Simulates the native area-entered hook firing on the game thread.</summary>
+    public void SimulateAreaEntered(AreaInfo area)
+    {
+        ArgumentNullException.ThrowIfNull(area);
+        Action<AreaInfo>[] callbacks;
+        lock (_gate)
+        {
+            _simulatedArea = area;
+            callbacks = [.. _areaLifecycleCallbacks.Select(c => c.OnEntered)];
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Action<AreaInfo> cb in callbacks)
+        {
+            cb(area);
+        }
+    }
+
+    /// <summary>Simulates the native area-left hook firing on the game thread.</summary>
+    public void SimulateAreaLeft(string? areaId = null)
+    {
+        string leavingId;
+        Action<string>[] callbacks;
+        lock (_gate)
+        {
+            leavingId = areaId ?? _simulatedArea?.AreaId ?? string.Empty;
+            if (_simulatedArea is not null &&
+                (string.IsNullOrEmpty(leavingId) || string.Equals(_simulatedArea.AreaId, leavingId, StringComparison.Ordinal)))
+            {
+                _simulatedArea = null;
+            }
+
+            callbacks = [.. _areaLifecycleCallbacks.Select(c => c.OnLeft)];
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Action<string> cb in callbacks)
+        {
+            cb(leavingId);
+        }
+    }
+
+    /// <summary>Simulates <c>ItemFilterManager::NotifyLoaded</c> completing on the game thread.</summary>
+    public void SimulateItemFilterReloaded(bool succeeded, string statusMessage = "Item Filter loaded successfully.")
+    {
+        Action<bool, string, ItemFilterState?>[] callbacks;
+        ItemFilterState state;
+        lock (_gate)
+        {
+            callbacks = [.. _filterReloadCallbacks];
+            state = _simulatedItemFilterState;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Action<bool, string, ItemFilterState?> cb in callbacks)
+        {
+            cb(succeeded, statusMessage, state);
+        }
+    }
+
+    /// <inheritdoc/>
+    public WorldEntitySnapshot? GetLocalPlayerEntity()
+    {
+        lock (_gate)
+        {
+            return _simulatedLocalPlayerId != 0 && _simulatedEntities.TryGetValue(_simulatedLocalPlayerId, out WorldEntitySnapshot? player)
+                ? player
+                : null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<WorldEntitySnapshot> GetWorldEntities(WorldEntityQuery? query = null)
+    {
+        lock (_gate)
+        {
+            return [.. _simulatedEntities.Values.OrderBy(e => e.EntityId)];
+        }
+    }
+
+    /// <inheritdoc/>
+    public WorldEntitySnapshot? GetWorldEntity(uint entityId)
+    {
+        lock (_gate)
+        {
+            if (entityId == 0 && _simulatedLocalPlayerId != 0)
+            {
+                entityId = _simulatedLocalPlayerId;
+            }
+
+            return _simulatedEntities.TryGetValue(entityId, out WorldEntitySnapshot? entity) ? entity : null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryReadEntityStat(uint entityId, int statId, out int value)
+    {
+        lock (_gate)
+        {
+            uint resolvedId = ResolveSimulatedStatEntityIdLocked(entityId);
+            if (_simulatedEntityStats.TryGetValue(resolvedId, out Dictionary<int, int>? map) &&
+                map.TryGetValue(statId, out value))
+            {
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetLocalEntityStat(uint entityId, int statId, int value)
+    {
+        lock (_gate)
+        {
+            uint resolvedId = ResolveSimulatedStatEntityIdLocked(entityId);
+            if (!_simulatedEntityStats.TryGetValue(resolvedId, out Dictionary<int, int>? map))
+            {
+                map = [];
+                _simulatedEntityStats[resolvedId] = map;
+            }
+
+            map[statId] = value;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyDictionary<int, int> GetAllEntityStats(uint entityId)
+    {
+        lock (_gate)
+        {
+            uint resolvedId = ResolveSimulatedStatEntityIdLocked(entityId);
+            return _simulatedEntityStats.TryGetValue(resolvedId, out Dictionary<int, int>? map)
+                ? new Dictionary<int, int>(map)
+                : new Dictionary<int, int>();
+        }
+    }
+
+    private uint ResolveSimulatedStatEntityIdLocked(uint entityId) =>
+        entityId == 0 && _simulatedLocalPlayerId != 0 ? _simulatedLocalPlayerId : entityId;
+
+    /// <inheritdoc/>
+    public AreaInfo? GetAreaInfo()
+    {
+        lock (_gate)
+        {
+            return _simulatedArea;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterAreaLifecycleCallback(Action<AreaInfo> onAreaEntered, Action<string> onAreaLeft)
+    {
+        ArgumentNullException.ThrowIfNull(onAreaEntered);
+        ArgumentNullException.ThrowIfNull(onAreaLeft);
+        var entry = (onAreaEntered, onAreaLeft);
+        lock (_gate)
+        {
+            _areaLifecycleCallbacks.Add(entry);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _areaLifecycleCallbacks.Remove(entry);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public ItemFilterState GetItemFilterState()
+    {
+        lock (_gate)
+        {
+            return _simulatedItemFilterState;
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool ReloadItemFilter()
+    {
+        lock (_gate)
+        {
+            _simulatedFilterReloadCount++;
+            return true;
+        }
+    }
+
+    /// <inheritdoc/>
+    public ItemFilterResult GetWorldItemFilterResult(uint entityId)
+    {
+        lock (_gate)
+        {
+            if (_simulatedWorldItemFilterResults.TryGetValue(entityId, out ItemFilterResult? explicitResult))
+            {
+                return explicitResult;
+            }
+
+            if (_simulatedEntities.TryGetValue(entityId, out WorldEntitySnapshot? entity) && entity.IsWorldItem)
+            {
+                return new ItemFilterResult(
+                    Evaluated: true,
+                    IsVisible: entity.IsFilterVisible,
+                    FontSize: 32,
+                    TextRgba: 0xFFFFFFFFu,
+                    BorderRgba: 0xFFFFFFFFu,
+                    BackgroundRgba: 0xC0000000u,
+                    AlertSoundId: -1,
+                    MinimapIconShape: -1,
+                    MinimapIconColor: -1,
+                    MinimapIconSize: -1,
+                    BeamColor: -1,
+                    BeamTemporary: false);
+            }
+
+            return ItemFilterResult.Unevaluated;
+        }
+    }
+
+    /// <inheritdoc/>
+    public ItemFilterResult EvaluateItemFilter(uint entityId)
+    {
+        lock (_gate)
+        {
+            if (_simulatedEvaluatedFilterResults.TryGetValue(entityId, out ItemFilterResult? evaluated))
+            {
+                return evaluated;
+            }
+
+            if (_simulatedWorldItemFilterResults.TryGetValue(entityId, out ItemFilterResult? cached))
+            {
+                return cached;
+            }
+
+            return ItemFilterResult.Unevaluated;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterItemFilterReloadCallback(Action<bool, string, ItemFilterState?> onReloaded)
+    {
+        ArgumentNullException.ThrowIfNull(onReloaded);
+        lock (_gate)
+        {
+            _filterReloadCallbacks.Add(onReloaded);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _filterReloadCallbacks.Remove(onReloaded);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public CameraState GetCameraState()
+    {
+        lock (_gate)
+        {
+            return _simulatedCameraState;
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryCameraWorldToScreen(float worldX, float worldY, float worldZ, out float screenX, out float screenY)
+    {
+        CameraState cam;
+        lock (_gate)
+        {
+            cam = _simulatedCameraState;
+        }
+
+        return cam.TryProjectWorldToScreen(worldX, worldY, worldZ, out screenX, out screenY);
+    }
+
+    /// <inheritdoc/>
+    public void SetCameraZoomOverride(float zoomOverride)
+    {
+        float normalized = float.IsNaN(zoomOverride) || float.IsInfinity(zoomOverride) || zoomOverride < 0f
+            ? -1.0f
+            : zoomOverride;
+        lock (_gate)
+        {
+            _simulatedZoomOverride = normalized;
+            _simulatedZoomOverrideHistory.Add(normalized);
+            _simulatedCameraState = _simulatedCameraState with { ZoomOverride = normalized };
         }
     }
 
