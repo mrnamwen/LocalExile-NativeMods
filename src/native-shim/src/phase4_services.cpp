@@ -931,8 +931,8 @@ struct GealFuncImpl {
 };
 static_assert(sizeof(GealFuncImpl) <= 0x38u, "GealFuncImpl must fit in MSVC std::function 0x38B SBO storage");
 
-extern void* g_geal_void_impl_vtable[6];
-extern void* g_geal_value_impl_vtable[6];
+extern void* g_geal_void_impl_vtable[7];
+extern void* g_geal_value_impl_vtable[7];
 
 GealFuncImpl* NM_CALL geal_impl_copy(const GealFuncImpl* self, void* dst) {
     auto* out = static_cast<GealFuncImpl*>(dst);
@@ -1080,22 +1080,32 @@ void NM_CALL geal_impl_delete_this(GealFuncImpl* self, uint8_t dealloc) {
 const void* NM_CALL geal_impl_type(const GealFuncImpl* /*self*/) { return nullptr; }
 const void* NM_CALL geal_impl_get(const GealFuncImpl* self) { return self; }
 
-void* g_geal_void_impl_vtable[6] = {
+void* NM_CALL geal_impl_scalar_dtor(GealFuncImpl* self, uint32_t flags) {
+    geal_impl_delete_this(self, (flags & 1u) != 0u ? 1u : 0u);
+    return self;
+}
+
+// Exact 7-slot MSVC std::_Func_base vtable layout verified on Game.exe 3.29.3d (0x143031688):
+//   [0] +0x00 _Copy, [1] +0x08 _Move, [2] +0x10 _Do_call, [3] +0x18 _Type,
+//   [4] +0x20 _Delete_this, [5] +0x28 _Get, [6] +0x30 ~_Func_base(flags)
+void* g_geal_void_impl_vtable[7] = {
     reinterpret_cast<void*>(&geal_impl_copy),
     reinterpret_cast<void*>(&geal_impl_move),
     reinterpret_cast<void*>(&geal_impl_do_call_void),
-    reinterpret_cast<void*>(&geal_impl_delete_this),
     reinterpret_cast<void*>(&geal_impl_type),
+    reinterpret_cast<void*>(&geal_impl_delete_this),
     reinterpret_cast<void*>(&geal_impl_get),
+    reinterpret_cast<void*>(&geal_impl_scalar_dtor),
 };
 
-void* g_geal_value_impl_vtable[6] = {
+void* g_geal_value_impl_vtable[7] = {
     reinterpret_cast<void*>(&geal_impl_copy),
     reinterpret_cast<void*>(&geal_impl_move),
     reinterpret_cast<void*>(&geal_impl_do_call_value),
-    reinterpret_cast<void*>(&geal_impl_delete_this),
     reinterpret_cast<void*>(&geal_impl_type),
+    reinterpret_cast<void*>(&geal_impl_delete_this),
     reinterpret_cast<void*>(&geal_impl_get),
+    reinterpret_cast<void*>(&geal_impl_scalar_dtor),
 };
 
 GealFuncWrapper* build_geal_func_wrapper(size_t slot_idx, GealFuncWrapper* out_sret, const GealArgSpan* args) {
@@ -1232,13 +1242,22 @@ void NM_CALL custom_ui_impl_delete_this(CustomUiFuncImpl* self, uint8_t dealloc)
 const void* NM_CALL custom_ui_impl_type(const CustomUiFuncImpl* /*self*/) { return nullptr; }
 const void* NM_CALL custom_ui_impl_get(const CustomUiFuncImpl* self) { return self; }
 
-void* g_custom_ui_impl_vtable[6] = {
+void* NM_CALL custom_ui_impl_scalar_dtor(CustomUiFuncImpl* self, uint32_t flags) {
+    custom_ui_impl_delete_this(self, (flags & 1u) != 0u ? 1u : 0u);
+    return self;
+}
+
+// Exact 7-slot MSVC std::_Func_base vtable layout verified on Game.exe 3.29.3d (0x143031688):
+//   [0] +0x00 _Copy, [1] +0x08 _Move, [2] +0x10 _Do_call, [3] +0x18 _Type,
+//   [4] +0x20 _Delete_this, [5] +0x28 _Get, [6] +0x30 ~_Func_base(flags)
+void* g_custom_ui_impl_vtable[7] = {
     reinterpret_cast<void*>(&custom_ui_impl_copy),
     reinterpret_cast<void*>(&custom_ui_impl_move),
     reinterpret_cast<void*>(&custom_ui_impl_do_call),
-    reinterpret_cast<void*>(&custom_ui_impl_delete_this),
     reinterpret_cast<void*>(&custom_ui_impl_type),
+    reinterpret_cast<void*>(&custom_ui_impl_delete_this),
     reinterpret_cast<void*>(&custom_ui_impl_get),
+    reinterpret_cast<void*>(&custom_ui_impl_scalar_dtor),
 };
 
 // --- Live TargetChain Hooks (ALL verified >= 14B and <= 8 args in #132) ---
