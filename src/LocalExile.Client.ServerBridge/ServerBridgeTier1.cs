@@ -6,7 +6,7 @@ namespace LocalExile.Client.ServerBridge;
 
 /// <summary>
 /// Wire message type names exchanged on <see cref="MessageCodec.SystemChannel"/> between
-/// Tier 1 <c>ServerBridge 0.3.0</c> sessions and the client host's <c>ServerBridgeTier1Handler</c>.
+/// Tier 1 <c>ServerBridge 0.3.0</c>/<c>0.4.0</c> sessions and the client host's <c>ServerBridgeTier1Handler</c>.
 /// </summary>
 public static class Tier1MessageTypes
 {
@@ -54,6 +54,77 @@ public static class Tier1MessageTypes
 
     /// <summary>C→S push notification emitted when hovered control, hovered item, or cursor item changes.</summary>
     public const string HoverStateChanged = "Tier1HoverStateChanged";
+
+    // ---- Phase 2 (ServerBridge 0.4.0) ----
+
+    /// <summary>S→C request querying live world entities or filter-visible ground items.</summary>
+    public const string QueryWorldEntities = "Tier1QueryWorldEntities";
+
+    /// <summary>C→S response carrying matching <see cref="ClientWorldEntitySnapshot"/> records.</summary>
+    public const string WorldEntitiesResponse = "Tier1WorldEntitiesResponse";
+
+    /// <summary>S→C request querying the local player world entity snapshot.</summary>
+    public const string QueryLocalPlayer = "Tier1QueryLocalPlayer";
+
+    /// <summary>C→S response carrying the local player <see cref="ClientWorldEntitySnapshot"/> (or <c>null</c>).</summary>
+    public const string LocalPlayerResponse = "Tier1LocalPlayerResponse";
+
+    /// <summary>S→C request querying all numeric stats (including high-ID <c>&gt;= 0x10000</c>) on a world entity or local player.</summary>
+    public const string QueryEntityStats = "Tier1QueryEntityStats";
+
+    /// <summary>C→S response carrying a <see cref="ClientEntityStatsSnapshot"/>.</summary>
+    public const string EntityStatsResponse = "Tier1EntityStatsResponse";
+
+    /// <summary>S→C request querying a single numeric stat on a world entity or local player.</summary>
+    public const string QueryStat = "Tier1QueryStat";
+
+    /// <summary>C→S response carrying a <see cref="ClientStatValueSnapshot"/>.</summary>
+    public const string StatResponse = "Tier1StatResponse";
+
+    /// <summary>S→C request querying the currently loaded game area's <see cref="AreaInfo"/> metadata.</summary>
+    public const string QueryAreaInfo = "Tier1QueryAreaInfo";
+
+    /// <summary>C→S response carrying the active <see cref="AreaInfo"/> (or <c>null</c> when outside an area).</summary>
+    public const string AreaInfoResponse = "Tier1AreaInfoResponse";
+
+    /// <summary>S→C command enabling or disabling opt-in area enter/leave notifications.</summary>
+    public const string SetAreaSubscription = "Tier1SetAreaSubscription";
+
+    /// <summary>C→S push notification emitted when the client enters or leaves a game area.</summary>
+    public const string AreaChanged = "Tier1AreaChanged";
+
+    /// <summary>S→C request querying the active client <see cref="ItemFilterState"/>.</summary>
+    public const string QueryItemFilterState = "Tier1QueryItemFilterState";
+
+    /// <summary>C→S response carrying the active <see cref="ItemFilterState"/>.</summary>
+    public const string ItemFilterStateResponse = "Tier1ItemFilterStateResponse";
+
+    /// <summary>S→C request triggering a game-thread reload of the currently selected item filter.</summary>
+    public const string ReloadItemFilter = "Tier1ReloadItemFilter";
+
+    /// <summary>C→S response confirming whether the item-filter reload request was dispatched.</summary>
+    public const string ReloadItemFilterResponse = "Tier1ReloadItemFilterResponse";
+
+    /// <summary>S→C request evaluating a world-item or item entity against the active item filter.</summary>
+    public const string EvaluateWorldItemFilter = "Tier1EvaluateWorldItemFilter";
+
+    /// <summary>C→S response carrying an <see cref="ItemFilterResult"/>.</summary>
+    public const string EvaluateWorldItemFilterResponse = "Tier1EvaluateWorldItemFilterResponse";
+
+    /// <summary>S→C command enabling or disabling opt-in item-filter reload notifications.</summary>
+    public const string SetFilterSubscription = "Tier1SetFilterSubscription";
+
+    /// <summary>C→S push notification emitted when the client finishes loading, reloading, or clearing an item filter.</summary>
+    public const string FilterReloaded = "Tier1FilterReloaded";
+
+    /// <summary>S→C request querying the active in-game <see cref="CameraState"/>.</summary>
+    public const string QueryCameraState = "Tier1QueryCameraState";
+
+    /// <summary>C→S response carrying the live <see cref="CameraState"/>.</summary>
+    public const string CameraStateResponse = "Tier1CameraStateResponse";
+
+    /// <summary>S→C command setting or clearing the server-owned camera zoom override (auto-restored on disconnect/dispose).</summary>
+    public const string SetCameraZoomOverride = "Tier1SetCameraZoomOverride";
 }
 
 /// <summary>

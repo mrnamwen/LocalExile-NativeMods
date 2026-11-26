@@ -156,7 +156,7 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Live camera projection, world-to-screen transform, and per-mod zoom override service.</summary>
     public CameraService Camera { get; }
 
-    /// <summary>Client-side Tier 1 ServerBridge 0.3.0 protocol dispatcher (slots, toasts, hotkeys, screen/hover queries).</summary>
+    /// <summary>Client-side Tier 1 ServerBridge 0.3.0/0.4.0 protocol dispatcher (slots, toasts, hotkeys, screen/hover/world/stats/area/filter/camera).</summary>
     public ServerBridgeTier1Handler Tier1Handler { get; }
 
     /// <summary>World object &amp; effect service.</summary>
@@ -228,7 +228,7 @@ public sealed class ClientHostRuntime : IDisposable
         _systemSubs.Add(_systemChannel.On<ServerHandshake>(HandleServerHandshake));
         _systemSubs.Add(_systemChannel.On<ServerUiCommand>(HandleServerUiCommand));
         _systemSubs.Add(_bridge.RegisterAreaLifecycleCallback(HandleNativeAreaEntered, HandleNativeAreaLeft));
-        Tier1Handler = new ServerBridgeTier1Handler(_systemChannel, Scheduler, Screens, Input, Hover, Toasts, Log);
+        Tier1Handler = new ServerBridgeTier1Handler(_systemChannel, Scheduler, Screens, Input, Hover, Toasts, World, Stats, Lifecycle, ItemFilter, Camera, Log);
 
         // Passive S->C ##NM chat fallback listener when HostRuleset is primary so servers
         // sending either 0x2c9 ruleset packets OR ##NM chat lines reach client mods seamlessly.

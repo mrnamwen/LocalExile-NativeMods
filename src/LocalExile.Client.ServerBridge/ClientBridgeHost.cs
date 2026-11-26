@@ -378,6 +378,90 @@ public sealed class ClientBridgeHost : IDisposable
         CancellationToken cancellationToken = default) =>
         GetOrCreateSession(connectionId).QueryHoverStateAsync(refresh, timeout, cancellationToken);
 
+    /// <summary>Queries all currently filter-visible ground items on <paramref name="connectionId"/>.</summary>
+    public Task<IReadOnlyList<ClientWorldEntitySnapshot>> QueryVisibleGroundItemsAsync(
+        string connectionId,
+        float? maxDistance = null,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryVisibleGroundItemsAsync(maxDistance, timeout, cancellationToken);
+
+    /// <summary>Queries live world entities on <paramref name="connectionId"/>.</summary>
+    public Task<IReadOnlyList<ClientWorldEntitySnapshot>> QueryWorldEntitiesAsync(
+        string connectionId,
+        ClientWorldEntityQuery? query = null,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryWorldEntitiesAsync(query, timeout, cancellationToken);
+
+    /// <summary>Queries the local player entity snapshot on <paramref name="connectionId"/>.</summary>
+    public Task<ClientWorldEntitySnapshot?> QueryLocalPlayerAsync(
+        string connectionId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryLocalPlayerAsync(timeout, cancellationToken);
+
+    /// <summary>Queries all live numeric stats on an entity (or local player when <paramref name="entityId"/> is <c>0</c>) on <paramref name="connectionId"/>.</summary>
+    public Task<ClientEntityStatsSnapshot> QueryEntityStatsAsync(
+        string connectionId,
+        uint entityId = 0,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryEntityStatsAsync(entityId, timeout, cancellationToken);
+
+    /// <summary>Queries a single live numeric stat on an entity (or local player when <paramref name="entityId"/> is <c>0</c>) on <paramref name="connectionId"/>.</summary>
+    public Task<ClientStatValueSnapshot> QueryStatAsync(
+        string connectionId,
+        int statId,
+        uint entityId = 0,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryStatAsync(statId, entityId, timeout, cancellationToken);
+
+    /// <summary>Queries the currently loaded game area metadata on <paramref name="connectionId"/>.</summary>
+    public Task<AreaInfo?> QueryAreaInfoAsync(
+        string connectionId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryAreaInfoAsync(timeout, cancellationToken);
+
+    /// <summary>Queries the active item-filter state on <paramref name="connectionId"/>.</summary>
+    public Task<ItemFilterState> QueryItemFilterStateAsync(
+        string connectionId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryItemFilterStateAsync(timeout, cancellationToken);
+
+    /// <summary>Triggers a game-thread reload of the currently selected item filter on <paramref name="connectionId"/>.</summary>
+    public Task<bool> ReloadItemFilterAsync(
+        string connectionId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).ReloadItemFilterAsync(timeout, cancellationToken);
+
+    /// <summary>Evaluates a world-item or item entity against the active item filter on <paramref name="connectionId"/>.</summary>
+    public Task<ItemFilterResult> EvaluateWorldItemFilterAsync(
+        string connectionId,
+        uint entityId,
+        bool liveEvaluate = false,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).EvaluateWorldItemFilterAsync(entityId, liveEvaluate, timeout, cancellationToken);
+
+    /// <summary>Queries the active in-game camera state on <paramref name="connectionId"/>.</summary>
+    public Task<CameraState> QueryCameraStateAsync(
+        string connectionId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryCameraStateAsync(timeout, cancellationToken);
+
+    /// <summary>Sets or clears a server-owned camera zoom override on <paramref name="connectionId"/> (auto-restored on disconnect/dispose).</summary>
+    public Task SetCameraZoomOverrideAsync(
+        string connectionId,
+        float? zoomOverride,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).SetCameraZoomOverrideAsync(zoomOverride, cancellationToken);
+
     internal string ResolveDefaultChannel() => DefaultChannel ?? MessageCodec.SystemChannel;
 
     /// <summary>
@@ -815,6 +899,83 @@ public sealed class ClientBridgeHost : IDisposable
                 await session.DispatchTier1HoverChangedAsync(hoverChanged, cancellationToken).ConfigureAwait(false);
                 return GatewayBridgeBus.ResultHandled;
             }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.WorldEntitiesResponse, StringComparison.Ordinal))
+            {
+                Tier1WorldEntitiesResponsePayload worldResp = MessageCodec.DeserializePayload<Tier1WorldEntitiesResponsePayload>(envelope);
+                session.HandleTier1WorldEntitiesResponse(worldResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.LocalPlayerResponse, StringComparison.Ordinal))
+            {
+                Tier1LocalPlayerResponsePayload playerResp = MessageCodec.DeserializePayload<Tier1LocalPlayerResponsePayload>(envelope);
+                session.HandleTier1LocalPlayerResponse(playerResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.EntityStatsResponse, StringComparison.Ordinal))
+            {
+                Tier1EntityStatsResponsePayload statsResp = MessageCodec.DeserializePayload<Tier1EntityStatsResponsePayload>(envelope);
+                session.HandleTier1EntityStatsResponse(statsResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.StatResponse, StringComparison.Ordinal))
+            {
+                Tier1StatResponsePayload statResp = MessageCodec.DeserializePayload<Tier1StatResponsePayload>(envelope);
+                session.HandleTier1StatResponse(statResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.AreaInfoResponse, StringComparison.Ordinal))
+            {
+                Tier1AreaInfoResponsePayload areaResp = MessageCodec.DeserializePayload<Tier1AreaInfoResponsePayload>(envelope);
+                session.HandleTier1AreaInfoResponse(areaResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.AreaChanged, StringComparison.Ordinal))
+            {
+                ClientAreaChangedEvent areaChanged = MessageCodec.DeserializePayload<ClientAreaChangedEvent>(envelope);
+                await session.DispatchTier1AreaChangedAsync(areaChanged, cancellationToken).ConfigureAwait(false);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.ItemFilterStateResponse, StringComparison.Ordinal))
+            {
+                Tier1ItemFilterStateResponsePayload filterStateResp = MessageCodec.DeserializePayload<Tier1ItemFilterStateResponsePayload>(envelope);
+                session.HandleTier1ItemFilterStateResponse(filterStateResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.ReloadItemFilterResponse, StringComparison.Ordinal))
+            {
+                Tier1ReloadItemFilterResponsePayload filterReloadResp = MessageCodec.DeserializePayload<Tier1ReloadItemFilterResponsePayload>(envelope);
+                session.HandleTier1ReloadItemFilterResponse(filterReloadResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.EvaluateWorldItemFilterResponse, StringComparison.Ordinal))
+            {
+                Tier1EvaluateWorldItemFilterResponsePayload filterEvalResp = MessageCodec.DeserializePayload<Tier1EvaluateWorldItemFilterResponsePayload>(envelope);
+                session.HandleTier1EvaluateWorldItemFilterResponse(filterEvalResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.FilterReloaded, StringComparison.Ordinal))
+            {
+                ItemFilterReloadedEventArgs filterReloaded = MessageCodec.DeserializePayload<ItemFilterReloadedEventArgs>(envelope);
+                await session.DispatchTier1FilterReloadedAsync(filterReloaded, cancellationToken).ConfigureAwait(false);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.CameraStateResponse, StringComparison.Ordinal))
+            {
+                Tier1CameraStateResponsePayload cameraResp = MessageCodec.DeserializePayload<Tier1CameraStateResponsePayload>(envelope);
+                session.HandleTier1CameraStateResponse(cameraResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
         }
 
         await session.DispatchEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
@@ -993,6 +1154,7 @@ internal sealed class ClientSession : IClientSession
     private readonly ClientBridgeHost _host;
     private readonly ClientUiSession _ui;
     private readonly ClientPhase1Session _phase1;
+    private readonly ClientPhase2Session _phase2;
     private readonly Dictionary<(string Channel, string MessageType), List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>> _handlers = [];
     private readonly List<PendingBatchEntry> _batchQueue = [];
     private readonly Lock _gate = new();
@@ -1013,6 +1175,7 @@ internal sealed class ClientSession : IClientSession
         Handshake?.InstalledMods is { Count: > 0 } mods ? mods.Select(m => m.Id).ToArray() : [];
     public IClientUiSession Ui => _ui;
     public IClientPhase1Session Phase1 => _phase1;
+    public IClientPhase2Session Phase2 => _phase2;
 
     public ClientSession(ClientBridgeHost host, string connectionId, NetTransportKind defaultTransport)
     {
@@ -1021,6 +1184,7 @@ internal sealed class ClientSession : IClientSession
         ActiveTransport = defaultTransport;
         _ui = new ClientUiSession(this, host);
         _phase1 = new ClientPhase1Session(this, host);
+        _phase2 = new ClientPhase2Session(this, host);
     }
 
     internal void SetActiveTransport(NetTransportKind kind)
@@ -1208,6 +1372,59 @@ internal sealed class ClientSession : IClientSession
 
     public Task<IDisposable> OnHoverChangedAsync(Func<IClientSession, ClientHoverStateSnapshot, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
         _phase1.OnHoverChangedAsync(handler, cancellationToken);
+
+    // ---- IClientPhase2Session forwarding ----
+
+    public Task<IReadOnlyList<ClientWorldEntitySnapshot>> QueryVisibleGroundItemsAsync(float? maxDistance = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryVisibleGroundItemsAsync(maxDistance, timeout, cancellationToken);
+
+    public Task<IReadOnlyList<ClientWorldEntitySnapshot>> QueryWorldEntitiesAsync(ClientWorldEntityQuery? query = null, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryWorldEntitiesAsync(query, timeout, cancellationToken);
+
+    public Task<ClientWorldEntitySnapshot?> QueryLocalPlayerAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryLocalPlayerAsync(timeout, cancellationToken);
+
+    public Task<ClientEntityStatsSnapshot> QueryEntityStatsAsync(uint entityId = 0, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryEntityStatsAsync(entityId, timeout, cancellationToken);
+
+    public Task<ClientStatValueSnapshot> QueryStatAsync(int statId, uint entityId = 0, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryStatAsync(statId, entityId, timeout, cancellationToken);
+
+    public Task<AreaInfo?> QueryAreaInfoAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryAreaInfoAsync(timeout, cancellationToken);
+
+    public Task<IDisposable> OnAreaChangedAsync(Action<IClientSession, ClientAreaChangedEvent> handler, CancellationToken cancellationToken = default) =>
+        _phase2.OnAreaChangedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnAreaChangedAsync(Func<IClientSession, ClientAreaChangedEvent, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase2.OnAreaChangedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnAreaChangedAsync(Func<IClientSession, ClientAreaChangedEvent, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase2.OnAreaChangedAsync(handler, cancellationToken);
+
+    public Task<ItemFilterState> QueryItemFilterStateAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryItemFilterStateAsync(timeout, cancellationToken);
+
+    public Task<bool> ReloadItemFilterAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.ReloadItemFilterAsync(timeout, cancellationToken);
+
+    public Task<ItemFilterResult> EvaluateWorldItemFilterAsync(uint entityId, bool liveEvaluate = false, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.EvaluateWorldItemFilterAsync(entityId, liveEvaluate, timeout, cancellationToken);
+
+    public Task<IDisposable> OnFilterReloadedAsync(Action<IClientSession, ItemFilterReloadedEventArgs> handler, CancellationToken cancellationToken = default) =>
+        _phase2.OnFilterReloadedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnFilterReloadedAsync(Func<IClientSession, ItemFilterReloadedEventArgs, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase2.OnFilterReloadedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnFilterReloadedAsync(Func<IClientSession, ItemFilterReloadedEventArgs, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase2.OnFilterReloadedAsync(handler, cancellationToken);
+
+    public Task<CameraState> QueryCameraStateAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase2.QueryCameraStateAsync(timeout, cancellationToken);
+
+    public Task SetCameraZoomOverrideAsync(float? zoomOverride, CancellationToken cancellationToken = default) =>
+        _phase2.SetCameraZoomOverrideAsync(zoomOverride, cancellationToken);
 
     private Task<bool> QueueOrSendAsync(ModEnvelope envelope, ServerUiCommand? uiCommand, CancellationToken cancellationToken)
     {
@@ -1564,6 +1781,39 @@ internal sealed class ClientSession : IClientSession
     internal Task DispatchTier1HoverChangedAsync(ClientHoverStateSnapshot snapshot, CancellationToken cancellationToken) =>
         _phase1.DispatchHoverChangedAsync(snapshot, cancellationToken);
 
+    internal void HandleTier1WorldEntitiesResponse(Tier1WorldEntitiesResponsePayload payload) =>
+        _phase2.HandleWorldEntitiesResponse(payload);
+
+    internal void HandleTier1LocalPlayerResponse(Tier1LocalPlayerResponsePayload payload) =>
+        _phase2.HandleLocalPlayerResponse(payload);
+
+    internal void HandleTier1EntityStatsResponse(Tier1EntityStatsResponsePayload payload) =>
+        _phase2.HandleEntityStatsResponse(payload);
+
+    internal void HandleTier1StatResponse(Tier1StatResponsePayload payload) =>
+        _phase2.HandleStatResponse(payload);
+
+    internal void HandleTier1AreaInfoResponse(Tier1AreaInfoResponsePayload payload) =>
+        _phase2.HandleAreaInfoResponse(payload);
+
+    internal Task DispatchTier1AreaChangedAsync(ClientAreaChangedEvent evt, CancellationToken cancellationToken) =>
+        _phase2.DispatchAreaChangedAsync(evt, cancellationToken);
+
+    internal void HandleTier1ItemFilterStateResponse(Tier1ItemFilterStateResponsePayload payload) =>
+        _phase2.HandleItemFilterStateResponse(payload);
+
+    internal void HandleTier1ReloadItemFilterResponse(Tier1ReloadItemFilterResponsePayload payload) =>
+        _phase2.HandleReloadItemFilterResponse(payload);
+
+    internal void HandleTier1EvaluateWorldItemFilterResponse(Tier1EvaluateWorldItemFilterResponsePayload payload) =>
+        _phase2.HandleEvaluateWorldItemFilterResponse(payload);
+
+    internal Task DispatchTier1FilterReloadedAsync(ItemFilterReloadedEventArgs evt, CancellationToken cancellationToken) =>
+        _phase2.DispatchFilterReloadedAsync(evt, cancellationToken);
+
+    internal void HandleTier1CameraStateResponse(Tier1CameraStateResponsePayload payload) =>
+        _phase2.HandleCameraStateResponse(payload);
+
     internal async Task CloseSessionAsync(CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _closed, 1);
@@ -1579,6 +1829,7 @@ internal sealed class ClientSession : IClientSession
         }
 
         _phase1.CloseSession();
+        _phase2.CloseSession();
         await _ui.CloseAllWindowsAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1597,6 +1848,7 @@ internal sealed class ClientSession : IClientSession
         }
 
         _phase1.CloseSession();
+        _phase2.CloseSession();
         _ui.CloseAllWindowsNonBlocking();
     }
 

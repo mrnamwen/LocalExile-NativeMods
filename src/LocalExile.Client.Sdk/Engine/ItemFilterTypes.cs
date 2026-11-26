@@ -33,9 +33,9 @@ public sealed record ItemFilterState(
 /// <param name="Evaluated"><c>true</c> if a filter style was evaluated or read from the entity's cached style.</param>
 /// <param name="IsVisible"><c>true</c> if the item is shown by the active filter (or never-hidden); <c>false</c> if hidden.</param>
 /// <param name="FontSize">Configured label font size (0 if unspecified).</param>
-/// <param name="TextRgba">Packed RGBA text color (<c>R | (G &lt;&lt; 8) | (B &lt;&lt; 16) | (A &lt;&lt; 24)</c>).</param>
-/// <param name="BorderRgba">Packed RGBA border color.</param>
-/// <param name="BackgroundRgba">Packed RGBA background color.</param>
+/// <param name="TextRgba">Packed RGBA text color (<c>0xRRGGBBAA</c>: <c>(R &lt;&lt; 24) | (G &lt;&lt; 16) | (B &lt;&lt; 8) | A</c>).</param>
+/// <param name="BorderRgba">Packed RGBA border color (<c>0xRRGGBBAA</c>).</param>
+/// <param name="BackgroundRgba">Packed RGBA background color (<c>0xRRGGBBAA</c>).</param>
 /// <param name="AlertSoundId">Alert sound identifier, or <c>-1</c> if none.</param>
 /// <param name="MinimapIconShape">Minimap icon shape/index, or <c>-1</c> if none.</param>
 /// <param name="MinimapIconColor">Minimap icon color index, or <c>-1</c> if none.</param>
