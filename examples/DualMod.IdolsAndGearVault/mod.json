@@ -1,0 +1,45 @@
+{
+  "id": "idolsvault",
+  "name": "Idols Board & Gear Vault",
+  "description": "Phase 4 flagship showcase featuring a 32-cell 6x6 Idol Board (blocked corners), Alt-held stock item tooltip affix tags, custom Gear-Affinity stash routing, and live native Extend registries (GEAL builtin, 0xAE ruleset, custom UI control).",
+  "author": "LocalExile Community",
+  "version": "1.0.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "idolsvault.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": false,
+    "sdkVersionRange": ">=1.1.0 <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "assembly": "idolsvault.Client.dll",
+    "payloadDir": "client",
+    "overlays": [
+      "Metadata/UI/Mods/IdolsVault/IdolsVaultPanel.ui"
+    ],
+    "replaces": [],
+    "rawAccess": false,
+    "customOpcodes": [],
+    "gealBuiltins": [
+      "IdolBoardCount"
+    ],
+    "customControls": [
+      "IdolVault.StatusBadge"
+    ],
+    "contentRegistries": [],
+    "serverHalf": {
+      "id": "idolsvault",
+      "minVersion": "1.0.0",
+      "supportsGracefulFallback": true,
+      "channelName": "idolsvault"
+    }
+  }
+}

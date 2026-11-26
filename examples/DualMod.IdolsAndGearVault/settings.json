@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "settings": {
+    "defaultGearVaultTabIndex": {
+      "type": "number",
+      "default": 4,
+      "min": 0,
+      "max": 255,
+      "label": "Default Gear Vault Stash Tab Index",
+      "description": "Zero-based personal stash tab index receiving Ctrl+Click routed gear matching the configured Gear Vault class filter."
+    },
+    "defaultGearClassFilter": {
+      "type": "string",
+      "default": "Helmets",
+      "label": "Default Gear Vault Class Filter",
+      "description": "Default equipment class routed to the Gear Vault tab (Helmets, Body Armours, Gloves, Boots, Belts, Rings, Amulets, or Weapons)."
+    },
+    "enableStockAffinityMapping": {
+      "type": "bool",
+      "default": true,
+      "label": "Enable Stock Affinity Bit Mapping",
+      "description": "When true, maps matching Gear Vault items to the configured stock StashTabAffinityId bit (0..21) via RegisterStockAffinityRule."
+    },
+    "stockAffinityBitId": {
+      "type": "number",
+      "default": 4,
+      "min": 0,
+      "max": 21,
+      "label": "Stock Affinity Bit Id",
+      "description": "Stock StashTabAffinityId bit index (0..21) assigned when stock affinity mapping is enabled."
+    },
+    "showAltTooltipAffixTags": {
+      "type": "bool",
+      "default": true,
+      "label": "Show Alt-Held Tooltip Affix Tags",
+      "description": "Injects [Affix Tags: ...] and tier summary sections into stock item tooltips when holding Alt."
+    },
+    "maxVaultEntriesPerSync": {
+      "type": "number",
+      "default": 64,
+      "min": 8,
+      "max": 256,
+      "label": "Max Gear Vault Entries Per Sync",
+      "description": "Upper limit on vault items returned per Gear Vault state synchronization message."
+    }
+  }
+}
