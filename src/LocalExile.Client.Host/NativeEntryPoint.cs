@@ -184,7 +184,7 @@ public static class NativeEntryPoint
                 WriteLog("INFO", "bootstrap", $"NativeShimBridge attached (build={bridge.BuildVersion}, imageBase=0x{(ulong)bridge.ImageBase:X}, sha256={bridge.ExecutableSha256 ?? "<none>"}).");
 
                 JsonAddressLibrary? addressLib = TryDiscoverAddressLibrary(hostDir, bridge, WriteLog);
-                string modsDir = Environment.GetEnvironmentVariable("NATIVEMODS_MODS_DIR") ?? Path.Combine(hostDir, "Mods", "Client");
+                string modsDir = ResolveModsDirectory(hostDir);
                 var options = new ClientHostOptions
                 {
                     AddressLibrary = addressLib,
@@ -312,16 +312,48 @@ public static class NativeEntryPoint
         return null;
     }
 
+    /// <summary>
+    /// Resolves the active client mods directory using <c>NATIVEMODS_MODS_DIR</c> when set, or probing:
+    /// <c>&lt;hostDir&gt;/Mods/Client</c>, <c>&lt;hostDir&gt;/../Mods/Client</c>, and
+    /// <c>&lt;hostDir&gt;/../../Mods/Client</c> (matching Waypoint's <c>Client/nativemods-host/</c> → <c>Mods/Client/</c> layout).
+    /// </summary>
+    public static string ResolveModsDirectory(string hostDir, string? envModsDir = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostDir);
+
+        string? configured = envModsDir ?? Environment.GetEnvironmentVariable("NATIVEMODS_MODS_DIR");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured.Trim();
+        }
+
+        string direct = Path.Combine(hostDir, "Mods", "Client");
+        if (Directory.Exists(direct))
+        {
+            return direct;
+        }
+
+        string sibling = Path.GetFullPath(Path.Combine(hostDir, "..", "Mods", "Client"));
+        if (Directory.Exists(sibling))
+        {
+            return sibling;
+        }
+
+        string waypointRootSibling = Path.GetFullPath(Path.Combine(hostDir, "..", "..", "Mods", "Client"));
+        if (Directory.Exists(waypointRootSibling))
+        {
+            return waypointRootSibling;
+        }
+
+        return direct;
+    }
+
     private static void AutoLoadClientMods(
         string hostDir,
         ClientHostRuntime runtime,
         Action<string, string, string> log)
     {
-        string? modsDir = Environment.GetEnvironmentVariable("NATIVEMODS_MODS_DIR");
-        if (string.IsNullOrWhiteSpace(modsDir))
-        {
-            modsDir = Path.Combine(hostDir, "Mods", "Client");
-        }
+        string modsDir = ResolveModsDirectory(hostDir);
 
         if (!Directory.Exists(modsDir))
         {

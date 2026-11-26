@@ -293,4 +293,18 @@ public interface IUiService
     /// <summary>Creates a slab-safe composite <see cref="IUiItemGrid"/> with the specified dimensions and cell size.</summary>
     IUiItemGrid CreateItemGrid(IUiControl parent, int columns, int rows, float cellSize = 48f, string? id = null) =>
         CreateItemGrid(parent, new UiItemGridOptions(columns, rows, cellSize), id);
+
+    /// <summary>
+    /// Gets whether 6-socket compact icon scaling on small items (such as 2×2 helmets/gloves/boots or 1×3 weapons with 5–6 sockets)
+    /// is currently enabled. Defaults to <c>false</c> and resets automatically when owning mods unload or disconnect.
+    /// </summary>
+    bool IsCompactSocketsEnabled => false;
+
+    /// <summary>
+    /// Enables or disables 6-socket compact icon scaling on <c>SocketOverlay</c> so 5–6 sockets fit cleanly inside
+    /// 2×2 and 1×3 item rects without overflowing adjacent inventory cells.
+    /// Automatically disabled when the owning mod unloads.
+    /// </summary>
+    /// <param name="enabled"><c>true</c> to opt into compact socket layout; <c>false</c> to release this mod's opt-in.</param>
+    void SetCompactSocketsEnabled(bool enabled) { }
 }

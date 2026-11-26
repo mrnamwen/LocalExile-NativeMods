@@ -1313,10 +1313,13 @@ public sealed class UiService : IUiService
     private static readonly Regex BeginRegex = new(@"^begin\s+([A-Za-z0-9_]+)(?:\s+based\s+on\s+([A-Za-z0-9_]+))?\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PropRegex = new(@"^([A-Za-z0-9_]+)\s*=\s*(.+?)\s*;?\s*$", RegexOptions.Compiled);
 
+    private const string CompactSocketsHostOwnerKey = "__host__";
+
     private readonly IFileOverlayService _files;
     private readonly UiControlRegistry _controlRegistry;
     private readonly Native.INativeBridge? _bridge;
     private readonly Dictionary<string, UiWindowNode> _windows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _compactSocketsOwners = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _gate = new();
     private TooltipService? _tooltips;
     private InputService? _input;
@@ -1691,6 +1694,103 @@ public sealed class UiService : IUiService
         parentNode.AddChild(grid);
         grid.InitializeGridVisuals();
         return grid;
+    }
+
+    /// <inheritdoc/>
+    public bool IsCompactSocketsEnabled
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _compactSocketsOwners.Count > 0;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetCompactSocketsEnabled(bool enabled) =>
+        SetCompactSocketsEnabledForOwner(CompactSocketsHostOwnerKey, enabled);
+
+    internal void SetCompactSocketsEnabledForOwner(string ownerId, bool enabled)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        bool nextState;
+        bool shouldPush;
+        lock (_gate)
+        {
+            bool prevState = _compactSocketsOwners.Count > 0;
+            if (enabled)
+            {
+                _compactSocketsOwners.Add(ownerId);
+            }
+            else
+            {
+                _compactSocketsOwners.Remove(ownerId);
+            }
+
+            nextState = _compactSocketsOwners.Count > 0;
+            shouldPush = prevState != nextState || enabled;
+        }
+
+        if (shouldPush)
+        {
+            _bridge?.SetCompactSocketsEnabled(nextState);
+        }
+    }
+
+    internal void ClearCompactSocketsForOwner(string ownerId)
+    {
+        if (string.IsNullOrWhiteSpace(ownerId))
+        {
+            return;
+        }
+
+        bool shouldPush = false;
+        bool nextState = false;
+        lock (_gate)
+        {
+            bool prevState = _compactSocketsOwners.Count > 0;
+            if (_compactSocketsOwners.Remove(ownerId))
+            {
+                nextState = _compactSocketsOwners.Count > 0;
+                shouldPush = prevState != nextState;
+            }
+        }
+
+        if (shouldPush)
+        {
+            try
+            {
+                _bridge?.SetCompactSocketsEnabled(nextState);
+            }
+            catch
+            {
+                // Ignore teardown errors if the native bridge is already shutting down.
+            }
+        }
+    }
+
+    internal void ResetCompactSockets()
+    {
+        bool hadAny;
+        lock (_gate)
+        {
+            hadAny = _compactSocketsOwners.Count > 0;
+            _compactSocketsOwners.Clear();
+        }
+
+        if (hadAny)
+        {
+            try
+            {
+                _bridge?.SetCompactSocketsEnabled(false);
+            }
+            catch
+            {
+                // Ignore teardown errors if the native bridge is already shutting down.
+            }
+        }
     }
 
     private void WireDynamicControlNativeEvents(UiControlNode node, UiControlNode parentNode)

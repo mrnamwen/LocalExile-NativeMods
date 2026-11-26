@@ -57,6 +57,48 @@ public sealed class ServerBridgeTier1Handler : IDisposable
     private const string MsgCameraStateResponse = "Tier1CameraStateResponse";
     private const string MsgSetCameraZoomOverride = "Tier1SetCameraZoomOverride";
 
+    // Phase 4 + 5 (1.2.0)
+    private const string MsgShowTooltip = "Tier1ShowTooltip";
+    private const string MsgHideTooltip = "Tier1HideTooltip";
+    private const string MsgRegisterItemTooltipRule = "Tier1RegisterItemTooltipRule";
+    private const string MsgRemoveItemTooltipRule = "Tier1RemoveItemTooltipRule";
+    private const string MsgRegisterStashAffinityRoute = "Tier1RegisterStashAffinityRoute";
+    private const string MsgRemoveStashAffinityRoute = "Tier1RemoveStashAffinityRoute";
+    private const string MsgSetPictureTexture = "Tier1SetPictureTexture";
+    private const string MsgSetComboBoxSelected = "Tier1SetComboBoxSelected";
+    private const string MsgSelectTab = "Tier1SelectTab";
+    private const string MsgCreateItemGrid = "Tier1CreateItemGrid";
+    private const string MsgSetGridItem = "Tier1SetGridItem";
+    private const string MsgRemoveGridItem = "Tier1RemoveGridItem";
+    private const string MsgClearGrid = "Tier1ClearGrid";
+    private const string MsgSetGridClickSubscription = "Tier1SetGridClickSubscription";
+    private const string MsgGridCellClick = "Tier1GridCellClick";
+    private const string MsgPlayAudioEx = "Tier1PlayAudioEx";
+    private const string MsgPlayAudioExResponse = "Tier1PlayAudioExResponse";
+    private const string MsgStopAudio = "Tier1StopAudio";
+    private const string MsgPlaySoundAtPosition = "Tier1PlaySoundAtPosition";
+    private const string MsgSetAudioPosition = "Tier1SetAudioPosition";
+    private const string MsgSpawnClientObject = "Tier1SpawnClientObject";
+    private const string MsgSpawnClientObjectResponse = "Tier1SpawnClientObjectResponse";
+    private const string MsgRemoveClientObject = "Tier1RemoveClientObject";
+    private const string MsgSetExtendedU32Stacks = "Tier1SetExtendedU32Stacks";
+    private const string MsgSetEntityStackOverride = "Tier1SetEntityStackOverride";
+    private const string MsgSetCompactSockets = "Tier1SetCompactSockets";
+
+    private sealed class GridKeyComparer : IEqualityComparer<(string WindowId, string GridPath)>
+    {
+        public static readonly GridKeyComparer Instance = new();
+
+        public bool Equals((string WindowId, string GridPath) x, (string WindowId, string GridPath) y) =>
+            string.Equals(x.WindowId, y.WindowId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.GridPath, y.GridPath, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string WindowId, string GridPath) obj) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.WindowId),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.GridPath));
+    }
+
     private sealed class SlotButtonKeyComparer : IEqualityComparer<(ScreenSlot Slot, string Id)>
     {
         public static readonly SlotButtonKeyComparer Instance = new();
@@ -79,9 +121,20 @@ public sealed class ServerBridgeTier1Handler : IDisposable
     private readonly GameLifecycle? _lifecycle;
     private readonly ItemFilterService? _itemFilter;
     private readonly CameraService? _camera;
+    private readonly UiService? _ui;
+    private readonly TooltipService? _tooltips;
+    private readonly StashAffinityService? _stashAffinity;
+    private readonly AudioService? _audio;
+    private readonly StackExtensionService? _stackExtension;
     private readonly Action<string, string, string>? _log;
     private readonly Dictionary<(ScreenSlot Slot, string Id), ISlotAttachment> _slotButtons = new(SlotButtonKeyComparer.Instance);
     private readonly Dictionary<string, IDisposable> _hotkeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IDisposable> _tooltipRules = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IDisposable> _affinityRoutes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<(string WindowId, string GridPath), IUiItemGrid> _ownedGrids = new(GridKeyComparer.Instance);
+    private readonly Dictionary<(string WindowId, string GridPath), Action> _gridClickSubs = new(GridKeyComparer.Instance);
+    private readonly HashSet<int> _ownedAudioChannels = [];
+    private readonly HashSet<uint> _ownedWorldObjects = [];
     private readonly List<IDisposable> _channelSubs = [];
     private readonly Lock _gate = new();
     private int _screenSubRefCount;
@@ -90,6 +143,30 @@ public sealed class ServerBridgeTier1Handler : IDisposable
     private int _filterSubRefCount;
     private float? _activeCameraZoomOverride;
     private bool _disposed;
+
+    /// <summary>Number of server-registered declarative item tooltip rules currently active.</summary>
+    public int RegisteredTooltipRuleCount
+    {
+        get { lock (_gate) { return _tooltipRules.Count; } }
+    }
+
+    /// <summary>Number of server-registered Ctrl+Click stash affinity routes currently active.</summary>
+    public int RegisteredAffinityRouteCount
+    {
+        get { lock (_gate) { return _affinityRoutes.Count; } }
+    }
+
+    /// <summary>Number of server-started audio channels currently tracked for disconnect cleanup.</summary>
+    public int OwnedAudioChannelCount
+    {
+        get { lock (_gate) { return _ownedAudioChannels.Count; } }
+    }
+
+    /// <summary>Number of server-spawned client-only world objects currently tracked for disconnect cleanup.</summary>
+    public int OwnedWorldObjectCount
+    {
+        get { lock (_gate) { return _ownedWorldObjects.Count; } }
+    }
 
     /// <summary>Number of server-registered managed <see cref="ScreenSlot"/> toolbar buttons currently active.</summary>
     public int RegisteredSlotButtonCount
@@ -172,6 +249,46 @@ public sealed class ServerBridgeTier1Handler : IDisposable
         ItemFilterService? itemFilter,
         CameraService? camera,
         Action<string, string, string>? log = null)
+        : this(
+            systemChannel,
+            scheduler,
+            screens,
+            input,
+            hover,
+            toasts,
+            world,
+            stats,
+            lifecycle,
+            itemFilter,
+            camera,
+            ui: null,
+            tooltips: null,
+            stashAffinity: null,
+            audio: null,
+            stackExtension: null,
+            log: log)
+    {
+    }
+
+    /// <summary>Creates and wires a new <see cref="ServerBridgeTier1Handler"/> onto <paramref name="systemChannel"/> with full 1.2.0 Phase 1/2/4/5 services.</summary>
+    public ServerBridgeTier1Handler(
+        INetChannel systemChannel,
+        IModScheduler scheduler,
+        ScreensService screens,
+        InputService input,
+        HoverService hover,
+        ToastService toasts,
+        WorldService? world,
+        StatsService? stats,
+        GameLifecycle? lifecycle,
+        ItemFilterService? itemFilter,
+        CameraService? camera,
+        UiService? ui,
+        TooltipService? tooltips,
+        StashAffinityService? stashAffinity,
+        AudioService? audio,
+        StackExtensionService? stackExtension,
+        Action<string, string, string>? log = null)
     {
         _systemChannel = systemChannel ?? throw new ArgumentNullException(nameof(systemChannel));
         _scheduler = scheduler ?? throw new ArgumentNullException(nameof(scheduler));
@@ -184,6 +301,11 @@ public sealed class ServerBridgeTier1Handler : IDisposable
         _lifecycle = lifecycle;
         _itemFilter = itemFilter;
         _camera = camera;
+        _ui = ui;
+        _tooltips = tooltips;
+        _stashAffinity = stashAffinity;
+        _audio = audio;
+        _stackExtension = stackExtension;
         _log = log;
 
         // Phase 1 (0.3.0)
@@ -210,6 +332,36 @@ public sealed class ServerBridgeTier1Handler : IDisposable
         _channelSubs.Add(_systemChannel.On<SetSubscriptionDto>(HandleSetFilterSubscription, MsgSetFilterSubscription));
         _channelSubs.Add(_systemChannel.On<QueryCameraStateDto>(HandleQueryCameraState, MsgQueryCameraState));
         _channelSubs.Add(_systemChannel.On<SetCameraZoomOverrideDto>(HandleSetCameraZoomOverride, MsgSetCameraZoomOverride));
+
+        // Phase 4 + 5 (1.2.0)
+        _channelSubs.Add(_systemChannel.On<ShowTooltipDto>(HandleShowTooltip, MsgShowTooltip));
+        _channelSubs.Add(_systemChannel.On<HideTooltipDto>(HandleHideTooltip, MsgHideTooltip));
+        _channelSubs.Add(_systemChannel.On<ItemTooltipRuleDto>(HandleRegisterItemTooltipRule, MsgRegisterItemTooltipRule));
+        _channelSubs.Add(_systemChannel.On<RemoveRuleDto>(HandleRemoveItemTooltipRule, MsgRemoveItemTooltipRule));
+        _channelSubs.Add(_systemChannel.On<StashAffinityRouteRuleDto>(HandleRegisterStashAffinityRoute, MsgRegisterStashAffinityRoute));
+        _channelSubs.Add(_systemChannel.On<RemoveRuleDto>(HandleRemoveStashAffinityRoute, MsgRemoveStashAffinityRoute));
+        _channelSubs.Add(_systemChannel.On<SetPictureTextureDto>(HandleSetPictureTexture, MsgSetPictureTexture));
+        _channelSubs.Add(_systemChannel.On<SetComboBoxSelectedDto>(HandleSetComboBoxSelected, MsgSetComboBoxSelected));
+        _channelSubs.Add(_systemChannel.On<SelectTabDto>(HandleSelectTab, MsgSelectTab));
+        _channelSubs.Add(_systemChannel.On<CreateItemGridDto>(HandleCreateItemGrid, MsgCreateItemGrid));
+        _channelSubs.Add(_systemChannel.On<SetGridItemDto>(HandleSetGridItem, MsgSetGridItem));
+        _channelSubs.Add(_systemChannel.On<RemoveGridItemDto>(HandleRemoveGridItem, MsgRemoveGridItem));
+        _channelSubs.Add(_systemChannel.On<ClearGridDto>(HandleClearGrid, MsgClearGrid));
+        _channelSubs.Add(_systemChannel.On<SetGridClickSubscriptionDto>(HandleSetGridClickSubscription, MsgSetGridClickSubscription));
+        _channelSubs.Add(_systemChannel.On<PlayAudioExDto>(HandlePlayAudioEx, MsgPlayAudioEx));
+        _channelSubs.Add(_systemChannel.On<StopAudioDto>(HandleStopAudio, MsgStopAudio));
+        _channelSubs.Add(_systemChannel.On<PlaySoundAtPositionDto>(HandlePlaySoundAtPosition, MsgPlaySoundAtPosition));
+        _channelSubs.Add(_systemChannel.On<SetAudioPositionDto>(HandleSetAudioPosition, MsgSetAudioPosition));
+        _channelSubs.Add(_systemChannel.On<SpawnClientObjectDto>(HandleSpawnClientObject, MsgSpawnClientObject));
+        _channelSubs.Add(_systemChannel.On<RemoveClientObjectDto>(HandleRemoveClientObject, MsgRemoveClientObject));
+        _channelSubs.Add(_systemChannel.On<SetExtendedU32StacksDto>(HandleSetExtendedU32Stacks, MsgSetExtendedU32Stacks));
+        _channelSubs.Add(_systemChannel.On<SetEntityStackOverrideDto>(HandleSetEntityStackOverride, MsgSetEntityStackOverride));
+        _channelSubs.Add(_systemChannel.On<SetCompactSocketsDto>(HandleSetCompactSockets, MsgSetCompactSockets));
+
+        if (_ui is not null)
+        {
+            _ui.WindowTreeInvalidated += HandleWindowTreeInvalidated;
+        }
     }
 
     /// <summary>
@@ -234,6 +386,11 @@ public sealed class ServerBridgeTier1Handler : IDisposable
         if (alreadyDisposed)
         {
             return;
+        }
+
+        if (_ui is not null)
+        {
+            _ui.WindowTreeInvalidated -= HandleWindowTreeInvalidated;
         }
 
         foreach (IDisposable sub in _channelSubs)
@@ -931,9 +1088,878 @@ public sealed class ServerBridgeTier1Handler : IDisposable
                     _activeCameraZoomOverride = null;
                 }
 
-                _camera.ClearZoomOverrideForOwner(ServerBridgeModOwner);
+        _camera.ClearZoomOverrideForOwner(ServerBridgeModOwner);
             }
         });
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 4 + 5 (1.2.0) Command & Query Handlers
+    // -------------------------------------------------------------------------
+
+    private void HandleShowTooltip(ShowTooltipDto cmd)
+    {
+        if (_tooltips is null || cmd.Content is null)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            _tooltips.ShowTooltipForMod(ServerBridgeModOwner, cmd.Content, cmd.ScreenX, cmd.ScreenY);
+        });
+    }
+
+    private void HandleHideTooltip(HideTooltipDto _)
+    {
+        if (_tooltips is null)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() => _tooltips.HideTooltipForMod(ServerBridgeModOwner));
+    }
+
+    private void HandleRegisterItemTooltipRule(ItemTooltipRuleDto cmd)
+    {
+        if (_tooltips is null || string.IsNullOrWhiteSpace(cmd.Id) || cmd.Sections is null || cmd.Sections.Count == 0)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            string trimmedId = cmd.Id.Trim();
+            IDisposable? existing;
+            lock (_gate)
+            {
+                _tooltipRules.Remove(trimmedId, out existing);
+            }
+
+            existing?.Dispose();
+
+            IReadOnlyList<TooltipSection> sections = [.. cmd.Sections];
+            string? metadataPrefix = string.IsNullOrWhiteSpace(cmd.MetadataPrefix) ? null : cmd.MetadataPrefix.Trim();
+            string? baseNameContains = string.IsNullOrWhiteSpace(cmd.BaseNameContains) ? null : cmd.BaseNameContains.Trim();
+            uint? itemClassId = cmd.ItemClassId;
+            ItemRarity? minRarity = cmd.MinRarity;
+            bool? requireAltHeld = cmd.RequireAltHeld;
+
+            IDisposable reg = _tooltips.RegisterItemTooltipAugmenter(
+                ctx =>
+                {
+                    if (requireAltHeld.HasValue && ctx.IsAltHeld != requireAltHeld.Value)
+                    {
+                        return [];
+                    }
+
+                    if (metadataPrefix is not null &&
+                        !ctx.Item.MetadataPath.StartsWith(metadataPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return [];
+                    }
+
+                    if (baseNameContains is not null &&
+                        !ctx.Item.BaseName.Contains(baseNameContains, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return [];
+                    }
+
+                    if (itemClassId.HasValue && ctx.Item.ItemClassId != itemClassId.Value)
+                    {
+                        return [];
+                    }
+
+                    if (minRarity.HasValue && ctx.Item.Rarity < minRarity.Value)
+                    {
+                        return [];
+                    }
+
+                    return sections;
+                },
+                cmd.Priority);
+
+            bool disposeImmediately = false;
+            lock (_gate)
+            {
+                if (_disposed)
+                {
+                    disposeImmediately = true;
+                }
+                else
+                {
+                    _tooltipRules[trimmedId] = reg;
+                }
+            }
+
+            if (disposeImmediately)
+            {
+                reg.Dispose();
+            }
+        });
+    }
+
+    private void HandleRemoveItemTooltipRule(RemoveRuleDto cmd)
+    {
+        if (string.IsNullOrWhiteSpace(cmd.Id))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            IDisposable? existing;
+            lock (_gate)
+            {
+                _tooltipRules.Remove(cmd.Id.Trim(), out existing);
+            }
+
+            existing?.Dispose();
+        });
+    }
+
+    private void HandleRegisterStashAffinityRoute(StashAffinityRouteRuleDto cmd)
+    {
+        if (_stashAffinity is null || string.IsNullOrWhiteSpace(cmd.Id))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            string trimmedId = cmd.Id.Trim();
+            IDisposable? existing;
+            lock (_gate)
+            {
+                _affinityRoutes.Remove(trimmedId, out existing);
+            }
+
+            existing?.Dispose();
+
+            string? metadataPrefix = string.IsNullOrWhiteSpace(cmd.MetadataPrefix) ? null : cmd.MetadataPrefix.Trim();
+            string? baseNameContains = string.IsNullOrWhiteSpace(cmd.BaseNameContains) ? null : cmd.BaseNameContains.Trim();
+            uint? itemClassId = cmd.ItemClassId;
+            StashKind? stashKind = cmd.StashKind;
+            var route = new StashAffinityRoute(cmd.TargetTabIndex, cmd.AffinityId, cmd.ReplaceStockTargets);
+
+            try
+            {
+                IDisposable reg = _stashAffinity.RegisterRoute(
+                    $"{ServerBridgeModOwner}:{trimmedId}",
+                    ctx =>
+                    {
+                        if (stashKind.HasValue && ctx.StashKind != stashKind.Value)
+                        {
+                            return null;
+                        }
+
+                        if (metadataPrefix is not null &&
+                            !ctx.Item.MetadataPath.StartsWith(metadataPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return null;
+                        }
+
+                        if (baseNameContains is not null &&
+                            !ctx.Item.BaseName.Contains(baseNameContains, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return null;
+                        }
+
+                        if (itemClassId.HasValue && ctx.Item.ItemClassId != itemClassId.Value)
+                        {
+                            return null;
+                        }
+
+                        return route;
+                    },
+                    cmd.Priority);
+
+                bool disposeImmediately = false;
+                lock (_gate)
+                {
+                    if (_disposed)
+                    {
+                        disposeImmediately = true;
+                    }
+                    else
+                    {
+                        _affinityRoutes[trimmedId] = reg;
+                    }
+                }
+
+                if (disposeImmediately)
+                {
+                    reg.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke("WARN", ServerBridgeModOwner, $"Failed to register stash affinity route '{trimmedId}': {ex.Message}");
+            }
+        });
+    }
+
+    private void HandleRemoveStashAffinityRoute(RemoveRuleDto cmd)
+    {
+        if (string.IsNullOrWhiteSpace(cmd.Id))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            IDisposable? existing;
+            lock (_gate)
+            {
+                _affinityRoutes.Remove(cmd.Id.Trim(), out existing);
+            }
+
+            existing?.Dispose();
+        });
+    }
+
+    private void HandleSetPictureTexture(SetPictureTextureDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.ControlPath) || string.IsNullOrWhiteSpace(cmd.TexturePath))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            if (FindUiControl(cmd.WindowId, cmd.ControlPath) is IPicture picture)
+            {
+                picture.SetTexture(cmd.TexturePath, cmd.ResizeToImage);
+            }
+        });
+    }
+
+    private void HandleSetComboBoxSelected(SetComboBoxSelectedDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.ControlPath))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            if (FindUiControl(cmd.WindowId, cmd.ControlPath) is IComboBox combo &&
+                cmd.SelectedIndex >= -1 &&
+                cmd.SelectedIndex < combo.ItemCount)
+            {
+                combo.SelectedIndex = cmd.SelectedIndex;
+            }
+        });
+    }
+
+    private void HandleSelectTab(SelectTabDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.ControlPath))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            if (FindUiControl(cmd.WindowId, cmd.ControlPath) is ITabContainer tabs &&
+                cmd.TabIndex >= 0 &&
+                cmd.TabIndex < tabs.TabCount)
+            {
+                tabs.SelectTab(cmd.TabIndex);
+            }
+        });
+    }
+
+    private void HandleCreateItemGrid(CreateItemGridDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.GridId) || cmd.Options is null)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            IUiControl? parent = FindUiControl(cmd.WindowId, cmd.ParentControlPath);
+            if (parent is null)
+            {
+                return;
+            }
+
+            string winId = cmd.WindowId.Trim();
+            string gridId = cmd.GridId.Trim();
+            var key = (winId, gridId);
+
+            IUiItemGrid? previous;
+            Action? previousClickDetach;
+            lock (_gate)
+            {
+                _ownedGrids.Remove(key, out previous);
+                _gridClickSubs.Remove(key, out previousClickDetach);
+            }
+
+            previousClickDetach?.Invoke();
+            previous?.Dispose();
+
+            try
+            {
+                IUiItemGrid grid = _ui.CreateItemGrid(parent, cmd.Options, gridId);
+                bool disposeImmediately = false;
+                lock (_gate)
+                {
+                    if (_disposed)
+                    {
+                        disposeImmediately = true;
+                    }
+                    else
+                    {
+                        _ownedGrids[key] = grid;
+                    }
+                }
+
+                if (disposeImmediately)
+                {
+                    grid.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Invoke("WARN", ServerBridgeModOwner, $"Failed to create item grid '{winId}/{gridId}': {ex.Message}");
+            }
+        });
+    }
+
+    private void HandleSetGridItem(SetGridItemDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.GridPath) || cmd.Item is null || string.IsNullOrWhiteSpace(cmd.Item.ItemId))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            IUiItemGrid? grid = ResolveItemGrid(cmd.WindowId, cmd.GridPath);
+            if (grid is null)
+            {
+                return;
+            }
+
+            grid.RemoveItem(cmd.Item.ItemId);
+            grid.PlaceItem(new UiGridItem(
+                ItemId: cmd.Item.ItemId,
+                Col: cmd.Item.Col,
+                Row: cmd.Item.Row,
+                Width: cmd.Item.Width,
+                Height: cmd.Item.Height,
+                IconPath: cmd.Item.IconPath,
+                StackSize: cmd.Item.StackSize,
+                Rarity: cmd.Item.Rarity,
+                Title: cmd.Item.Title,
+                TooltipLines: cmd.Item.TooltipLines));
+        });
+    }
+
+    private void HandleRemoveGridItem(RemoveGridItemDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.GridPath) || string.IsNullOrWhiteSpace(cmd.ItemId))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            ResolveItemGrid(cmd.WindowId, cmd.GridPath)?.RemoveItem(cmd.ItemId);
+        });
+    }
+
+    private void HandleClearGrid(ClearGridDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.GridPath))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            ResolveItemGrid(cmd.WindowId, cmd.GridPath)?.Clear();
+        });
+    }
+
+    private void HandleSetGridClickSubscription(SetGridClickSubscriptionDto cmd)
+    {
+        if (_ui is null || string.IsNullOrWhiteSpace(cmd.WindowId) || string.IsNullOrWhiteSpace(cmd.GridPath))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            string winId = cmd.WindowId.Trim();
+            string gridPath = cmd.GridPath.Trim();
+            var key = (winId, gridPath);
+
+            if (!cmd.Enabled)
+            {
+                Action? detach;
+                lock (_gate)
+                {
+                    _gridClickSubs.Remove(key, out detach);
+                }
+
+                detach?.Invoke();
+                return;
+            }
+
+            lock (_gate)
+            {
+                if (_gridClickSubs.ContainsKey(key))
+                {
+                    return;
+                }
+            }
+
+            IUiItemGrid? grid = ResolveItemGrid(winId, gridPath);
+            if (grid is null)
+            {
+                return;
+            }
+
+            void OnLeftClick(UiGridCellEventArgs args)
+            {
+                if (!IsDisposed())
+                {
+                    _systemChannel.Send(new GridCellClickDto(winId, gridPath, args.Col, args.Row, args.Item?.ItemId, MouseButton.Left, args.Modifiers), MsgGridCellClick);
+                }
+            }
+
+            void OnRightClick(UiGridCellEventArgs args)
+            {
+                if (!IsDisposed())
+                {
+                    _systemChannel.Send(new GridCellClickDto(winId, gridPath, args.Col, args.Row, args.Item?.ItemId, MouseButton.Right, args.Modifiers), MsgGridCellClick);
+                }
+            }
+
+            void OnCtrlClick(UiGridCellEventArgs args)
+            {
+                if (!IsDisposed())
+                {
+                    _systemChannel.Send(new GridCellClickDto(winId, gridPath, args.Col, args.Row, args.Item?.ItemId, MouseButton.Left, args.Modifiers | KeyModifiers.Control), MsgGridCellClick);
+                }
+            }
+
+            grid.CellClicked += OnLeftClick;
+            grid.CellRightClicked += OnRightClick;
+            grid.CellCtrlClicked += OnCtrlClick;
+
+            Action detachAction = () =>
+            {
+                grid.CellClicked -= OnLeftClick;
+                grid.CellRightClicked -= OnRightClick;
+                grid.CellCtrlClicked -= OnCtrlClick;
+            };
+
+            bool detachImmediately = false;
+            lock (_gate)
+            {
+                if (_disposed || _gridClickSubs.ContainsKey(key))
+                {
+                    detachImmediately = true;
+                }
+                else
+                {
+                    _gridClickSubs[key] = detachAction;
+                }
+            }
+
+            if (detachImmediately)
+            {
+                detachAction();
+            }
+        });
+    }
+
+    private void HandlePlayAudioEx(PlayAudioExDto req)
+    {
+        if (string.IsNullOrWhiteSpace(req.RequestId))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            int handle = 0;
+            if (_audio is not null && !string.IsNullOrWhiteSpace(req.PathOrEvent))
+            {
+                handle = req.PathOrEvent.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)
+                    ? _audio.PlaySoundFile(req.PathOrEvent, req.Volume, req.Loop)
+                    : _audio.PlayEvent(req.PathOrEvent, req.Volume);
+
+                if (handle > 0)
+                {
+                    bool stopImmediately = false;
+                    lock (_gate)
+                    {
+                        if (_disposed)
+                        {
+                            stopImmediately = true;
+                        }
+                        else
+                        {
+                            _ownedAudioChannels.Add(handle);
+                        }
+                    }
+
+                    if (stopImmediately)
+                    {
+                        _audio.StopChannel(handle);
+                        handle = 0;
+                    }
+                }
+            }
+
+            _systemChannel.Send(new PlayAudioExResponseDto(req.RequestId, handle), MsgPlayAudioExResponse);
+        });
+    }
+
+    private void HandleStopAudio(StopAudioDto cmd)
+    {
+        if (_audio is null || cmd.ChannelHandle <= 0)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            lock (_gate)
+            {
+                _ownedAudioChannels.Remove(cmd.ChannelHandle);
+            }
+
+            _audio.StopChannel(cmd.ChannelHandle);
+        });
+    }
+
+    private void HandlePlaySoundAtPosition(PlaySoundAtPositionDto req)
+    {
+        if (string.IsNullOrWhiteSpace(req.RequestId))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            int handle = 0;
+            if (_audio is not null && !string.IsNullOrWhiteSpace(req.PathOrEvent))
+            {
+                AudioChannelHandle ch = _audio.PlaySoundAtPosition(
+                    req.PathOrEvent,
+                    req.X,
+                    req.Y,
+                    req.Z,
+                    req.Volume,
+                    req.MaxDistance,
+                    req.Loop);
+                handle = ch.Value;
+
+                if (handle > 0)
+                {
+                    bool stopImmediately = false;
+                    lock (_gate)
+                    {
+                        if (_disposed)
+                        {
+                            stopImmediately = true;
+                        }
+                        else
+                        {
+                            _ownedAudioChannels.Add(handle);
+                        }
+                    }
+
+                    if (stopImmediately)
+                    {
+                        _audio.StopChannel(handle);
+                        handle = 0;
+                    }
+                }
+            }
+
+            _systemChannel.Send(new PlayAudioExResponseDto(req.RequestId, handle), MsgPlayAudioExResponse);
+        });
+    }
+
+    private void HandleSetAudioPosition(SetAudioPositionDto cmd)
+    {
+        if (_audio is null || cmd.ChannelHandle <= 0)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            _audio.SetChannelPosition(new AudioChannelHandle(cmd.ChannelHandle), cmd.X, cmd.Y, cmd.Z, cmd.MaxDistance);
+        });
+    }
+
+    private void HandleSpawnClientObject(SpawnClientObjectDto req)
+    {
+        if (string.IsNullOrWhiteSpace(req.RequestId))
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            uint objectId = 0;
+            if (_world is not null && !string.IsNullOrWhiteSpace(req.MetadataPath))
+            {
+                objectId = _world.SpawnClientObject(req.MetadataPath, req.X, req.Y, req.Z, req.RotationRadians, req.Scale);
+                if (objectId != 0)
+                {
+                    bool removeImmediately = false;
+                    lock (_gate)
+                    {
+                        if (_disposed)
+                        {
+                            removeImmediately = true;
+                        }
+                        else
+                        {
+                            _ownedWorldObjects.Add(objectId);
+                        }
+                    }
+
+                    if (removeImmediately)
+                    {
+                        _world.RemoveClientObject(objectId);
+                        objectId = 0;
+                    }
+                }
+            }
+
+            _systemChannel.Send(new SpawnClientObjectResponseDto(req.RequestId, objectId), MsgSpawnClientObjectResponse);
+        });
+    }
+
+    private void HandleRemoveClientObject(RemoveClientObjectDto cmd)
+    {
+        if (_world is null || cmd.ObjectId == 0)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            lock (_gate)
+            {
+                _ownedWorldObjects.Remove(cmd.ObjectId);
+            }
+
+            _world.RemoveClientObject(cmd.ObjectId);
+        });
+    }
+
+    private void HandleSetExtendedU32Stacks(SetExtendedU32StacksDto cmd)
+    {
+        if (_stackExtension is null)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            _stackExtension.SetExtendedU32StacksEnabledForOwner(ServerBridgeModOwner, cmd.Enabled);
+            if (cmd.FormatMillions.HasValue)
+            {
+                _stackExtension.SetFormatMillionsEnabledForOwner(ServerBridgeModOwner, cmd.FormatMillions.Value);
+            }
+        });
+    }
+
+    private void HandleSetEntityStackOverride(SetEntityStackOverrideDto cmd)
+    {
+        if (_stackExtension is null || cmd.EntityId == 0)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            _stackExtension.SetEntityStackOverrideForOwner(ServerBridgeModOwner, cmd.EntityId, cmd.StackSize);
+        });
+    }
+
+    private void HandleSetCompactSockets(SetCompactSocketsDto cmd)
+    {
+        if (_ui is null)
+        {
+            return;
+        }
+
+        RunOnGameThreadGuarded(() =>
+        {
+            if (IsDisposed())
+            {
+                return;
+            }
+
+            _ui.SetCompactSocketsEnabledForOwner(ServerBridgeModOwner, cmd.Enabled);
+        });
+    }
+
+    private IUiControl? FindUiControl(string windowId, string? controlPath)
+    {
+        if (_ui is null)
+        {
+            return null;
+        }
+
+        IUiWindow? window = !string.IsNullOrWhiteSpace(windowId)
+            ? _ui.GetWindow(windowId)
+            : _ui.OpenWindows.FirstOrDefault();
+        if (window is null)
+        {
+            return null;
+        }
+
+        return string.IsNullOrWhiteSpace(controlPath) ? window : window.Find(controlPath);
+    }
+
+    private IUiItemGrid? ResolveItemGrid(string windowId, string gridPath)
+    {
+        var key = (windowId.Trim(), gridPath.Trim());
+        lock (_gate)
+        {
+            if (_ownedGrids.TryGetValue(key, out IUiItemGrid? owned))
+            {
+                return owned;
+            }
+        }
+
+        return FindUiControl(windowId, gridPath) as IUiItemGrid;
+    }
+
+    private void HandleWindowTreeInvalidated(string windowId)
+    {
+        if (string.IsNullOrWhiteSpace(windowId))
+        {
+            return;
+        }
+
+        Action[] detaches;
+        lock (_gate)
+        {
+            var clickKeys = _gridClickSubs.Keys
+                .Where(k => string.Equals(k.WindowId, windowId, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            detaches = new Action[clickKeys.Length];
+            for (int i = 0; i < clickKeys.Length; i++)
+            {
+                if (_gridClickSubs.Remove(clickKeys[i], out Action? d))
+                {
+                    detaches[i] = d;
+                }
+            }
+
+            var gridKeys = _ownedGrids.Keys
+                .Where(k => string.Equals(k.WindowId, windowId, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            foreach (var gk in gridKeys)
+            {
+                _ownedGrids.Remove(gk);
+            }
+        }
+
+        foreach (Action? detach in detaches)
+        {
+            try { detach?.Invoke(); }
+            catch { }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1105,6 +2131,12 @@ public sealed class ServerBridgeTier1Handler : IDisposable
     {
         ISlotAttachment[] slotButtons;
         IDisposable[] hotkeys;
+        IDisposable[] tooltipRules;
+        IDisposable[] affinityRoutes;
+        Action[] gridClickDetaches;
+        IUiItemGrid[] ownedGrids;
+        int[] ownedAudioChannels;
+        uint[] ownedWorldObjects;
         bool detachScreen;
         bool detachHover;
         bool detachArea;
@@ -1116,6 +2148,18 @@ public sealed class ServerBridgeTier1Handler : IDisposable
             _slotButtons.Clear();
             hotkeys = [.. _hotkeys.Values];
             _hotkeys.Clear();
+            tooltipRules = [.. _tooltipRules.Values];
+            _tooltipRules.Clear();
+            affinityRoutes = [.. _affinityRoutes.Values];
+            _affinityRoutes.Clear();
+            gridClickDetaches = [.. _gridClickSubs.Values];
+            _gridClickSubs.Clear();
+            ownedGrids = [.. _ownedGrids.Values];
+            _ownedGrids.Clear();
+            ownedAudioChannels = [.. _ownedAudioChannels];
+            _ownedAudioChannels.Clear();
+            ownedWorldObjects = [.. _ownedWorldObjects];
+            _ownedWorldObjects.Clear();
             detachScreen = _screenSubRefCount > 0;
             _screenSubRefCount = 0;
             detachHover = _hoverSubRefCount > 0;
@@ -1162,6 +2206,57 @@ public sealed class ServerBridgeTier1Handler : IDisposable
                 // Best-effort camera zoom restore on disconnect/dispose.
             }
         }
+
+        foreach (Action detach in gridClickDetaches)
+        {
+            try { detach(); }
+            catch { }
+        }
+
+        foreach (IUiItemGrid grid in ownedGrids)
+        {
+            try { grid.Dispose(); }
+            catch { }
+        }
+
+        foreach (IDisposable rule in tooltipRules)
+        {
+            try { rule.Dispose(); }
+            catch { }
+        }
+
+        try { _tooltips?.HideTooltipForMod(ServerBridgeModOwner); }
+        catch { }
+
+        foreach (IDisposable route in affinityRoutes)
+        {
+            try { route.Dispose(); }
+            catch { }
+        }
+
+        if (_audio is not null)
+        {
+            foreach (int ch in ownedAudioChannels)
+            {
+                try { _audio.StopChannel(ch); }
+                catch { }
+            }
+        }
+
+        if (_world is not null)
+        {
+            foreach (uint objId in ownedWorldObjects)
+            {
+                try { _world.RemoveClientObject(objId); }
+                catch { }
+            }
+        }
+
+        try { _stackExtension?.ClearForOwner(ServerBridgeModOwner); }
+        catch { }
+
+        try { _ui?.ClearCompactSocketsForOwner(ServerBridgeModOwner); }
+        catch { }
 
         foreach (ISlotAttachment button in slotButtons)
         {
@@ -1391,4 +2486,107 @@ public sealed class ServerBridgeTier1Handler : IDisposable
     private sealed record CameraStateResponseDto(string RequestId, CameraState State);
 
     private sealed record SetCameraZoomOverrideDto(float? ZoomOverride);
+
+    // Phase 4 + 5 (1.2.0) Wire DTOs
+
+    private sealed record ShowTooltipDto(TooltipContent Content, float ScreenX, float ScreenY);
+
+    private sealed record HideTooltipDto();
+
+    private sealed record ItemTooltipRuleDto(
+        string Id,
+        IReadOnlyList<TooltipSection> Sections,
+        string? MetadataPrefix = null,
+        string? BaseNameContains = null,
+        uint? ItemClassId = null,
+        ItemRarity? MinRarity = null,
+        bool? RequireAltHeld = null,
+        int Priority = 0);
+
+    private sealed record RemoveRuleDto(string Id);
+
+    private sealed record StashAffinityRouteRuleDto(
+        string Id,
+        ushort TargetTabIndex,
+        string? MetadataPrefix = null,
+        string? BaseNameContains = null,
+        uint? ItemClassId = null,
+        StashKind? StashKind = null,
+        byte AffinityId = 0,
+        bool ReplaceStockTargets = false,
+        int Priority = 0);
+
+    private sealed record SetPictureTextureDto(string WindowId, string ControlPath, string TexturePath, bool ResizeToImage = false);
+
+    private sealed record SetComboBoxSelectedDto(string WindowId, string ControlPath, int SelectedIndex);
+
+    private sealed record SelectTabDto(string WindowId, string ControlPath, int TabIndex);
+
+    private sealed record CreateItemGridDto(string WindowId, string ParentControlPath, string GridId, UiItemGridOptions Options);
+
+    private sealed record ServerGridItemDto(
+        string ItemId,
+        int Col,
+        int Row,
+        int Width = 1,
+        int Height = 1,
+        string? IconPath = null,
+        int StackSize = 1,
+        ItemRarity Rarity = ItemRarity.Normal,
+        string? Title = null,
+        IReadOnlyList<TooltipLine>? TooltipLines = null);
+
+    private sealed record SetGridItemDto(string WindowId, string GridPath, ServerGridItemDto Item);
+
+    private sealed record RemoveGridItemDto(string WindowId, string GridPath, string ItemId);
+
+    private sealed record ClearGridDto(string WindowId, string GridPath);
+
+    private sealed record SetGridClickSubscriptionDto(string WindowId, string GridPath, bool Enabled);
+
+    private sealed record GridCellClickDto(
+        string WindowId,
+        string GridPath,
+        int Col,
+        int Row,
+        string? ItemId = null,
+        MouseButton Button = MouseButton.Left,
+        KeyModifiers Modifiers = KeyModifiers.None);
+
+    private sealed record PlayAudioExDto(string RequestId, string PathOrEvent, float Volume = 1.0f, bool Loop = false);
+
+    private sealed record PlaySoundAtPositionDto(
+        string RequestId,
+        string PathOrEvent,
+        float X,
+        float Y,
+        float Z,
+        float Volume = 1.0f,
+        float MaxDistance = 1200f,
+        bool Loop = false);
+
+    private sealed record PlayAudioExResponseDto(string RequestId, int ChannelHandle);
+
+    private sealed record StopAudioDto(int ChannelHandle);
+
+    private sealed record SetAudioPositionDto(int ChannelHandle, float X, float Y, float Z, float MaxDistance = 1200f);
+
+    private sealed record SpawnClientObjectDto(
+        string RequestId,
+        string MetadataPath,
+        float X,
+        float Y,
+        float Z = 0f,
+        float RotationRadians = 0f,
+        float Scale = 1.0f);
+
+    private sealed record SpawnClientObjectResponseDto(string RequestId, uint ObjectId);
+
+    private sealed record RemoveClientObjectDto(uint ObjectId);
+
+    private sealed record SetExtendedU32StacksDto(bool Enabled, bool? FormatMillions = null);
+
+    private sealed record SetEntityStackOverrideDto(uint EntityId, uint StackSize);
+
+    private sealed record SetCompactSocketsDto(bool Enabled);
 }

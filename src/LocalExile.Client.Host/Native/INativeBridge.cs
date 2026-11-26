@@ -324,6 +324,10 @@ public interface INativeBridge : IDisposable
     /// <summary>Spawns a client-only world object.</summary>
     uint SpawnClientObject(string metadataPath, float x, float y, float z);
 
+    /// <summary>Spawns a client-only world object with explicit yaw rotation and uniform scale.</summary>
+    uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale) =>
+        SpawnClientObject(metadataPath, x, y, z);
+
     /// <summary>Removes a client-only world object.</summary>
     bool RemoveClientObject(uint objectId);
 
@@ -511,6 +515,20 @@ public interface INativeBridge : IDisposable
         Action<nint> onCreated,
         Action<nint, string, string> onPropertyChanged,
         Action<nint> onDestroyed) => NoopDisposable.Instance;
+
+    // ── Phase 5 (ABI 0.6.0): Extended u32 Stacks & 6-Socket Compact Icons ──────────────────────
+
+    /// <summary>Enables or disables opt-in <c>0xFFFF + u32</c> stack deserialization in <c>Stack::Deserialise</c>.</summary>
+    void SetExtendedU32StacksEnabled(bool enabled) { }
+
+    /// <summary>Enables or disables <c>"1M"</c>/<c>"1.2M"</c> formatting for counts &gt;= 1,000,000 in <c>ui.format_stack_count</c>.</summary>
+    void SetFormatMillionsEnabled(bool enabled) { }
+
+    /// <summary>Applies a sideband 32-bit stack size override onto a live item entity's <c>Stack + 0x18</c> field.</summary>
+    bool SetEntityStackOverride(uint entityId, uint stackSize) => false;
+
+    /// <summary>Enables or disables 6-socket compact icon layout scaling on <c>SocketOverlay</c>.</summary>
+    void SetCompactSocketsEnabled(bool enabled) { }
 }
 
 /// <summary>
@@ -2926,6 +2944,44 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     }
 
     /// <inheritdoc/>
+    public uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale)
+    {
+        if (_table->WorldCreateClientObjectEx is not null)
+        {
+            byte[] utf8 = ToNullTerminatedUtf8(metadataPath);
+            ulong nativeHandle = 0;
+            fixed (byte* pMeta = utf8)
+            {
+                NmStatus status = _table->WorldCreateClientObjectEx(pMeta, x, y, z, rotationRadians, scale, &nativeHandle);
+                EnsureOk(status, $"WorldCreateClientObjectEx({metadataPath})");
+            }
+
+            uint nativeId = unchecked((uint)nativeHandle);
+            if (nativeId == 0 || _nativeClientObjectHandles.ContainsKey(nativeId))
+            {
+                nativeId = Interlocked.Increment(ref _nextClientObjectId);
+            }
+
+            _nativeClientObjectHandles[nativeId] = nativeHandle;
+            _clientObjects[nativeId] = new WorldObjectInfo(
+                nativeId,
+                metadataPath,
+                x,
+                y,
+                z,
+                true,
+                new Dictionary<string, string>
+                {
+                    ["rotationRadians"] = rotationRadians.ToString(CultureInfo.InvariantCulture),
+                    ["scale"] = scale.ToString(CultureInfo.InvariantCulture),
+                });
+            return nativeId;
+        }
+
+        return SpawnClientObject(metadataPath, x, y, z);
+    }
+
+    /// <inheritdoc/>
     public bool RemoveClientObject(uint objectId)
     {
         if (_nativeClientObjectHandles.TryRemove(objectId, out ulong nativeHandle) && _table->WorldRemoveClientObject is not null)
@@ -2938,7 +2994,68 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     }
 
     /// <inheritdoc/>
-    public void PlayEffect(uint targetObjectId, string effectPath) { }
+    public void PlayEffect(uint targetObjectId, string effectPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(effectPath);
+        if (_table->WorldPlayEffect is null)
+        {
+            return;
+        }
+
+        byte[] utf8 = ToNullTerminatedUtf8(effectPath);
+        fixed (byte* pEffect = utf8)
+        {
+            NmStatus status = _table->WorldPlayEffect(targetObjectId, pEffect);
+            EnsureOk(status, $"WorldPlayEffect({targetObjectId}, {effectPath})");
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetExtendedU32StacksEnabled(bool enabled)
+    {
+        if (_table->StackSetU32WireEnabled is null)
+        {
+            return;
+        }
+
+        NmStatus status = _table->StackSetU32WireEnabled(enabled ? 1 : 0);
+        EnsureOk(status, $"StackSetU32WireEnabled({enabled})");
+    }
+
+    /// <inheritdoc/>
+    public void SetFormatMillionsEnabled(bool enabled)
+    {
+        if (_table->StackSetFormatMillionsEnabled is null)
+        {
+            return;
+        }
+
+        NmStatus status = _table->StackSetFormatMillionsEnabled(enabled ? 1 : 0);
+        EnsureOk(status, $"StackSetFormatMillionsEnabled({enabled})");
+    }
+
+    /// <inheritdoc/>
+    public bool SetEntityStackOverride(uint entityId, uint stackSize)
+    {
+        if (_table->StackSetEntityOverride is null)
+        {
+            return false;
+        }
+
+        return _table->StackSetEntityOverride(entityId, stackSize) == NmStatus.Ok;
+    }
+
+    /// <inheritdoc/>
+    public void SetCompactSocketsEnabled(bool enabled)
+    {
+        if (_table->UiSetCompactSocketsEnabled is null)
+        {
+            return;
+        }
+
+        NmStatus status = _table->UiSetCompactSocketsEnabled(enabled ? 1 : 0);
+        EnsureOk(status, $"UiSetCompactSocketsEnabled({enabled})");
+    }
 
     // --- Phase 2 (ABI 0.4.0, Slots 89..106) ---
 

@@ -129,6 +129,11 @@ public sealed record ClientBridgeOptions
         "tier1.area",
         "tier1.filter",
         "tier1.camera",
+        "tier1.tooltips",
+        "tier1.affinity",
+        "tier1.rich-ui",
+        "tier1.audio-ex",
+        "tier1.stacks-u32",
         "content.row-map",
     ];
 }
@@ -712,7 +717,7 @@ public sealed class ServerUiWindowHandle
 /// <summary>
 /// Per-connection NativeMods session tracked by <see cref="ClientBridgeHost"/> on the LocalExile Gateway.
 /// </summary>
-public interface IClientSession : IClientPhase1Session, IClientPhase2Session
+public interface IClientSession : IClientPhase1Session, IClientPhase2Session, IClientPhase4Session
 {
     /// <summary>Unique connection identifier.</summary>
     string ConnectionId { get; }
@@ -761,6 +766,9 @@ public interface IClientSession : IClientPhase1Session, IClientPhase2Session
 
     /// <summary>Tier 1 <c>0.4.0</c> Phase 2 session facade (world entities, stats, area info, item filter, camera).</summary>
     IClientPhase2Session Phase2 { get; }
+
+    /// <summary>Tier 1 <c>1.2.0</c> Phase 4+5 session facade (tooltips, stash affinity, rich UI / ItemGrid, spatial/ex audio, client objects, u32 stacks, compact sockets).</summary>
+    IClientPhase4Session Phase4 { get; }
 
     /// <summary>
     /// Checks whether this client has installed the client mod <paramref name="modId"/>

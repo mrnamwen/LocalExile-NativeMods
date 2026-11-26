@@ -1008,6 +1008,27 @@ public sealed class ClientBridgeHost : IDisposable
                 session.HandleTier1CameraStateResponse(cameraResp);
                 return GatewayBridgeBus.ResultHandled;
             }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.PlayAudioExResponse, StringComparison.Ordinal))
+            {
+                Tier1PlayAudioExResponsePayload audioResp = MessageCodec.DeserializePayload<Tier1PlayAudioExResponsePayload>(envelope);
+                session.HandleTier1PlayAudioExResponse(audioResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.SpawnClientObjectResponse, StringComparison.Ordinal))
+            {
+                Tier1SpawnClientObjectResponsePayload objResp = MessageCodec.DeserializePayload<Tier1SpawnClientObjectResponsePayload>(envelope);
+                session.HandleTier1SpawnClientObjectResponse(objResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.GridCellClick, StringComparison.Ordinal))
+            {
+                ClientGridCellClickedEvent gridClick = MessageCodec.DeserializePayload<ClientGridCellClickedEvent>(envelope);
+                await session.DispatchTier1GridCellClickAsync(gridClick, cancellationToken).ConfigureAwait(false);
+                return GatewayBridgeBus.ResultHandled;
+            }
         }
 
         await session.DispatchEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
@@ -1233,6 +1254,7 @@ internal sealed class ClientSession : IClientSession
     private readonly ClientUiSession _ui;
     private readonly ClientPhase1Session _phase1;
     private readonly ClientPhase2Session _phase2;
+    private readonly ClientPhase4Session _phase4;
     private readonly Dictionary<(string Channel, string MessageType), List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>> _handlers = [];
     private readonly List<PendingBatchEntry> _batchQueue = [];
     private readonly Lock _gate = new();
@@ -1269,6 +1291,7 @@ internal sealed class ClientSession : IClientSession
     public IClientUiSession Ui => _ui;
     public IClientPhase1Session Phase1 => _phase1;
     public IClientPhase2Session Phase2 => _phase2;
+    public IClientPhase4Session Phase4 => _phase4;
 
     public ClientSession(ClientBridgeHost host, string connectionId, NetTransportKind defaultTransport)
     {
@@ -1278,6 +1301,7 @@ internal sealed class ClientSession : IClientSession
         _ui = new ClientUiSession(this, host);
         _phase1 = new ClientPhase1Session(this, host);
         _phase2 = new ClientPhase2Session(this, host);
+        _phase4 = new ClientPhase4Session(this, host);
     }
 
     internal void SetActiveTransport(NetTransportKind kind)
@@ -1518,6 +1542,86 @@ internal sealed class ClientSession : IClientSession
 
     public Task SetCameraZoomOverrideAsync(float? zoomOverride, CancellationToken cancellationToken = default) =>
         _phase2.SetCameraZoomOverrideAsync(zoomOverride, cancellationToken);
+
+    // ---- IClientPhase4Session forwarding ----
+
+    public Task ShowTooltipAsync(TooltipContent content, float screenX, float screenY, CancellationToken cancellationToken = default) =>
+        _phase4.ShowTooltipAsync(content, screenX, screenY, cancellationToken);
+
+    public Task HideTooltipAsync(CancellationToken cancellationToken = default) =>
+        _phase4.HideTooltipAsync(cancellationToken);
+
+    public Task<ServerItemTooltipRuleHandle> RegisterItemTooltipRuleAsync(ServerItemTooltipRule rule, CancellationToken cancellationToken = default) =>
+        _phase4.RegisterItemTooltipRuleAsync(rule, cancellationToken);
+
+    public Task RemoveItemTooltipRuleAsync(string ruleId, CancellationToken cancellationToken = default) =>
+        _phase4.RemoveItemTooltipRuleAsync(ruleId, cancellationToken);
+
+    public Task<ServerStashAffinityRouteHandle> RegisterStashAffinityRouteAsync(ServerStashAffinityRouteRule rule, CancellationToken cancellationToken = default) =>
+        _phase4.RegisterStashAffinityRouteAsync(rule, cancellationToken);
+
+    public Task<ServerStashAffinityRouteHandle> RegisterStashAffinityRouteAsync(string id, ushort targetTabIndex, string? metadataPrefix = null, uint? itemClassId = null, StashKind? stashKind = null, bool replaceStockTargets = false, byte affinityId = 0, int priority = 0, CancellationToken cancellationToken = default) =>
+        _phase4.RegisterStashAffinityRouteAsync(id, targetTabIndex, metadataPrefix, itemClassId, stashKind, replaceStockTargets, affinityId, priority, cancellationToken);
+
+    public Task RemoveStashAffinityRouteAsync(string routeId, CancellationToken cancellationToken = default) =>
+        _phase4.RemoveStashAffinityRouteAsync(routeId, cancellationToken);
+
+    public Task SetPictureTextureAsync(string windowId, string controlPath, string texturePath, bool resizeToImage = false, CancellationToken cancellationToken = default) =>
+        _phase4.SetPictureTextureAsync(windowId, controlPath, texturePath, resizeToImage, cancellationToken);
+
+    public Task SetComboBoxSelectedAsync(string windowId, string controlPath, int selectedIndex, CancellationToken cancellationToken = default) =>
+        _phase4.SetComboBoxSelectedAsync(windowId, controlPath, selectedIndex, cancellationToken);
+
+    public Task SelectTabAsync(string windowId, string controlPath, int tabIndex, CancellationToken cancellationToken = default) =>
+        _phase4.SelectTabAsync(windowId, controlPath, tabIndex, cancellationToken);
+
+    public Task CreateItemGridAsync(string windowId, string parentControlPath, string gridId, UiItemGridOptions options, CancellationToken cancellationToken = default) =>
+        _phase4.CreateItemGridAsync(windowId, parentControlPath, gridId, options, cancellationToken);
+
+    public Task SetGridItemAsync(string windowId, string gridPath, ServerGridItem item, CancellationToken cancellationToken = default) =>
+        _phase4.SetGridItemAsync(windowId, gridPath, item, cancellationToken);
+
+    public Task RemoveGridItemAsync(string windowId, string gridPath, string itemId, CancellationToken cancellationToken = default) =>
+        _phase4.RemoveGridItemAsync(windowId, gridPath, itemId, cancellationToken);
+
+    public Task ClearGridAsync(string windowId, string gridPath, CancellationToken cancellationToken = default) =>
+        _phase4.ClearGridAsync(windowId, gridPath, cancellationToken);
+
+    public Task<IDisposable> OnGridCellClickAsync(string windowId, string gridPath, Action<IClientSession, ClientGridCellClickedEvent> handler, CancellationToken cancellationToken = default) =>
+        _phase4.OnGridCellClickAsync(windowId, gridPath, handler, cancellationToken);
+
+    public Task<IDisposable> OnGridCellClickAsync(string windowId, string gridPath, Func<IClientSession, ClientGridCellClickedEvent, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase4.OnGridCellClickAsync(windowId, gridPath, handler, cancellationToken);
+
+    public Task<IDisposable> OnGridCellClickAsync(string windowId, string gridPath, Func<IClientSession, ClientGridCellClickedEvent, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase4.OnGridCellClickAsync(windowId, gridPath, handler, cancellationToken);
+
+    public Task<AudioChannelHandle> PlayAudioExAsync(string pathOrEvent, float volume = 1.0f, bool loop = false, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase4.PlayAudioExAsync(pathOrEvent, volume, loop, timeout, cancellationToken);
+
+    public Task StopAudioAsync(AudioChannelHandle channel, CancellationToken cancellationToken = default) =>
+        _phase4.StopAudioAsync(channel, cancellationToken);
+
+    public Task<AudioChannelHandle> PlaySoundAtPositionAsync(string pathOrEvent, float x, float y, float z, float volume = 1.0f, float maxDistance = 1200f, bool loop = false, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase4.PlaySoundAtPositionAsync(pathOrEvent, x, y, z, volume, maxDistance, loop, timeout, cancellationToken);
+
+    public Task SetAudioPositionAsync(AudioChannelHandle channel, float x, float y, float z, float maxDistance = 1200f, CancellationToken cancellationToken = default) =>
+        _phase4.SetAudioPositionAsync(channel, x, y, z, maxDistance, cancellationToken);
+
+    public Task<uint> SpawnClientObjectAsync(string metadataPath, float x, float y, float z = 0f, float rotationRadians = 0f, float scale = 1.0f, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase4.SpawnClientObjectAsync(metadataPath, x, y, z, rotationRadians, scale, timeout, cancellationToken);
+
+    public Task RemoveClientObjectAsync(uint objectId, CancellationToken cancellationToken = default) =>
+        _phase4.RemoveClientObjectAsync(objectId, cancellationToken);
+
+    public Task SetExtendedU32StacksAsync(bool enabled, bool? formatMillions = null, CancellationToken cancellationToken = default) =>
+        _phase4.SetExtendedU32StacksAsync(enabled, formatMillions, cancellationToken);
+
+    public Task SetEntityStackOverrideAsync(uint entityId, uint stackSize, CancellationToken cancellationToken = default) =>
+        _phase4.SetEntityStackOverrideAsync(entityId, stackSize, cancellationToken);
+
+    public Task SetCompactSocketsAsync(bool enabled, CancellationToken cancellationToken = default) =>
+        _phase4.SetCompactSocketsAsync(enabled, cancellationToken);
 
     private Task<bool> QueueOrSendAsync(ModEnvelope envelope, ServerUiCommand? uiCommand, CancellationToken cancellationToken)
     {
@@ -1907,6 +2011,15 @@ internal sealed class ClientSession : IClientSession
     internal void HandleTier1CameraStateResponse(Tier1CameraStateResponsePayload payload) =>
         _phase2.HandleCameraStateResponse(payload);
 
+    internal void HandleTier1PlayAudioExResponse(Tier1PlayAudioExResponsePayload payload) =>
+        _phase4.HandlePlayAudioExResponse(payload);
+
+    internal void HandleTier1SpawnClientObjectResponse(Tier1SpawnClientObjectResponsePayload payload) =>
+        _phase4.HandleSpawnClientObjectResponse(payload);
+
+    internal Task DispatchTier1GridCellClickAsync(ClientGridCellClickedEvent evt, CancellationToken cancellationToken) =>
+        _phase4.DispatchGridCellClickAsync(evt, cancellationToken);
+
     internal async Task CloseSessionAsync(CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _closed, 1);
@@ -1923,6 +2036,7 @@ internal sealed class ClientSession : IClientSession
 
         _phase1.CloseSession();
         _phase2.CloseSession();
+        _phase4.CloseSession();
         await _ui.CloseAllWindowsAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1942,6 +2056,7 @@ internal sealed class ClientSession : IClientSession
 
         _phase1.CloseSession();
         _phase2.CloseSession();
+        _phase4.CloseSession();
         _ui.CloseAllWindowsNonBlocking();
     }
 

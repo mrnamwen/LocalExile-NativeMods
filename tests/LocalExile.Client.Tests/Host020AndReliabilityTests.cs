@@ -1547,7 +1547,7 @@ public sealed class Host020AndReliabilityTests
         il.Emit(OpCodes.Ldc_R4, 1f);
         il.Emit(OpCodes.Ldc_R4, 2f);
         il.Emit(OpCodes.Ldc_R4, 3f);
-        il.Emit(OpCodes.Callvirt, typeof(IWorldService).GetMethod(nameof(IWorldService.SpawnClientObject))!);
+        il.Emit(OpCodes.Callvirt, typeof(IWorldService).GetMethod(nameof(IWorldService.SpawnClientObject), [typeof(string), typeof(float), typeof(float), typeof(float)])!);
         il.Emit(OpCodes.Pop);
 
         il.Emit(OpCodes.Ret);

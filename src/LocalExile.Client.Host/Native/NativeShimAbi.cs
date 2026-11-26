@@ -4,12 +4,12 @@ using LocalExile.Client.Sdk.Addresses;
 namespace LocalExile.Client.Host.Native;
 
 /// <summary>
-/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.5.0).
+/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.6.0).
 /// </summary>
 public static class NativeShimConstants
 {
-    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (5 &lt;&lt; 8) | 0</c>.</summary>
-    public const uint AbiVersion = 0x00000500u;
+    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (6 &lt;&lt; 8) | 0</c>.</summary>
+    public const uint AbiVersion = 0x00000600u;
 
     /// <summary>Highest verified unoccupied native ruleset slot (<c>0xAE</c>; <c>0xA0</c> is occupied on 3.29.3d).</summary>
     public const byte RulesetFirstFreeNativeId = 0xAE;
@@ -772,7 +772,7 @@ public unsafe struct NmCustomUiControlCallbacks
 }
 
 /// <summary>
-/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.5.0, 139 function pointers, 1120 bytes).
+/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.6.0, 145 function pointers, 1168 bytes).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct NmAbiTable
@@ -980,4 +980,12 @@ public unsafe struct NmAbiTable
     public delegate* unmanaged[Cdecl]<ulong, NmStatus> RulesetUnregisterNative;
     public delegate* unmanaged[Cdecl]<byte*, NmCustomUiControlCallbacks*, void*, ulong*, NmStatus> UiRegisterCustomControlKind;
     public delegate* unmanaged[Cdecl]<ulong, NmStatus> UiUnregisterCustomControlKind;
+
+    /* ABI 0.6.0: Phase 5 Stacks, Compact Sockets & Live World VFX / Transform (6; slots 139..144) */
+    public delegate* unmanaged[Cdecl]<int, NmStatus> StackSetU32WireEnabled;
+    public delegate* unmanaged[Cdecl]<int, NmStatus> StackSetFormatMillionsEnabled;
+    public delegate* unmanaged[Cdecl]<uint, uint, NmStatus> StackSetEntityOverride;
+    public delegate* unmanaged[Cdecl]<int, NmStatus> UiSetCompactSocketsEnabled;
+    public delegate* unmanaged[Cdecl]<uint, byte*, NmStatus> WorldPlayEffect;
+    public delegate* unmanaged[Cdecl]<byte*, float, float, float, float, float, ulong*, NmStatus> WorldCreateClientObjectEx;
 }
