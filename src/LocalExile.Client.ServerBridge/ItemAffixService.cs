@@ -176,7 +176,8 @@ public sealed record PortableItem(
     ushort StackSize,
     IReadOnlyList<PortableItemMod> Mods,
     IReadOnlyList<string>? Components = null,
-    ushort VisualIdentity = 0)
+    ushort VisualIdentity = 0,
+    string? CustomName = null)
 {
     /// <summary>Effective serialized components on this item.</summary>
     public IReadOnlyList<string> EffectiveComponents =>
@@ -287,9 +288,13 @@ public sealed class LocalExileItemAffixService
             explicitIdx++;
         }
 
+        string resolvedName = item.Identified && !string.IsNullOrWhiteSpace(item.CustomName)
+            ? item.CustomName
+            : item.ItemName;
+
         return new ItemAffixView(
             ItemId: item.ItemId,
-            ItemName: item.ItemName,
+            ItemName: resolvedName,
             BaseType: item.BaseType,
             Rarity: item.Rarity,
             Affixes: affixes,
@@ -540,7 +545,19 @@ public sealed class LocalExileItemAffixService
     public static AffixReplaceResult ReplaceAffix(
         PortableItem target,
         int replaceIndex,
-        StoredAffixPayload storedAffix)
+        StoredAffixPayload storedAffix) =>
+        ReplaceAffix(target, replaceIndex, storedAffix, customName: null, clearCustomName: false);
+
+    /// <summary>
+    /// Replaces the explicit affix at <paramref name="replaceIndex"/> on <paramref name="target"/> with
+    /// <paramref name="storedAffix"/>, optionally setting or clearing <see cref="PortableItem.CustomName"/>.
+    /// </summary>
+    public static AffixReplaceResult ReplaceAffix(
+        PortableItem target,
+        int replaceIndex,
+        StoredAffixPayload storedAffix,
+        string? customName,
+        bool clearCustomName = false)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(storedAffix);
@@ -588,7 +605,13 @@ public sealed class LocalExileItemAffixService
         if (!didReplace)
             return AffixReplaceResult.Fail("Target modifier index could not be located on the item.");
 
-        PortableItem updatedTarget = target with { Mods = updatedMods };
+        string? nextCustomName = clearCustomName
+            ? null
+            : customName is not null
+                ? (string.IsNullOrWhiteSpace(customName) ? null : customName)
+                : target.CustomName;
+
+        PortableItem updatedTarget = target with { Mods = updatedMods, CustomName = nextCustomName };
         return new AffixReplaceResult(
             Success: true,
             Error: null,
@@ -923,7 +946,16 @@ public sealed class LocalExileItemAffixService
                 if (statObj is null)
                     continue;
 
-                string statName = GetProperty<string>(statObj.GetType(), statObj, "Name") ?? $"stat_{idx}";
+                string statName;
+                try
+                {
+                    statName = GetProperty<string>(statObj.GetType(), statObj, "Name") ?? $"stat_{idx}";
+                }
+                catch (TargetInvocationException)
+                {
+                    uint statId = GetProperty<uint>(statObj.GetType(), statObj, "Id");
+                    statName = statId != 0 ? $"stat_{statId}" : $"stat_{idx}";
+                }
                 int val = idx < values.Length ? values[idx] : 0;
                 statPairs.Add((statName, val));
                 idx++;
@@ -1063,6 +1095,195 @@ public sealed class LocalExileItemAffixService
         return $"{sign}{value} {clean}".Trim();
     }
 
+    /// <summary>
+    /// Reads <c>Item.CustomName</c> from a live LocalExile Gateway <c>GameServer.Core.Protocol.Instance.Item</c> record,
+    /// returning <c>null</c> if unset or empty.
+    /// </summary>
+    public static string? GetGatewayItemCustomName(object gatewayItem)
+    {
+        ArgumentNullException.ThrowIfNull(gatewayItem);
+        string? raw = gatewayItem.GetType()
+            .GetProperty("CustomName", BindingFlags.Public | BindingFlags.Instance)?
+            .GetValue(gatewayItem) as string;
+        return string.IsNullOrWhiteSpace(raw) ? null : raw;
+    }
+
+    /// <summary>
+    /// Returns a cloned Gateway <c>Item</c> with <c>CustomName</c> set to <paramref name="customName"/>
+    /// (normalizing empty/whitespace strings to <c>null</c> so the <c>0x80</c> wire flag is cleared)
+    /// while preserving <c>RequiredLevel</c>.
+    /// </summary>
+    public static object WithGatewayItemCustomName(object gatewayItem, string? customName)
+    {
+        ArgumentNullException.ThrowIfNull(gatewayItem);
+        Type itemType = gatewayItem.GetType();
+        MethodInfo? cloneMethod = itemType.GetMethod("<Clone>$", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        object cloned = cloneMethod is not null
+            ? cloneMethod.Invoke(gatewayItem, null) ?? throw new InvalidOperationException($"Failed to clone {itemType.Name}.")
+            : throw new InvalidOperationException($"Type '{itemType.FullName}' does not expose record <Clone>$ method.");
+
+        string? normalized = string.IsNullOrWhiteSpace(customName) ? null : customName;
+        PropertyInfo? prop = itemType.GetProperty("CustomName", BindingFlags.Public | BindingFlags.Instance);
+        MethodInfo? setter = prop?.GetSetMethod(nonPublic: true);
+        if (setter is not null)
+        {
+            setter.Invoke(cloned, [normalized]);
+        }
+        else
+        {
+            FieldInfo? backing = itemType.GetField("<CustomName>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (backing is null)
+            {
+                throw new InvalidOperationException($"Type '{itemType.FullName}' does not expose CustomName property setter.");
+            }
+
+            backing.SetValue(cloned, normalized);
+        }
+
+        return cloned;
+    }
+
+    /// <summary>Locates a stack of <paramref name="typeHash"/> in main inventory first, then non-public stash tabs.</summary>
+    public static (uint InventoryId, uint ItemId)? LocateCurrencyStack(
+        object playerInventories,
+        object? accountStash,
+        uint typeHash,
+        bool includePublicStashTabs = false) =>
+        LocalExileGatewayTransactions.LocateCurrencyStack(playerInventories, accountStash, typeHash, includePublicStashTabs);
+
+    /// <summary>Alias for <see cref="LocateCurrencyStack"/>.</summary>
+    public static (uint InventoryId, uint ItemId)? LocateStack(
+        object playerInventories,
+        object? accountStash,
+        uint typeHash,
+        bool includePublicStashTabs = false) =>
+        LocalExileGatewayTransactions.LocateStack(playerInventories, accountStash, typeHash, includePublicStashTabs);
+
+    /// <summary>Locates an item by <paramref name="inventoryId"/> and <paramref name="itemId"/> across inventories and stash.</summary>
+    public static GatewayItemLocation? LocateGatewayItem(
+        object playerInventories,
+        object? accountStash,
+        uint inventoryId,
+        uint itemId) =>
+        LocalExileGatewayTransactions.LocateGatewayItem(playerInventories, accountStash, inventoryId, itemId);
+
+    /// <summary>Grants <paramref name="count"/> items into main inventory without sending packets.</summary>
+    public static GatewayGrantResult GrantItems(
+        object itemCatalog,
+        object playerInventories,
+        uint typeHash,
+        ushort count = 1,
+        string? customName = null,
+        bool requireFullFit = false,
+        Func<object, object?>? shapeOf = null) =>
+        LocalExileGatewayTransactions.GrantItems(itemCatalog, playerInventories, typeHash, count, customName, requireFullFit, shapeOf);
+
+    /// <summary>Grants <paramref name="count"/> items into main inventory and sends grouped <c>0x00BF</c> diffs.</summary>
+    public static Task<GatewayGrantResult> GrantItemsAsync(
+        object? player,
+        object itemCatalog,
+        object playerInventories,
+        uint typeHash,
+        ushort count = 1,
+        string? customName = null,
+        bool requireFullFit = false,
+        Func<object, object?>? shapeOf = null,
+        Func<object, byte[], string?, Task>? sendPacket = null,
+        CancellationToken cancellationToken = default) =>
+        LocalExileGatewayTransactions.GrantItemsAsync(
+            player, itemCatalog, playerInventories, typeHash, count, customName, requireFullFit, shapeOf, sendPacket, cancellationToken);
+
+    /// <summary>Atomically steals an explicit affix from a Gateway item into a Charged Currency item (state-only when <paramref name="player"/> is null or <paramref name="sendPackets"/> is false).</summary>
+    public Task<GatewayStealResult> StealAffixOnGatewayItem(
+        object? player,
+        object itemCatalog,
+        object playerInventories,
+        object? accountStash,
+        uint currencyInventoryId,
+        uint currencyItemId,
+        uint targetInventoryId,
+        uint targetItemId,
+        int affixIndex,
+        CustomCurrencyItemDefinition chargedCurrencyDef,
+        object? statDescriptions = null,
+        object? itemRolls = null,
+        string? sourceCustomName = null,
+        bool clearSourceCustomName = false,
+        string? chargedCustomName = null,
+        bool sendPackets = true,
+        Func<object, object?>? shapeOf = null,
+        Func<object, byte[], string?, Task>? sendPacket = null,
+        CancellationToken cancellationToken = default) =>
+        LocalExileGatewayTransactions.StealAffixAsync(
+            this,
+            player,
+            itemCatalog,
+            playerInventories,
+            accountStash,
+            currencyInventoryId,
+            currencyItemId,
+            targetInventoryId,
+            targetItemId,
+            affixIndex,
+            chargedCurrencyDef,
+            statDescriptions ?? _defaultStatDescriptions,
+            itemRolls ?? _defaultItemRolls,
+            sourceCustomName,
+            clearSourceCustomName,
+            chargedCustomName,
+            sendPackets,
+            shapeOf,
+            sendPacket,
+            cancellationToken);
+
+    /// <summary>Atomically replaces an explicit affix on a Gateway item with the affix stored in a Charged Currency item.</summary>
+    public Task<GatewayReplaceResult> ReplaceAffixOnGatewayItem(
+        object? player,
+        object itemCatalog,
+        object playerInventories,
+        object? accountStash,
+        uint currencyInventoryId,
+        uint currencyItemId,
+        uint targetInventoryId,
+        uint targetItemId,
+        int replaceIndex,
+        object? statDescriptions = null,
+        object? itemRolls = null,
+        string? customName = null,
+        bool clearCustomName = false,
+        bool sendPackets = true,
+        Func<object, byte[], string?, Task>? sendPacket = null,
+        CancellationToken cancellationToken = default) =>
+        LocalExileGatewayTransactions.ReplaceAffixAsync(
+            this,
+            player,
+            itemCatalog,
+            playerInventories,
+            accountStash,
+            currencyInventoryId,
+            currencyItemId,
+            targetInventoryId,
+            targetItemId,
+            replaceIndex,
+            statDescriptions ?? _defaultStatDescriptions,
+            itemRolls ?? _defaultItemRolls,
+            customName,
+            clearCustomName,
+            sendPackets,
+            sendPacket,
+            cancellationToken);
+
+    /// <summary>Sends grouped <c>0x00BF</c> inventory/stash diff packets (and equipment refresh if worn).</summary>
+    public static Task SendInventoryDiffsAsync(
+        object player,
+        object playerInventories,
+        object? accountStash,
+        IReadOnlyList<GatewayInventoryChange> changes,
+        string label = "server-bridge",
+        Func<object, byte[], string?, Task>? sendPacket = null,
+        CancellationToken cancellationToken = default) =>
+        LocalExileGatewayTransactions.SendInventoryDiffsAsync(player, playerInventories, accountStash, changes, label, sendPacket, cancellationToken);
+
     private static string ResolveGatewayDisplayName(
         Type itemType,
         object gatewayItem,
@@ -1074,6 +1295,9 @@ public sealed class LocalExileItemAffixService
     {
         if (!identified)
             return baseName;
+
+        if (GetGatewayItemCustomName(gatewayItem) is { } customName)
+            return customName;
 
         if (rarity == ItemRarityKind.Magic && affixes.Count > 0)
             return BuildMagicDisplayName(baseName, affixes);

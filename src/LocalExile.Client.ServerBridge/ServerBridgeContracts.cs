@@ -27,6 +27,57 @@ public interface IGatewayPacketSink
 }
 
 /// <summary>
+/// Represents a single outbound wire item (either a raw packet or a chat fallback line)
+/// queued inside an <see cref="IClientCommandBatch"/> and flushed in order.
+/// </summary>
+/// <param name="IsChatReply"><c>true</c> for a chat fallback reply; <c>false</c> for a binary packet.</param>
+/// <param name="Opcode">Wire opcode when <paramref name="IsChatReply"/> is <c>false</c>.</param>
+/// <param name="Payload">Packet payload bytes when <paramref name="IsChatReply"/> is <c>false</c>.</param>
+/// <param name="ChatText">Chat line text when <paramref name="IsChatReply"/> is <c>true</c>.</param>
+public readonly record struct GatewayBatchItem(
+    bool IsChatReply,
+    ushort Opcode,
+    ReadOnlyMemory<byte> Payload,
+    string? ChatText);
+
+/// <summary>
+/// Optional extension of <see cref="IGatewayPacketSink"/> supporting batched delivery of outbound
+/// packets and chat replies flushed from an <see cref="IClientCommandBatch"/>.
+/// </summary>
+public interface IBatchingGatewayPacketSink : IGatewayPacketSink
+{
+    /// <summary>Sends an ordered sequence of batched packets and/or chat lines to <paramref name="connectionId"/>.</summary>
+    /// <param name="connectionId">Unique Gateway connection identifier.</param>
+    /// <param name="items">Ordered batch items to deliver.</param>
+    /// <param name="cancellationToken">Optional cancellation token.</param>
+    Task SendBatchAsync(string connectionId, IReadOnlyList<GatewayBatchItem> items, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Deferred outbound command/UI batch scoped to a single <see cref="IClientSession"/>.
+/// Commands queued while the batch is active are coalesced safely and flushed in order on
+/// <see cref="FlushAsync"/> or <see cref="IAsyncDisposable.DisposeAsync"/>.
+/// Synchronous <see cref="IDisposable.Dispose"/> flushes non-blockingly without deadlocking.
+/// </summary>
+public interface IClientCommandBatch : IAsyncDisposable, IDisposable
+{
+    /// <summary>Number of queued items currently buffered in the session batch.</summary>
+    int Count { get; }
+
+    /// <summary>Whether this batch has already been flushed.</summary>
+    bool IsFlushed { get; }
+
+    /// <summary>Whether this batch was discarded via <see cref="Discard"/>.</summary>
+    bool IsDiscarded { get; }
+
+    /// <summary>Flushes buffered operations (deferring to the outer batch if nested).</summary>
+    Task FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Discards any operations queued since this batch began without sending them.</summary>
+    void Discard();
+}
+
+/// <summary>
 /// Configuration options for <see cref="ClientBridgeHost"/>.
 /// </summary>
 public sealed record ClientBridgeOptions
@@ -42,6 +93,9 @@ public sealed record ClientBridgeOptions
 
     /// <summary>Default transport used before a client's handshake selects a transport.</summary>
     public NetTransportKind DefaultTransport { get; init; } = NetTransportKind.HostRuleset;
+
+    /// <summary>Optional default mod channel identifier used by channel-less <c>SendAsync</c> overloads.</summary>
+    public string? DefaultChannel { get; init; }
 
     /// <summary>Optional list of client mod ids requested by the server.</summary>
     public IReadOnlyList<string> RequiredMods { get; init; } = [];
@@ -85,14 +139,56 @@ public interface IClientUiSession
     /// <summary>Subscribes to button click events for <paramref name="controlPath"/> inside <paramref name="windowId"/>.</summary>
     IDisposable OnButtonClick(string windowId, string controlPath, Action<IClientSession> handler);
 
+    /// <summary>Subscribes asynchronously to button click events for <paramref name="controlPath"/> inside <paramref name="windowId"/>.</summary>
+    IDisposable OnButtonClick(string windowId, string controlPath, Func<IClientSession, Task> handler);
+
+    /// <summary>Subscribes asynchronously with cancellation support to button click events for <paramref name="controlPath"/> inside <paramref name="windowId"/>.</summary>
+    IDisposable OnButtonClick(string windowId, string controlPath, Func<IClientSession, CancellationToken, Task> handler);
+
+    /// <summary>Subscribes to button click events and awaits the remote event-subscription command.</summary>
+    Task<IDisposable> OnButtonClickAsync(string windowId, string controlPath, Action<IClientSession> handler, CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes asynchronously to button click events and awaits the remote event-subscription command.</summary>
+    Task<IDisposable> OnButtonClickAsync(string windowId, string controlPath, Func<IClientSession, Task> handler, CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes asynchronously with cancellation support to button click events and awaits the remote event-subscription command.</summary>
+    Task<IDisposable> OnButtonClickAsync(string windowId, string controlPath, Func<IClientSession, CancellationToken, Task> handler, CancellationToken cancellationToken = default);
+
     /// <summary>Subscribes to an arbitrary interactive control event (<c>Clicked</c>, <c>CheckedChanged</c>, <c>Submitted</c>).</summary>
     IDisposable OnControlEvent(string windowId, string controlPath, string eventName, Action<IClientSession, string?> handler);
+
+    /// <summary>Subscribes asynchronously to an arbitrary interactive control event.</summary>
+    IDisposable OnControlEvent(string windowId, string controlPath, string eventName, Func<IClientSession, string?, Task> handler);
+
+    /// <summary>Subscribes asynchronously with cancellation support to an arbitrary interactive control event.</summary>
+    IDisposable OnControlEvent(string windowId, string controlPath, string eventName, Func<IClientSession, string?, CancellationToken, Task> handler);
+
+    /// <summary>Subscribes to a named control event and awaits the remote event-subscription command.</summary>
+    Task<IDisposable> OnControlEventAsync(string windowId, string controlPath, string eventName, Action<IClientSession, string?> handler, CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes asynchronously to a named control event and awaits the remote event-subscription command.</summary>
+    Task<IDisposable> OnControlEventAsync(string windowId, string controlPath, string eventName, Func<IClientSession, string?, Task> handler, CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes asynchronously with cancellation support to a named control event and awaits the remote event-subscription command.</summary>
+    Task<IDisposable> OnControlEventAsync(string windowId, string controlPath, string eventName, Func<IClientSession, string?, CancellationToken, Task> handler, CancellationToken cancellationToken = default);
 
     /// <summary>Instructs the client host to play an FMOD event or <c>.ogg</c> audio file.</summary>
     Task PlayAudioAsync(string pathOrEvent, CancellationToken cancellationToken = default);
 
     /// <summary>Instructs the client host to play a visual effect on a world object.</summary>
     Task PlayEffectAsync(uint objectId, string effectPath, CancellationToken cancellationToken = default);
+
+    /// <summary>Begins a command/UI batch sharing this session's ordered outbound queue.</summary>
+    IClientCommandBatch BeginBatch();
+
+    /// <summary>Flushes any buffered outbound commands/messages on this session.</summary>
+    Task FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Executes <paramref name="action"/> inside a UI/command batch, flushing on success or discarding on exception.</summary>
+    Task BatchAsync(Func<IClientUiSession, Task> action, CancellationToken cancellationToken = default);
+
+    /// <summary>Executes <paramref name="action"/> inside a UI/command batch with cancellation, flushing on success or discarding on exception.</summary>
+    Task BatchAsync(Func<IClientUiSession, CancellationToken, Task> action, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -101,6 +197,11 @@ public interface IClientUiSession
 public sealed class ServerUiWindowHandle
 {
     private readonly IClientUiSession _ui;
+    private readonly Action<string, Exception>? _reportError;
+    private readonly List<IDisposable> _boundSubscriptions = [];
+    private readonly List<Func<CancellationToken, Task>> _closedHandlers = [];
+    private readonly Lock _gate = new();
+    private int _closed;
 
     /// <summary>The window identifier.</summary>
     public string WindowId { get; }
@@ -108,11 +209,59 @@ public sealed class ServerUiWindowHandle
     /// <summary>The virtual <c>.ui</c> layout path.</summary>
     public string VirtualPath { get; }
 
-    internal ServerUiWindowHandle(IClientUiSession ui, string windowId, string virtualPath)
+    /// <summary>Whether this window handle is still open.</summary>
+    public bool IsOpen => Volatile.Read(ref _closed) == 0;
+
+    /// <summary>Raised strictly once when this window is closed, replaced, or its session disconnects.</summary>
+    public event Action? Closed;
+
+    internal ServerUiWindowHandle(IClientUiSession ui, string windowId, string virtualPath, Action<string, Exception>? reportError = null)
     {
         _ui = ui;
+        _reportError = reportError;
         WindowId = windowId;
         VirtualPath = virtualPath;
+    }
+
+    /// <summary>Registers a synchronous callback invoked once when this window closes.</summary>
+    public IDisposable OnClosed(Action handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnClosed(_ =>
+        {
+            handler();
+            return Task.CompletedTask;
+        });
+    }
+
+    /// <summary>Registers an asynchronous callback invoked once when this window closes.</summary>
+    public IDisposable OnClosed(Func<Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnClosed(_ => handler());
+    }
+
+    /// <summary>Registers an asynchronous callback with cancellation support invoked once when this window closes.</summary>
+    public IDisposable OnClosed(Func<CancellationToken, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        lock (_gate)
+        {
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                return EmptyDisposable.Instance;
+            }
+
+            _closedHandlers.Add(handler);
+        }
+
+        return new CallbackDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _closedHandlers.Remove(handler);
+            }
+        });
     }
 
     /// <summary>Sets the text of <paramref name="controlPath"/> inside this window.</summary>
@@ -128,20 +277,328 @@ public sealed class ServerUiWindowHandle
         _ui.SetPropertyAsync(WindowId, controlPath, propertyName, value, cancellationToken);
 
     /// <summary>Subscribes to button click events on <paramref name="controlPath"/> inside this window.</summary>
-    public IDisposable OnButtonClick(string controlPath, Action<IClientSession> handler) =>
-        _ui.OnButtonClick(WindowId, controlPath, handler);
+    public IDisposable OnButtonClick(string controlPath, Action<IClientSession> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(_ui.OnButtonClick(WindowId, controlPath, handler));
+    }
+
+    /// <summary>Subscribes asynchronously to button click events on <paramref name="controlPath"/> inside this window.</summary>
+    public IDisposable OnButtonClick(string controlPath, Func<IClientSession, Task> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(_ui.OnButtonClick(WindowId, controlPath, handler));
+    }
+
+    /// <summary>Subscribes asynchronously with cancellation support to button click events on <paramref name="controlPath"/> inside this window.</summary>
+    public IDisposable OnButtonClick(string controlPath, Func<IClientSession, CancellationToken, Task> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(_ui.OnButtonClick(WindowId, controlPath, handler));
+    }
+
+    /// <summary>Subscribes to button click events on <paramref name="controlPath"/> and awaits remote subscription delivery.</summary>
+    public async Task<IDisposable> OnButtonClickAsync(string controlPath, Action<IClientSession> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(await _ui.OnButtonClickAsync(WindowId, controlPath, handler, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Subscribes asynchronously to button click events on <paramref name="controlPath"/> and awaits remote subscription delivery.</summary>
+    public async Task<IDisposable> OnButtonClickAsync(string controlPath, Func<IClientSession, Task> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(await _ui.OnButtonClickAsync(WindowId, controlPath, handler, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Subscribes asynchronously with cancellation support to button click events on <paramref name="controlPath"/> and awaits remote subscription delivery.</summary>
+    public async Task<IDisposable> OnButtonClickAsync(string controlPath, Func<IClientSession, CancellationToken, Task> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(await _ui.OnButtonClickAsync(WindowId, controlPath, handler, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>Subscribes to a named control event on <paramref name="controlPath"/> inside this window.</summary>
-    public IDisposable OnControlEvent(string controlPath, string eventName, Action<IClientSession, string?> handler) =>
-        _ui.OnControlEvent(WindowId, controlPath, eventName, handler);
+    public IDisposable OnControlEvent(string controlPath, string eventName, Action<IClientSession, string?> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(_ui.OnControlEvent(WindowId, controlPath, eventName, handler));
+    }
+
+    /// <summary>Subscribes asynchronously to a named control event on <paramref name="controlPath"/> inside this window.</summary>
+    public IDisposable OnControlEvent(string controlPath, string eventName, Func<IClientSession, string?, Task> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(_ui.OnControlEvent(WindowId, controlPath, eventName, handler));
+    }
+
+    /// <summary>Subscribes asynchronously with cancellation support to a named control event on <paramref name="controlPath"/> inside this window.</summary>
+    public IDisposable OnControlEvent(string controlPath, string eventName, Func<IClientSession, string?, CancellationToken, Task> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(_ui.OnControlEvent(WindowId, controlPath, eventName, handler));
+    }
+
+    /// <summary>Subscribes to a named control event on <paramref name="controlPath"/> and awaits remote subscription delivery.</summary>
+    public async Task<IDisposable> OnControlEventAsync(string controlPath, string eventName, Action<IClientSession, string?> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(await _ui.OnControlEventAsync(WindowId, controlPath, eventName, handler, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Subscribes asynchronously to a named control event on <paramref name="controlPath"/> and awaits remote subscription delivery.</summary>
+    public async Task<IDisposable> OnControlEventAsync(string controlPath, string eventName, Func<IClientSession, string?, Task> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(await _ui.OnControlEventAsync(WindowId, controlPath, eventName, handler, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Subscribes asynchronously with cancellation support to a named control event on <paramref name="controlPath"/> and awaits remote subscription delivery.</summary>
+    public async Task<IDisposable> OnControlEventAsync(string controlPath, string eventName, Func<IClientSession, string?, CancellationToken, Task> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventName);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return EmptyDisposable.Instance;
+        }
+
+        return TrackSubscription(await _ui.OnControlEventAsync(WindowId, controlPath, eventName, handler, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>Reloads this window from its <c>.ui</c> overlay.</summary>
     public Task ReloadAsync(CancellationToken cancellationToken = default) =>
         _ui.ReloadAsync(WindowId, cancellationToken);
 
-    /// <summary>Closes this window.</summary>
+    /// <summary>Closes this window and raises <see cref="Closed"/> once.</summary>
     public Task CloseAsync(CancellationToken cancellationToken = default) =>
         _ui.CloseAsync(WindowId, cancellationToken);
+
+    /// <summary>Begins a command/UI batch on the underlying session.</summary>
+    public IClientCommandBatch BeginBatch() => _ui.BeginBatch();
+
+    /// <summary>Flushes any buffered commands on the underlying session.</summary>
+    public Task FlushAsync(CancellationToken cancellationToken = default) => _ui.FlushAsync(cancellationToken);
+
+    /// <summary>Executes <paramref name="action"/> inside a UI batch targeting this window, flushing on success or discarding on exception.</summary>
+    public async Task BatchAsync(Func<ServerUiWindowHandle, Task> action, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        IClientCommandBatch batch = BeginBatch();
+        try
+        {
+            await action(this).ConfigureAwait(false);
+            await batch.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            batch.Discard();
+            throw;
+        }
+    }
+
+    /// <summary>Executes <paramref name="action"/> inside a UI batch targeting this window with cancellation, flushing on success or discarding on exception.</summary>
+    public async Task BatchAsync(Func<ServerUiWindowHandle, CancellationToken, Task> action, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        IClientCommandBatch batch = BeginBatch();
+        try
+        {
+            await action(this, cancellationToken).ConfigureAwait(false);
+            await batch.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            batch.Discard();
+            throw;
+        }
+    }
+
+    internal async Task MarkClosedAsync(CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        {
+            return;
+        }
+
+        IDisposable[] subs;
+        Func<CancellationToken, Task>[] asyncHandlers;
+        lock (_gate)
+        {
+            subs = [.. _boundSubscriptions];
+            _boundSubscriptions.Clear();
+            asyncHandlers = [.. _closedHandlers];
+            _closedHandlers.Clear();
+        }
+
+        foreach (IDisposable sub in subs)
+        {
+            try
+            {
+                sub.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _reportError?.Invoke($"Window({WindowId}).SubscriptionDispose", ex);
+            }
+        }
+
+        if (Closed is { } closedEvent)
+        {
+            foreach (Delegate del in closedEvent.GetInvocationList())
+            {
+                try
+                {
+                    ((Action)del)();
+                }
+                catch (Exception ex)
+                {
+                    _reportError?.Invoke($"Window({WindowId}).Closed", ex);
+                }
+            }
+        }
+
+        foreach (Func<CancellationToken, Task> handler in asyncHandlers)
+        {
+            try
+            {
+                await handler(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _reportError?.Invoke($"Window({WindowId}).OnClosed", ex);
+            }
+        }
+    }
+
+    internal void MarkClosedNonBlocking()
+    {
+        Task task = MarkClosedAsync(CancellationToken.None);
+        if (task.IsFaulted && task.Exception is not null)
+        {
+            _reportError?.Invoke($"Window({WindowId}).Closed", task.Exception.GetBaseException());
+        }
+        else if (!task.IsCompleted)
+        {
+            _ = task.ContinueWith(
+                t => _reportError?.Invoke($"Window({WindowId}).Closed", t.Exception?.GetBaseException() ?? new InvalidOperationException("Window closed handler failed.")),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
+    private IDisposable TrackSubscription(IDisposable inner)
+    {
+        lock (_gate)
+        {
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                inner.Dispose();
+                return EmptyDisposable.Instance;
+            }
+
+            _boundSubscriptions.Add(inner);
+        }
+
+        return new CallbackDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _boundSubscriptions.Remove(inner);
+            }
+
+            inner.Dispose();
+        });
+    }
+
+    private sealed class EmptyDisposable : IDisposable
+    {
+        public static readonly EmptyDisposable Instance = new();
+        public void Dispose() { }
+    }
+
+    private sealed class CallbackDisposable(Action onDispose) : IDisposable
+    {
+        private Action? _onDispose = onDispose;
+        public void Dispose() => Interlocked.Exchange(ref _onDispose, null)?.Invoke();
+    }
 }
 
 /// <summary>
@@ -173,6 +630,9 @@ public interface IClientSession
     /// <summary>Client mods reported as installed and enabled during handshake.</summary>
     IReadOnlyCollection<InstalledClientModInfo> InstalledMods { get; }
 
+    /// <summary>Identifiers of installed client mods reported during handshake.</summary>
+    IReadOnlyCollection<string> ClientMods { get; }
+
     /// <summary>Server-driven UI helper for this connection.</summary>
     IClientUiSession Ui { get; }
 
@@ -186,6 +646,36 @@ public interface IClientSession
     /// <summary>Sends a typed message record to this client on <paramref name="channel"/>.</summary>
     Task SendAsync<T>(string channel, T message, string? messageType = null, CancellationToken cancellationToken = default);
 
+    /// <summary>Sends a typed message record to this client using the host's default channel.</summary>
+    Task SendAsync<T>(T message, CancellationToken cancellationToken = default);
+
     /// <summary>Subscribes to incoming typed messages from this client on <paramref name="channel"/>.</summary>
     IDisposable On<T>(string channel, Action<IClientSession, T> handler, string? messageType = null);
+
+    /// <summary>Subscribes asynchronously to incoming typed messages from this client on <paramref name="channel"/>.</summary>
+    IDisposable On<T>(string channel, Func<IClientSession, T, Task> handler, string? messageType = null);
+
+    /// <summary>Subscribes asynchronously with cancellation support to incoming typed messages from this client on <paramref name="channel"/>.</summary>
+    IDisposable On<T>(string channel, Func<IClientSession, T, CancellationToken, Task> handler, string? messageType = null);
+
+    /// <summary>Subscribes to incoming typed messages on any channel.</summary>
+    IDisposable On<T>(Action<IClientSession, T> handler, string? messageType = null);
+
+    /// <summary>Subscribes asynchronously to incoming typed messages on any channel.</summary>
+    IDisposable On<T>(Func<IClientSession, T, Task> handler, string? messageType = null);
+
+    /// <summary>Subscribes asynchronously with cancellation support to incoming typed messages on any channel.</summary>
+    IDisposable On<T>(Func<IClientSession, T, CancellationToken, Task> handler, string? messageType = null);
+
+    /// <summary>Begins a command/UI batch on this session.</summary>
+    IClientCommandBatch BeginBatch();
+
+    /// <summary>Flushes any buffered outbound commands/messages on this session.</summary>
+    Task FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Executes <paramref name="action"/> inside a session batch, flushing on success or discarding on exception.</summary>
+    Task BatchAsync(Func<IClientSession, Task> action, CancellationToken cancellationToken = default);
+
+    /// <summary>Executes <paramref name="action"/> inside a session batch with cancellation, flushing on success or discarding on exception.</summary>
+    Task BatchAsync(Func<IClientSession, CancellationToken, Task> action, CancellationToken cancellationToken = default);
 }

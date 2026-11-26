@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using LocalExile.Client.Sdk.Addresses;
 using LocalExile.Client.Sdk.Engine;
 using LocalExile.Client.Sdk.Extend;
@@ -12,18 +13,31 @@ namespace LocalExile.Client.ServerBridge;
 /// <see cref="NetTransportKind.HostRuleset"/> (<c>0x02C9</c>/<c>0x02CA</c>) and
 /// <see cref="NetTransportKind.ChatFallback"/> (<c>##NM </c>/<c>/nm </c>) transports.
 /// </summary>
-public sealed class ClientBridgeHost
+public sealed class ClientBridgeHost : IDisposable
 {
+    /// <summary>Reserved host system channel identifier (<see cref="MessageCodec.SystemChannel"/>).</summary>
+    public const string HostChannelId = MessageCodec.SystemChannel;
+
     private readonly IGatewayPacketSink _sink;
     private readonly ClientBridgeOptions _options;
     private readonly ConcurrentDictionary<string, ClientSession> _sessions = new(StringComparer.Ordinal);
-    private readonly Dictionary<(string Channel, string MessageType), List<Action<IClientSession, ModEnvelope>>> _globalHandlers = [];
+    private readonly Dictionary<(string Channel, string MessageType), List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>> _globalHandlers = [];
+    private readonly List<Func<IClientSession, CancellationToken, Task>> _clientReadyHandlers = [];
     private readonly Lock _gate = new();
     private GatewayBridgeRegistration? _busRegistration;
+    private string? _defaultChannel;
     private long _sequence;
+    private int _disposed;
 
     /// <summary>Active bridge configuration options.</summary>
     public ClientBridgeOptions Options => _options;
+
+    /// <summary>Default channel used by channel-less <c>SendAsync</c> overloads when configured.</summary>
+    public string? DefaultChannel
+    {
+        get => Volatile.Read(ref _defaultChannel);
+        internal set => Volatile.Write(ref _defaultChannel, string.IsNullOrWhiteSpace(value) ? null : value.Trim());
+    }
 
     /// <summary>Snapshot of all tracked sessions.</summary>
     public IReadOnlyCollection<IClientSession> Sessions => _sessions.Values.ToArray();
@@ -31,17 +45,26 @@ public sealed class ClientBridgeHost
     /// <summary>Whether this host is currently attached to a cross-ALC <see cref="GatewayBridgeBus"/>.</summary>
     public bool IsAttachedToGatewayBus => Volatile.Read(ref _busRegistration) is not null;
 
+    internal IGatewayPacketSink Sink => _sink;
+
     /// <summary>Raised when a client completes a NativeMods handshake.</summary>
     public event Action<IClientSession>? ClientReady;
 
+    /// <summary>Raised asynchronously when a client completes a NativeMods handshake.</summary>
+    public event Func<IClientSession, CancellationToken, Task>? ClientReadyAsync;
+
     /// <summary>Raised whenever any valid <see cref="ModEnvelope"/> arrives from a client.</summary>
     public event Action<IClientSession, ModEnvelope>? MessageReceived;
+
+    /// <summary>Raised whenever a subscribed sync or async handler throws an unhandled exception.</summary>
+    public event Action<string, Exception>? HandlerError;
 
     /// <summary>Creates a new <see cref="ClientBridgeHost"/> writing outbound traffic through <paramref name="sink"/>.</summary>
     public ClientBridgeHost(IGatewayPacketSink sink, ClientBridgeOptions? options = null)
     {
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
         _options = options ?? new ClientBridgeOptions();
+        _defaultChannel = string.IsNullOrWhiteSpace(_options.DefaultChannel) ? null : _options.DefaultChannel.Trim();
         if (_options.HostRulesetId > IRulesetRegistry.MaxRulesetId)
         {
             throw new ArgumentOutOfRangeException(nameof(options), $"HostRulesetId 0x{_options.HostRulesetId:X2} exceeds maximum 0x{IRulesetRegistry.MaxRulesetId:X2}.");
@@ -57,7 +80,7 @@ public sealed class ClientBridgeHost
     /// </summary>
     /// <param name="ownerId">Unique LocalExile mod identifier (for example <c>mod.Manifest.Id</c>).</param>
     /// <param name="onGatewayContext">
-    /// Optional callback invoked with <c>(connectionId, characterName, gatewayContext)</c> before this host processes
+    /// Optional callback invoked with <c>(connectionId, characterName, gatewayContext)</c> before this host process
     /// a fanned-out packet or chat command so the mod can register the live Gateway player and character binding.
     /// </param>
     /// <param name="domainKey">Optional isolated <see cref="AppDomain"/> slot key (defaults to <see cref="GatewayBridgeBus.DefaultDomainKey"/>).</param>
@@ -93,7 +116,25 @@ public sealed class ClientBridgeHost
         return session;
     }
 
-    /// <summary>Removes a closed connection's session state.</summary>
+    /// <summary>Returns <c>true</c> if <paramref name="connectionId"/> has completed a NativeMods client handshake.</summary>
+    public bool IsClientReady(string connectionId) =>
+        TryResolveExistingOrHydratedSession(connectionId) is { HasNativeHost: true };
+
+    /// <summary>
+    /// Returns <c>true</c> if <paramref name="connectionId"/> has completed a NativeMods handshake and
+    /// reports <paramref name="modId"/> (and optional matching <paramref name="expectedPayloadHash"/>).
+    /// </summary>
+    public bool HasMod(string connectionId, string modId, string? expectedPayloadHash = null)
+    {
+        if (string.IsNullOrWhiteSpace(modId))
+        {
+            return false;
+        }
+
+        return TryResolveExistingOrHydratedSession(connectionId) is { } session && session.HasClientMod(modId, expectedPayloadHash);
+    }
+
+    /// <summary>Removes a closed connection's session state and closes any open server UI windows.</summary>
     public bool RemoveSession(string connectionId)
     {
         if (string.IsNullOrWhiteSpace(connectionId))
@@ -102,7 +143,67 @@ public sealed class ClientBridgeHost
         }
 
         Volatile.Read(ref _busRegistration)?.ClearCachedHandshake(connectionId);
-        return _sessions.TryRemove(connectionId, out _);
+        if (_sessions.TryRemove(connectionId, out ClientSession? session))
+        {
+            session.CloseSessionNonBlocking();
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Removes a closed connection's session state and awaits closing any open server UI windows.</summary>
+    public async Task<bool> RemoveSessionAsync(string connectionId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(connectionId))
+        {
+            return false;
+        }
+
+        Volatile.Read(ref _busRegistration)?.ClearCachedHandshake(connectionId);
+        if (_sessions.TryRemove(connectionId, out ClientSession? session))
+        {
+            await session.CloseSessionAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Subscribes a synchronous callback invoked when any client completes a NativeMods handshake.</summary>
+    public IDisposable OnClientReady(Action<IClientSession> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnClientReady((session, _) =>
+        {
+            handler(session);
+            return Task.CompletedTask;
+        });
+    }
+
+    /// <summary>Subscribes an asynchronous callback invoked when any client completes a NativeMods handshake.</summary>
+    public IDisposable OnClientReady(Func<IClientSession, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnClientReady((session, _) => handler(session));
+    }
+
+    /// <summary>Subscribes an asynchronous callback with cancellation support invoked when any client completes a NativeMods handshake.</summary>
+    public IDisposable OnClientReady(Func<IClientSession, CancellationToken, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        lock (_gate)
+        {
+            _clientReadyHandlers.Add(handler);
+        }
+
+        return new Subscription(() =>
+        {
+            lock (_gate)
+            {
+                _clientReadyHandlers.Remove(handler);
+            }
+        });
     }
 
     /// <summary>
@@ -112,17 +213,92 @@ public sealed class ClientBridgeHost
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
         ArgumentNullException.ThrowIfNull(handler);
+        return RegisterGlobalHandler<T>(
+            channel.ToLowerInvariant(),
+            messageType,
+            (session, payload, _) =>
+            {
+                handler(session, payload);
+                return Task.CompletedTask;
+            });
+    }
+
+    /// <summary>
+    /// Subscribes asynchronously to incoming typed messages from any connected client on <paramref name="channel"/>.
+    /// </summary>
+    public IDisposable On<T>(string channel, Func<IClientSession, T, Task> handler, string? messageType = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterGlobalHandler<T>(
+            channel.ToLowerInvariant(),
+            messageType,
+            (session, payload, _) => handler(session, payload));
+    }
+
+    /// <summary>
+    /// Subscribes asynchronously with cancellation support to incoming typed messages from any connected client on <paramref name="channel"/>.
+    /// </summary>
+    public IDisposable On<T>(string channel, Func<IClientSession, T, CancellationToken, Task> handler, string? messageType = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterGlobalHandler<T>(channel.ToLowerInvariant(), messageType, handler);
+    }
+
+    /// <summary>
+    /// Subscribes to incoming typed messages from any connected client across any channel.
+    /// </summary>
+    public IDisposable On<T>(Action<IClientSession, T> handler, string? messageType = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterGlobalHandler<T>(
+            string.Empty,
+            messageType,
+            (session, payload, _) =>
+            {
+                handler(session, payload);
+                return Task.CompletedTask;
+            });
+    }
+
+    /// <summary>
+    /// Subscribes asynchronously to incoming typed messages from any connected client across any channel.
+    /// </summary>
+    public IDisposable On<T>(Func<IClientSession, T, Task> handler, string? messageType = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterGlobalHandler<T>(
+            string.Empty,
+            messageType,
+            (session, payload, _) => handler(session, payload));
+    }
+
+    /// <summary>
+    /// Subscribes asynchronously with cancellation support to incoming typed messages from any connected client across any channel.
+    /// </summary>
+    public IDisposable On<T>(Func<IClientSession, T, CancellationToken, Task> handler, string? messageType = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterGlobalHandler<T>(string.Empty, messageType, handler);
+    }
+
+    private Subscription RegisterGlobalHandler<T>(
+        string normalizedChannel,
+        string? messageType,
+        Func<IClientSession, T, CancellationToken, Task> handler)
+    {
         string typeName = string.IsNullOrWhiteSpace(messageType) ? typeof(T).Name : messageType;
-        var key = (channel.ToLowerInvariant(), typeName);
-        Action<IClientSession, ModEnvelope> wrapper = (session, env) =>
+        var key = (normalizedChannel, typeName);
+        Func<IClientSession, ModEnvelope, CancellationToken, Task> wrapper = (session, env, ct) =>
         {
             T payload = MessageCodec.DeserializePayload<T>(env);
-            handler(session, payload);
+            return handler(session, payload, ct);
         };
 
         lock (_gate)
         {
-            if (!_globalHandlers.TryGetValue(key, out List<Action<IClientSession, ModEnvelope>>? list))
+            if (!_globalHandlers.TryGetValue(key, out List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>? list))
             {
                 list = [];
                 _globalHandlers[key] = list;
@@ -135,9 +311,13 @@ public sealed class ClientBridgeHost
         {
             lock (_gate)
             {
-                if (_globalHandlers.TryGetValue(key, out List<Action<IClientSession, ModEnvelope>>? list))
+                if (_globalHandlers.TryGetValue(key, out List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>? list))
                 {
                     list.Remove(wrapper);
+                    if (list.Count == 0)
+                    {
+                        _globalHandlers.Remove(key);
+                    }
                 }
             }
         });
@@ -146,6 +326,76 @@ public sealed class ClientBridgeHost
     /// <summary>Sends a typed message to <paramref name="connectionId"/> on <paramref name="channel"/>.</summary>
     public Task SendAsync<T>(string connectionId, string channel, T message, string? messageType = null, CancellationToken cancellationToken = default) =>
         GetOrCreateSession(connectionId).SendAsync(channel, message, messageType, cancellationToken);
+
+    /// <summary>Sends a typed message to <paramref name="connectionId"/> using <see cref="DefaultChannel"/> (or <see cref="HostChannelId"/>).</summary>
+    public Task SendAsync<T>(string connectionId, T message, CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).SendAsync(ResolveDefaultChannel(), message, messageType: null, cancellationToken);
+
+    /// <summary>
+    /// Attempts to send a typed message to an existing, handshake-ready <paramref name="connectionId"/> on <paramref name="channel"/>.
+    /// Returns <c>false</c> without throwing if the session does not exist or is not ready.
+    /// </summary>
+    public async Task<bool> TrySendAsync<T>(string connectionId, string channel, T message, string? messageType = null, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0 ||
+            TryResolveExistingOrHydratedSession(connectionId) is not { HasNativeHost: true, IsClosed: false } session)
+        {
+            return false;
+        }
+
+        return await session.TryQueueOrSendEnvelopeAsync(channel, message, messageType, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Attempts to send a typed message to an existing, handshake-ready <paramref name="connectionId"/> using <see cref="DefaultChannel"/>.
+    /// Returns <c>false</c> without throwing if the session does not exist or is not ready.
+    /// </summary>
+    public Task<bool> TrySendAsync<T>(string connectionId, T message, CancellationToken cancellationToken = default) =>
+        TrySendAsync(connectionId, ResolveDefaultChannel(), message, messageType: null, cancellationToken);
+
+    internal string ResolveDefaultChannel() => DefaultChannel ?? MessageCodec.SystemChannel;
+
+    /// <summary>
+    /// Handles an incoming decoded <see cref="ModEnvelope"/> directly (useful for standalone tests and custom transports).
+    /// When attached via <see cref="AttachToGatewayBus"/> and within the ruleset payload limit, fans out via the shared bus.
+    /// </summary>
+    public async Task<bool> HandleIncomingEnvelopeAsync(
+        string connectionId,
+        ModEnvelope envelope,
+        string? characterName = null,
+        object? gatewayContext = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
+        ArgumentNullException.ThrowIfNull(envelope);
+
+        if (Volatile.Read(ref _busRegistration) is { } bus)
+        {
+            byte[] encoded = MessageCodec.EncodeEnvelope(envelope);
+            if (encoded.Length <= MessageCodec.MaxRulesetPayloadBytes)
+            {
+                byte[] body = MessageCodec.EncodeRulesetBody(_options.HostRulesetId, encoded);
+                return await bus.DispatchPacketAsync(
+                    connectionId,
+                    IOpcodeRegistry.ClientRulesetOpcode,
+                    body,
+                    characterName,
+                    gatewayContext,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        ClientSession session = (ClientSession)GetOrCreateSession(connectionId);
+        int result = await DispatchIncomingEnvelopeAsync(
+            session,
+            envelope,
+            suppressServerHandshakeReply: false,
+            mergedRequiredMods: null,
+            mergedCapabilities: null,
+            onServerHandshakeSent: null,
+            cancellationToken).ConfigureAwait(false);
+        return (result & GatewayBridgeBus.ResultHandled) != 0;
+    }
 
     /// <summary>
     /// Handles an incoming C→S packet from LocalExile's <c>GameEvents.Packet(0x02CA)</c> hook.
@@ -320,6 +570,32 @@ public sealed class ClientBridgeHost
             cancellationToken).ConfigureAwait(false);
     }
 
+    private ClientSession? TryResolveExistingOrHydratedSession(string connectionId)
+    {
+        if (string.IsNullOrWhiteSpace(connectionId))
+        {
+            return null;
+        }
+
+        if (_sessions.TryGetValue(connectionId, out ClientSession? existing))
+        {
+            if (!existing.HasNativeHost && Volatile.Read(ref _busRegistration) is { } existingBus)
+            {
+                TryHydrateSessionFromBus(existing, existingBus);
+            }
+
+            return existing;
+        }
+
+        if (Volatile.Read(ref _busRegistration) is { } bus &&
+            bus.TryGetCachedHandshake(connectionId, _options.HostRulesetId, out _, out _))
+        {
+            return (ClientSession)GetOrCreateSession(connectionId);
+        }
+
+        return null;
+    }
+
     private void TryHydrateSessionFromBus(ClientSession session, GatewayBridgeRegistration bus)
     {
         if (!bus.TryGetCachedHandshake(session.ConnectionId, _options.HostRulesetId, out byte[] rawEnvelope, out bool isChatFallback))
@@ -341,21 +617,78 @@ public sealed class ClientBridgeHost
         }
     }
 
-    internal async Task SendEnvelopeAsync(ClientSession session, ModEnvelope envelope, CancellationToken cancellationToken)
+    internal GatewayBatchItem EncodeBatchItem(ClientSession session, ModEnvelope envelope)
     {
         if (session.ActiveTransport == NetTransportKind.ChatFallback)
         {
             string line = MessageCodec.EncodeServerChatEnvelope(envelope);
-            await _sink.SendChatReplyAsync(session.ConnectionId, line, cancellationToken).ConfigureAwait(false);
-            return;
+            return new GatewayBatchItem(IsChatReply: true, Opcode: 0, Payload: ReadOnlyMemory<byte>.Empty, ChatText: line);
         }
 
         byte[] inner = MessageCodec.EncodeEnvelope(envelope);
         byte[] rulesetBody = MessageCodec.EncodeRulesetBody(_options.HostRulesetId, inner);
-        await _sink.SendPacketAsync(session.ConnectionId, IOpcodeRegistry.ServerRulesetOpcode, rulesetBody, cancellationToken).ConfigureAwait(false);
+        return new GatewayBatchItem(IsChatReply: false, Opcode: IOpcodeRegistry.ServerRulesetOpcode, Payload: rulesetBody, ChatText: null);
+    }
+
+    internal async Task SendEnvelopeAsync(ClientSession session, ModEnvelope envelope, CancellationToken cancellationToken)
+    {
+        GatewayBatchItem item = EncodeBatchItem(session, envelope);
+        if (item.IsChatReply)
+        {
+            await _sink.SendChatReplyAsync(session.ConnectionId, item.ChatText ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await _sink.SendPacketAsync(session.ConnectionId, item.Opcode, item.Payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task SendBatchItemsAsync(ClientSession session, IReadOnlyList<GatewayBatchItem> items, CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        if (_sink is IBatchingGatewayPacketSink batchingSink)
+        {
+            await batchingSink.SendBatchAsync(session.ConnectionId, items, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        foreach (GatewayBatchItem item in items)
+        {
+            if (item.IsChatReply)
+            {
+                await _sink.SendChatReplyAsync(session.ConnectionId, item.ChatText ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await _sink.SendPacketAsync(session.ConnectionId, item.Opcode, item.Payload, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     internal long NextSequence() => Interlocked.Increment(ref _sequence);
+
+    internal void ReportHandlerError(string source, Exception exception)
+    {
+        if (HandlerError is { } errorEvent)
+        {
+            foreach (Delegate del in errorEvent.GetInvocationList())
+            {
+                try
+                {
+                    ((Action<string, Exception>)del)(source, exception);
+                }
+                catch
+                {
+                    // Never allow error subscriber exceptions to abort dispatch.
+                }
+            }
+        }
+
+        Trace.TraceWarning($"[ClientBridgeHost] Handler error in '{source}': {exception}");
+    }
 
     private async Task<int> DispatchIncomingEnvelopeAsync(
         ClientSession session,
@@ -366,7 +699,20 @@ public sealed class ClientBridgeHost
         Action? onServerHandshakeSent,
         CancellationToken cancellationToken)
     {
-        MessageReceived?.Invoke(session, envelope);
+        if (MessageReceived is { } msgReceived)
+        {
+            foreach (Delegate del in msgReceived.GetInvocationList())
+            {
+                try
+                {
+                    ((Action<IClientSession, ModEnvelope>)del)(session, envelope);
+                }
+                catch (Exception ex)
+                {
+                    ReportHandlerError($"MessageReceived({envelope.Channel}/{envelope.MessageType})", ex);
+                }
+            }
+        }
 
         if (string.Equals(envelope.Channel, MessageCodec.SystemChannel, StringComparison.OrdinalIgnoreCase))
         {
@@ -387,38 +733,149 @@ public sealed class ClientBridgeHost
                         RequiredMods: mergedRequiredMods ?? _options.RequiredMods,
                         ServerCapabilities: mergedCapabilities ?? _options.ServerCapabilities);
 
-                    await session.SendAsync(MessageCodec.SystemChannel, reply, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await session.SendDirectAsync(MessageCodec.SystemChannel, reply, messageType: null, cancellationToken).ConfigureAwait(false);
                     onServerHandshakeSent?.Invoke();
                     flags |= GatewayBridgeBus.ResultSentServerHandshake;
                 }
 
-                ClientReady?.Invoke(session);
+                await DispatchClientReadyAsync(session, cancellationToken).ConfigureAwait(false);
                 return flags;
             }
 
             if (string.Equals(envelope.MessageType, nameof(ClientUiEventNotification), StringComparison.Ordinal))
             {
                 ClientUiEventNotification uiEvent = MessageCodec.DeserializePayload<ClientUiEventNotification>(envelope);
-                session.DispatchUiEvent(uiEvent);
+                await session.DispatchUiEventAsync(uiEvent, cancellationToken).ConfigureAwait(false);
                 return GatewayBridgeBus.ResultHandled;
             }
         }
 
-        session.DispatchEnvelope(envelope);
+        await session.DispatchEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
 
-        var key = (envelope.Channel.ToLowerInvariant(), envelope.MessageType);
-        Action<IClientSession, ModEnvelope>[] globals;
+        string normalizedChannel = envelope.Channel.ToLowerInvariant();
+        Func<IClientSession, ModEnvelope, CancellationToken, Task>[] exactGlobals;
+        Func<IClientSession, ModEnvelope, CancellationToken, Task>[] wildcardGlobals;
         lock (_gate)
         {
-            globals = _globalHandlers.TryGetValue(key, out List<Action<IClientSession, ModEnvelope>>? list) ? [.. list] : [];
+            exactGlobals = _globalHandlers.TryGetValue((normalizedChannel, envelope.MessageType), out var exactList)
+                ? [.. exactList]
+                : [];
+            wildcardGlobals = _globalHandlers.TryGetValue((string.Empty, envelope.MessageType), out var wildcardList)
+                ? [.. wildcardList]
+                : [];
         }
 
-        foreach (Action<IClientSession, ModEnvelope> handler in globals)
-        {
-            handler(session, envelope);
-        }
+        await InvokeEnvelopeHandlersAsync(exactGlobals, session, envelope, cancellationToken).ConfigureAwait(false);
+        await InvokeEnvelopeHandlersAsync(wildcardGlobals, session, envelope, cancellationToken).ConfigureAwait(false);
 
         return GatewayBridgeBus.ResultHandled;
+    }
+
+    private async Task DispatchClientReadyAsync(ClientSession session, CancellationToken cancellationToken)
+    {
+        if (ClientReady is { } syncEvent)
+        {
+            foreach (Delegate del in syncEvent.GetInvocationList())
+            {
+                try
+                {
+                    ((Action<IClientSession>)del)(session);
+                }
+                catch (Exception ex)
+                {
+                    ReportHandlerError($"ClientReady({session.ConnectionId})", ex);
+                }
+            }
+        }
+
+        if (ClientReadyAsync is { } asyncEvent)
+        {
+            foreach (Delegate del in asyncEvent.GetInvocationList())
+            {
+                try
+                {
+                    await ((Func<IClientSession, CancellationToken, Task>)del)(session, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    ReportHandlerError($"ClientReadyAsync({session.ConnectionId})", ex);
+                }
+            }
+        }
+
+        Func<IClientSession, CancellationToken, Task>[] readySnapshot;
+        lock (_gate)
+        {
+            readySnapshot = [.. _clientReadyHandlers];
+        }
+
+        foreach (Func<IClientSession, CancellationToken, Task> handler in readySnapshot)
+        {
+            try
+            {
+                await handler(session, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ReportHandlerError($"OnClientReady({session.ConnectionId})", ex);
+            }
+        }
+    }
+
+    internal async Task InvokeEnvelopeHandlersAsync(
+        Func<IClientSession, ModEnvelope, CancellationToken, Task>[] handlers,
+        ClientSession session,
+        ModEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        foreach (Func<IClientSession, ModEnvelope, CancellationToken, Task> handler in handlers)
+        {
+            try
+            {
+                await handler(session, envelope, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ReportHandlerError($"On<{envelope.MessageType}>({envelope.Channel})", ex);
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _busRegistration, null)?.Dispose();
+
+        foreach (string key in _sessions.Keys.ToArray())
+        {
+            if (_sessions.TryRemove(key, out ClientSession? session))
+            {
+                session.CloseSessionNonBlocking();
+            }
+        }
+
+        lock (_gate)
+        {
+            _globalHandlers.Clear();
+            _clientReadyHandlers.Clear();
+        }
     }
 
     internal sealed class Subscription(Action onDispose) : IDisposable
@@ -426,6 +883,12 @@ public sealed class ClientBridgeHost
         private Action? _onDispose = onDispose;
 
         public void Dispose() => Interlocked.Exchange(ref _onDispose, null)?.Invoke();
+    }
+
+    internal sealed class NoOpDisposable : IDisposable
+    {
+        public static readonly NoOpDisposable Instance = new();
+        public void Dispose() { }
     }
 }
 
@@ -462,10 +925,15 @@ internal sealed class ClientSession : IClientSession
 {
     private readonly ClientBridgeHost _host;
     private readonly ClientUiSession _ui;
-    private readonly Dictionary<(string Channel, string MessageType), List<Action<IClientSession, ModEnvelope>>> _handlers = [];
+    private readonly Dictionary<(string Channel, string MessageType), List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>> _handlers = [];
+    private readonly List<PendingBatchEntry> _batchQueue = [];
     private readonly Lock _gate = new();
+    private readonly Lock _batchGate = new();
+    private int _batchDepth;
+    private int _closed;
 
     public string ConnectionId { get; }
+    internal bool IsClosed => Volatile.Read(ref _closed) != 0;
     public bool HasNativeHost => Handshake is not null;
     public ClientHandshake? Handshake { get; private set; }
     public NetTransportKind ActiveTransport { get; private set; }
@@ -473,6 +941,8 @@ internal sealed class ClientSession : IClientSession
     public string? ExtenderVersion => Handshake?.ExtenderVersion;
     public string? ClientSdkVersion => Handshake?.SdkVersion;
     public IReadOnlyCollection<InstalledClientModInfo> InstalledMods => Handshake?.InstalledMods ?? [];
+    public IReadOnlyCollection<string> ClientMods =>
+        Handshake?.InstalledMods is { Count: > 0 } mods ? mods.Select(m => m.Id).ToArray() : [];
     public IClientUiSession Ui => _ui;
 
     public ClientSession(ClientBridgeHost host, string connectionId, NetTransportKind defaultTransport)
@@ -480,7 +950,7 @@ internal sealed class ClientSession : IClientSession
         _host = host;
         ConnectionId = connectionId;
         ActiveTransport = defaultTransport;
-        _ui = new ClientUiSession(this);
+        _ui = new ClientUiSession(this, host);
     }
 
     internal void SetActiveTransport(NetTransportKind kind)
@@ -536,25 +1006,156 @@ internal sealed class ClientSession : IClientSession
 
     public Task SendAsync<T>(string channel, T message, string? messageType = null, CancellationToken cancellationToken = default)
     {
+        if (IsClosed)
+        {
+            return Task.CompletedTask;
+        }
+
+        ModEnvelope envelope = MessageCodec.CreateTypedEnvelope(channel, message, messageType, _host.NextSequence());
+        return QueueOrSendAsync(envelope, uiCommand: null, cancellationToken);
+    }
+
+    public Task SendAsync<T>(T message, CancellationToken cancellationToken = default) =>
+        SendAsync(_host.ResolveDefaultChannel(), message, messageType: null, cancellationToken);
+
+    internal Task<bool> TryQueueOrSendEnvelopeAsync<T>(string channel, T message, string? messageType, CancellationToken cancellationToken)
+    {
+        if (IsClosed)
+        {
+            return Task.FromResult(false);
+        }
+
+        ModEnvelope envelope = MessageCodec.CreateTypedEnvelope(channel, message, messageType, _host.NextSequence());
+        return QueueOrSendAsync(envelope, uiCommand: null, cancellationToken);
+    }
+
+    internal Task SendDirectAsync<T>(string channel, T message, string? messageType, CancellationToken cancellationToken)
+    {
+        if (IsClosed)
+        {
+            return Task.CompletedTask;
+        }
+
         ModEnvelope envelope = MessageCodec.CreateTypedEnvelope(channel, message, messageType, _host.NextSequence());
         return _host.SendEnvelopeAsync(this, envelope, cancellationToken);
+    }
+
+    internal Task QueueOrSendUiCommandAsync(ServerUiCommand command, CancellationToken cancellationToken)
+    {
+        if (IsClosed)
+        {
+            return Task.CompletedTask;
+        }
+
+        ModEnvelope envelope = MessageCodec.CreateTypedEnvelope(MessageCodec.SystemChannel, command, messageType: null, _host.NextSequence());
+        return QueueOrSendAsync(envelope, command, cancellationToken);
+    }
+
+    private Task<bool> QueueOrSendAsync(ModEnvelope envelope, ServerUiCommand? uiCommand, CancellationToken cancellationToken)
+    {
+        lock (_batchGate)
+        {
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                return Task.FromResult(false);
+            }
+
+            if (_batchDepth > 0)
+            {
+                _batchQueue.Add(new PendingBatchEntry(envelope, uiCommand));
+                return Task.FromResult(true);
+            }
+        }
+
+        return SendEnvelopeAndReturnTrueAsync(envelope, cancellationToken);
+    }
+
+    private async Task<bool> SendEnvelopeAndReturnTrueAsync(ModEnvelope envelope, CancellationToken cancellationToken)
+    {
+        await _host.SendEnvelopeAsync(this, envelope, cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     public IDisposable On<T>(string channel, Action<IClientSession, T> handler, string? messageType = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
         ArgumentNullException.ThrowIfNull(handler);
+        return RegisterHandler<T>(
+            channel.ToLowerInvariant(),
+            messageType,
+            (session, payload, _) =>
+            {
+                handler(session, payload);
+                return Task.CompletedTask;
+            });
+    }
+
+    public IDisposable On<T>(string channel, Func<IClientSession, T, Task> handler, string? messageType = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterHandler<T>(
+            channel.ToLowerInvariant(),
+            messageType,
+            (session, payload, _) => handler(session, payload));
+    }
+
+    public IDisposable On<T>(string channel, Func<IClientSession, T, CancellationToken, Task> handler, string? messageType = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterHandler<T>(channel.ToLowerInvariant(), messageType, handler);
+    }
+
+    public IDisposable On<T>(Action<IClientSession, T> handler, string? messageType = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterHandler<T>(
+            string.Empty,
+            messageType,
+            (session, payload, _) =>
+            {
+                handler(session, payload);
+                return Task.CompletedTask;
+            });
+    }
+
+    public IDisposable On<T>(Func<IClientSession, T, Task> handler, string? messageType = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterHandler<T>(
+            string.Empty,
+            messageType,
+            (session, payload, _) => handler(session, payload));
+    }
+
+    public IDisposable On<T>(Func<IClientSession, T, CancellationToken, Task> handler, string? messageType = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return RegisterHandler<T>(string.Empty, messageType, handler);
+    }
+
+    private IDisposable RegisterHandler<T>(
+        string normalizedChannel,
+        string? messageType,
+        Func<IClientSession, T, CancellationToken, Task> handler)
+    {
         string typeName = string.IsNullOrWhiteSpace(messageType) ? typeof(T).Name : messageType;
-        var key = (channel.ToLowerInvariant(), typeName);
-        Action<IClientSession, ModEnvelope> wrapper = (session, env) =>
+        var key = (normalizedChannel, typeName);
+        Func<IClientSession, ModEnvelope, CancellationToken, Task> wrapper = (session, env, ct) =>
         {
             T payload = MessageCodec.DeserializePayload<T>(env);
-            handler(session, payload);
+            return handler(session, payload, ct);
         };
 
         lock (_gate)
         {
-            if (!_handlers.TryGetValue(key, out List<Action<IClientSession, ModEnvelope>>? list))
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                return ClientBridgeHost.NoOpDisposable.Instance;
+            }
+
+            if (!_handlers.TryGetValue(key, out List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>? list))
             {
                 list = [];
                 _handlers[key] = list;
@@ -567,36 +1168,344 @@ internal sealed class ClientSession : IClientSession
         {
             lock (_gate)
             {
-                if (_handlers.TryGetValue(key, out List<Action<IClientSession, ModEnvelope>>? list))
+                if (_handlers.TryGetValue(key, out List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>? list))
                 {
                     list.Remove(wrapper);
+                    if (list.Count == 0)
+                    {
+                        _handlers.Remove(key);
+                    }
                 }
             }
         });
     }
 
-    internal void DispatchEnvelope(ModEnvelope envelope)
+    public IClientCommandBatch BeginBatch()
     {
-        var key = (envelope.Channel.ToLowerInvariant(), envelope.MessageType);
-        Action<IClientSession, ModEnvelope>[] snapshot;
-        lock (_gate)
+        lock (_batchGate)
         {
-            snapshot = _handlers.TryGetValue(key, out List<Action<IClientSession, ModEnvelope>>? list) ? [.. list] : [];
-        }
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                return new ClosedCommandBatch();
+            }
 
-        foreach (Action<IClientSession, ModEnvelope> handler in snapshot)
-        {
-            handler(this, envelope);
+            int watermark = _batchQueue.Count;
+            _batchDepth++;
+            return new ClientCommandBatch(this, watermark);
         }
     }
 
-    internal void DispatchUiEvent(ClientUiEventNotification uiEvent) => _ui.DispatchEvent(uiEvent);
+    public Task FlushAsync(CancellationToken cancellationToken = default) =>
+        FlushBatchQueueAsync(cancellationToken);
+
+    public async Task BatchAsync(Func<IClientSession, Task> action, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        IClientCommandBatch batch = BeginBatch();
+        try
+        {
+            await action(this).ConfigureAwait(false);
+            await batch.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            batch.Discard();
+            throw;
+        }
+    }
+
+    public async Task BatchAsync(Func<IClientSession, CancellationToken, Task> action, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        IClientCommandBatch batch = BeginBatch();
+        try
+        {
+            await action(this, cancellationToken).ConfigureAwait(false);
+            await batch.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            batch.Discard();
+            throw;
+        }
+    }
+
+    internal int BatchCount
+    {
+        get
+        {
+            lock (_batchGate)
+            {
+                return _batchQueue.Count;
+            }
+        }
+    }
+
+    internal void DiscardFromWatermark(int watermark)
+    {
+        lock (_batchGate)
+        {
+            if (watermark < _batchQueue.Count)
+            {
+                _batchQueue.RemoveRange(watermark, _batchQueue.Count - watermark);
+            }
+
+            if (_batchDepth > 0)
+            {
+                _batchDepth--;
+            }
+        }
+    }
+
+    internal Task CompleteBatchAsync(CancellationToken cancellationToken)
+    {
+        bool shouldFlush;
+        lock (_batchGate)
+        {
+            if (_batchDepth > 0)
+            {
+                _batchDepth--;
+            }
+
+            shouldFlush = _batchDepth == 0 && _batchQueue.Count > 0;
+        }
+
+        return shouldFlush ? FlushBatchQueueAsync(cancellationToken) : Task.CompletedTask;
+    }
+
+    internal void CompleteBatchNonBlocking()
+    {
+        Task task = CompleteBatchAsync(CancellationToken.None);
+        if (task.IsFaulted && task.Exception is not null)
+        {
+            _host.ReportHandlerError($"Batch.Dispose({ConnectionId})", task.Exception.GetBaseException());
+        }
+        else if (!task.IsCompleted)
+        {
+            _ = task.ContinueWith(
+                t => _host.ReportHandlerError($"Batch.Dispose({ConnectionId})", t.Exception?.GetBaseException() ?? new InvalidOperationException("Batch flush failed.")),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
+    private Task FlushBatchQueueAsync(CancellationToken cancellationToken)
+    {
+        PendingBatchEntry[] snapshot;
+        lock (_batchGate)
+        {
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                _batchQueue.Clear();
+                return Task.CompletedTask;
+            }
+
+            if (_batchQueue.Count == 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            snapshot = [.. _batchQueue];
+            _batchQueue.Clear();
+        }
+
+        List<PendingBatchEntry> coalesced = CoalesceBatchEntries(snapshot);
+        var wireItems = new GatewayBatchItem[coalesced.Count];
+        for (int i = 0; i < coalesced.Count; i++)
+        {
+            wireItems[i] = _host.EncodeBatchItem(this, coalesced[i].Envelope);
+        }
+
+        return _host.SendBatchItemsAsync(this, wireItems, cancellationToken);
+    }
+
+    private static List<PendingBatchEntry> CoalesceBatchEntries(PendingBatchEntry[] raw)
+    {
+        var result = new List<PendingBatchEntry>(raw.Length);
+        int segmentStart = 0;
+
+        foreach (PendingBatchEntry entry in raw)
+        {
+            if (entry.UiCommand is not { } cmd)
+            {
+                result.Add(entry);
+                segmentStart = result.Count;
+                continue;
+            }
+
+            if (cmd.Kind is ServerUiCommandKind.OpenWindow or ServerUiCommandKind.CloseWindow or ServerUiCommandKind.ReloadWindow)
+            {
+                result.Add(entry);
+                segmentStart = result.Count;
+                continue;
+            }
+
+            if (cmd.Kind is ServerUiCommandKind.SetText or ServerUiCommandKind.SetVisible or ServerUiCommandKind.SetProperty or ServerUiCommandKind.SubscribeEvent)
+            {
+                for (int i = result.Count - 1; i >= segmentStart; i--)
+                {
+                    if (result[i].UiCommand is { } prior && IsSameCoalesceKey(prior, cmd))
+                    {
+                        result.RemoveAt(i);
+                        break;
+                    }
+                }
+            }
+
+            result.Add(entry);
+        }
+
+        return result;
+    }
+
+    private static bool IsSameCoalesceKey(ServerUiCommand a, ServerUiCommand b) =>
+        a.Kind == b.Kind &&
+        string.Equals(a.WindowId, b.WindowId, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.ControlPath, b.ControlPath, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.PropertyName, b.PropertyName, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.EventName, b.EventName, StringComparison.OrdinalIgnoreCase);
+
+    internal async Task DispatchEnvelopeAsync(ModEnvelope envelope, CancellationToken cancellationToken)
+    {
+        string normalizedChannel = envelope.Channel.ToLowerInvariant();
+        Func<IClientSession, ModEnvelope, CancellationToken, Task>[] exactHandlers;
+        Func<IClientSession, ModEnvelope, CancellationToken, Task>[] wildcardHandlers;
+        lock (_gate)
+        {
+            exactHandlers = _handlers.TryGetValue((normalizedChannel, envelope.MessageType), out var exactList)
+                ? [.. exactList]
+                : [];
+            wildcardHandlers = _handlers.TryGetValue((string.Empty, envelope.MessageType), out var wildcardList)
+                ? [.. wildcardList]
+                : [];
+        }
+
+        await _host.InvokeEnvelopeHandlersAsync(exactHandlers, this, envelope, cancellationToken).ConfigureAwait(false);
+        await _host.InvokeEnvelopeHandlersAsync(wildcardHandlers, this, envelope, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal Task DispatchUiEventAsync(ClientUiEventNotification uiEvent, CancellationToken cancellationToken) =>
+        _ui.DispatchEventAsync(uiEvent, cancellationToken);
+
+    internal async Task CloseSessionAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Exchange(ref _closed, 1);
+        lock (_gate)
+        {
+            _handlers.Clear();
+        }
+
+        lock (_batchGate)
+        {
+            _batchQueue.Clear();
+            _batchDepth = 0;
+        }
+
+        await _ui.CloseAllWindowsAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal void CloseSessionNonBlocking()
+    {
+        Interlocked.Exchange(ref _closed, 1);
+        lock (_gate)
+        {
+            _handlers.Clear();
+        }
+
+        lock (_batchGate)
+        {
+            _batchQueue.Clear();
+            _batchDepth = 0;
+        }
+
+        _ui.CloseAllWindowsNonBlocking();
+    }
+
+    private readonly record struct PendingBatchEntry(ModEnvelope Envelope, ServerUiCommand? UiCommand);
+
+    private sealed class ClosedCommandBatch : IClientCommandBatch
+    {
+        private int _state;
+
+        public int Count => 0;
+        public bool IsFlushed => Volatile.Read(ref _state) == 1;
+        public bool IsDiscarded => Volatile.Read(ref _state) == 2;
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            Interlocked.CompareExchange(ref _state, 1, 0);
+            return Task.CompletedTask;
+        }
+
+        public void Discard() => Interlocked.CompareExchange(ref _state, 2, 0);
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.CompareExchange(ref _state, 1, 0);
+            return ValueTask.CompletedTask;
+        }
+
+        public void Dispose() => Interlocked.CompareExchange(ref _state, 1, 0);
+    }
+
+    private sealed class ClientCommandBatch(ClientSession session, int watermark) : IClientCommandBatch
+    {
+        // 0 = active, 1 = flushed, 2 = discarded
+        private int _state;
+
+        public int Count => session.BatchCount;
+        public bool IsFlushed => Volatile.Read(ref _state) == 1;
+        public bool IsDiscarded => Volatile.Read(ref _state) == 2;
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            return session.CompleteBatchAsync(cancellationToken);
+        }
+
+        public void Discard()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
+            {
+                return;
+            }
+
+            session.DiscardFromWatermark(watermark);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+            {
+                return;
+            }
+
+            await session.CompleteBatchAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+            {
+                return;
+            }
+
+            session.CompleteBatchNonBlocking();
+        }
+    }
 }
 
-internal sealed class ClientUiSession(ClientSession session) : IClientUiSession
+internal sealed class ClientUiSession(ClientSession session, ClientBridgeHost host) : IClientUiSession
 {
-    private readonly Dictionary<(string WindowId, string ControlPath, string EventName), List<Action<IClientSession, string?>>> _eventHandlers = [];
+    private readonly Dictionary<(string WindowId, string ControlPath, string EventName), List<Func<IClientSession, string?, CancellationToken, Task>>> _eventHandlers = [];
+    private readonly Dictionary<string, ServerUiWindowHandle> _openWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _gate = new();
+    private bool _closed;
 
     public async Task<ServerUiWindowHandle> OpenAsync(string virtualPath, string? windowId = null, CancellationToken cancellationToken = default)
     {
@@ -605,25 +1514,62 @@ internal sealed class ClientUiSession(ClientSession session) : IClientUiSession
             ? windowId.Trim()
             : Path.GetFileNameWithoutExtension(virtualPath);
 
+        var nextHandle = new ServerUiWindowHandle(this, resolvedId, virtualPath, host.ReportHandlerError);
+        ServerUiWindowHandle? replaced = null;
+        bool isClosed;
+        lock (_gate)
+        {
+            isClosed = _closed || session.IsClosed;
+            if (!isClosed)
+            {
+                _openWindows.TryGetValue(resolvedId, out replaced);
+                _openWindows[resolvedId] = nextHandle;
+            }
+        }
+
+        if (isClosed)
+        {
+            await nextHandle.MarkClosedAsync(cancellationToken).ConfigureAwait(false);
+            return nextHandle;
+        }
+
+        if (replaced is not null)
+        {
+            await replaced.MarkClosedAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         var cmd = new ServerUiCommand(ServerUiCommandKind.OpenWindow, resolvedId, VirtualPath: virtualPath);
-        await session.SendAsync(MessageCodec.SystemChannel, cmd, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return new ServerUiWindowHandle(this, resolvedId, virtualPath);
+        await session.QueueOrSendUiCommandAsync(cmd, cancellationToken).ConfigureAwait(false);
+        return nextHandle;
     }
 
-    public Task CloseAsync(string windowId, CancellationToken cancellationToken = default) =>
-        session.SendAsync(MessageCodec.SystemChannel, new ServerUiCommand(ServerUiCommandKind.CloseWindow, windowId), cancellationToken: cancellationToken);
+    public async Task CloseAsync(string windowId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(windowId);
+        ServerUiWindowHandle? handle;
+        lock (_gate)
+        {
+            _openWindows.Remove(windowId, out handle);
+        }
+
+        await session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.CloseWindow, windowId), cancellationToken).ConfigureAwait(false);
+        if (handle is not null)
+        {
+            await handle.MarkClosedAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
 
     public Task ReloadAsync(string windowId, CancellationToken cancellationToken = default) =>
-        session.SendAsync(MessageCodec.SystemChannel, new ServerUiCommand(ServerUiCommandKind.ReloadWindow, windowId), cancellationToken: cancellationToken);
+        session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.ReloadWindow, windowId), cancellationToken);
 
     public Task SetTextAsync(string windowId, string controlPath, string text, CancellationToken cancellationToken = default) =>
-        session.SendAsync(MessageCodec.SystemChannel, new ServerUiCommand(ServerUiCommandKind.SetText, windowId, ControlPath: controlPath, Value: text), cancellationToken: cancellationToken);
+        session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.SetText, windowId, ControlPath: controlPath, Value: text), cancellationToken);
 
     public Task SetVisibleAsync(string windowId, string controlPath, bool visible, CancellationToken cancellationToken = default) =>
-        session.SendAsync(MessageCodec.SystemChannel, new ServerUiCommand(ServerUiCommandKind.SetVisible, windowId, ControlPath: controlPath, BoolValue: visible), cancellationToken: cancellationToken);
+        session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.SetVisible, windowId, ControlPath: controlPath, BoolValue: visible), cancellationToken);
 
     public Task SetPropertyAsync(string windowId, string controlPath, string propertyName, string value, CancellationToken cancellationToken = default) =>
-        session.SendAsync(MessageCodec.SystemChannel, new ServerUiCommand(ServerUiCommandKind.SetProperty, windowId, ControlPath: controlPath, PropertyName: propertyName, Value: value), cancellationToken: cancellationToken);
+        session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.SetProperty, windowId, ControlPath: controlPath, PropertyName: propertyName, Value: value), cancellationToken);
 
     public IDisposable OnButtonClick(string windowId, string controlPath, Action<IClientSession> handler)
     {
@@ -631,7 +1577,107 @@ internal sealed class ClientUiSession(ClientSession session) : IClientUiSession
         return OnControlEvent(windowId, controlPath, "Clicked", (s, _) => handler(s));
     }
 
+    public IDisposable OnButtonClick(string windowId, string controlPath, Func<IClientSession, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEvent(windowId, controlPath, "Clicked", (s, _) => handler(s));
+    }
+
+    public IDisposable OnButtonClick(string windowId, string controlPath, Func<IClientSession, CancellationToken, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEvent(windowId, controlPath, "Clicked", (s, _, ct) => handler(s, ct));
+    }
+
+    public Task<IDisposable> OnButtonClickAsync(string windowId, string controlPath, Action<IClientSession> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEventAsync(windowId, controlPath, "Clicked", (s, _) => handler(s), cancellationToken);
+    }
+
+    public Task<IDisposable> OnButtonClickAsync(string windowId, string controlPath, Func<IClientSession, Task> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEventAsync(windowId, controlPath, "Clicked", (s, _) => handler(s), cancellationToken);
+    }
+
+    public Task<IDisposable> OnButtonClickAsync(string windowId, string controlPath, Func<IClientSession, CancellationToken, Task> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEventAsync(windowId, controlPath, "Clicked", (s, _, ct) => handler(s, ct), cancellationToken);
+    }
+
     public IDisposable OnControlEvent(string windowId, string controlPath, string eventName, Action<IClientSession, string?> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEvent(windowId, controlPath, eventName, (s, val, _) =>
+        {
+            handler(s, val);
+            return Task.CompletedTask;
+        });
+    }
+
+    public IDisposable OnControlEvent(string windowId, string controlPath, string eventName, Func<IClientSession, string?, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEvent(windowId, controlPath, eventName, (s, val, _) => handler(s, val));
+    }
+
+    public IDisposable OnControlEvent(string windowId, string controlPath, string eventName, Func<IClientSession, string?, CancellationToken, Task> handler)
+    {
+        (IDisposable sub, ServerUiCommand? subscribeCmd) = RegisterControlEventHandler(windowId, controlPath, eventName, handler);
+        if (subscribeCmd is not null)
+        {
+            Task sendTask = session.QueueOrSendUiCommandAsync(subscribeCmd, CancellationToken.None);
+            if (sendTask.IsFaulted && sendTask.Exception is not null)
+            {
+                host.ReportHandlerError($"Ui.SubscribeEvent({windowId}/{controlPath}/{eventName})", sendTask.Exception.GetBaseException());
+            }
+            else if (!sendTask.IsCompleted)
+            {
+                _ = sendTask.ContinueWith(
+                    t => host.ReportHandlerError($"Ui.SubscribeEvent({windowId}/{controlPath}/{eventName})", t.Exception?.GetBaseException() ?? new InvalidOperationException("SubscribeEvent failed.")),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+        }
+
+        return sub;
+    }
+
+    public Task<IDisposable> OnControlEventAsync(string windowId, string controlPath, string eventName, Action<IClientSession, string?> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEventAsync(windowId, controlPath, eventName, (s, val, _) =>
+        {
+            handler(s, val);
+            return Task.CompletedTask;
+        }, cancellationToken);
+    }
+
+    public Task<IDisposable> OnControlEventAsync(string windowId, string controlPath, string eventName, Func<IClientSession, string?, Task> handler, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return OnControlEventAsync(windowId, controlPath, eventName, (s, val, _) => handler(s, val), cancellationToken);
+    }
+
+    public async Task<IDisposable> OnControlEventAsync(string windowId, string controlPath, string eventName, Func<IClientSession, string?, CancellationToken, Task> handler, CancellationToken cancellationToken = default)
+    {
+        (IDisposable sub, ServerUiCommand? subscribeCmd) = RegisterControlEventHandler(windowId, controlPath, eventName, handler);
+        if (subscribeCmd is not null)
+        {
+            await session.QueueOrSendUiCommandAsync(subscribeCmd, cancellationToken).ConfigureAwait(false);
+        }
+
+        return sub;
+    }
+
+    private (IDisposable Subscription, ServerUiCommand? SubscribeCommand) RegisterControlEventHandler(
+        string windowId,
+        string controlPath,
+        string eventName,
+        Func<IClientSession, string?, CancellationToken, Task> handler)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(windowId);
         ArgumentException.ThrowIfNullOrWhiteSpace(controlPath);
@@ -642,7 +1688,14 @@ internal sealed class ClientUiSession(ClientSession session) : IClientUiSession
         bool firstForKey;
         lock (_gate)
         {
-            if (!_eventHandlers.TryGetValue(key, out List<Action<IClientSession, string?>>? list))
+            if (_closed ||
+                session.IsClosed ||
+                (_openWindows.TryGetValue(windowId, out ServerUiWindowHandle? openWindow) && !openWindow.IsOpen))
+            {
+                return (ClientBridgeHost.NoOpDisposable.Instance, null);
+            }
+
+            if (!_eventHandlers.TryGetValue(key, out List<Func<IClientSession, string?, CancellationToken, Task>>? list))
             {
                 list = [];
                 _eventHandlers[key] = list;
@@ -656,42 +1709,142 @@ internal sealed class ClientUiSession(ClientSession session) : IClientUiSession
             list.Add(handler);
         }
 
-        if (firstForKey)
-        {
-            var cmd = new ServerUiCommand(ServerUiCommandKind.SubscribeEvent, windowId, ControlPath: controlPath, EventName: eventName);
-            session.SendAsync(MessageCodec.SystemChannel, cmd).GetAwaiter().GetResult();
-        }
+        ServerUiCommand? cmd = firstForKey
+            ? new ServerUiCommand(ServerUiCommandKind.SubscribeEvent, windowId, ControlPath: controlPath, EventName: eventName)
+            : null;
 
-        return new ClientBridgeHost.Subscription(() =>
+        var subscription = new ClientBridgeHost.Subscription(() =>
         {
             lock (_gate)
             {
-                if (_eventHandlers.TryGetValue(key, out List<Action<IClientSession, string?>>? list))
+                if (_eventHandlers.TryGetValue(key, out List<Func<IClientSession, string?, CancellationToken, Task>>? list))
                 {
                     list.Remove(handler);
+                    if (list.Count == 0)
+                    {
+                        _eventHandlers.Remove(key);
+                    }
                 }
             }
         });
+
+        return (subscription, cmd);
     }
 
     public Task PlayAudioAsync(string pathOrEvent, CancellationToken cancellationToken = default) =>
-        session.SendAsync(MessageCodec.SystemChannel, new ServerUiCommand(ServerUiCommandKind.PlayAudio, string.Empty, Value: pathOrEvent), cancellationToken: cancellationToken);
+        session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.PlayAudio, string.Empty, Value: pathOrEvent), cancellationToken);
 
     public Task PlayEffectAsync(uint objectId, string effectPath, CancellationToken cancellationToken = default) =>
-        session.SendAsync(MessageCodec.SystemChannel, new ServerUiCommand(ServerUiCommandKind.PlayEffect, string.Empty, ControlPath: objectId.ToString(System.Globalization.CultureInfo.InvariantCulture), Value: effectPath), cancellationToken: cancellationToken);
+        session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.PlayEffect, string.Empty, ControlPath: objectId.ToString(System.Globalization.CultureInfo.InvariantCulture), Value: effectPath), cancellationToken);
 
-    internal void DispatchEvent(ClientUiEventNotification uiEvent)
+    public IClientCommandBatch BeginBatch() => session.BeginBatch();
+
+    public Task FlushAsync(CancellationToken cancellationToken = default) => session.FlushAsync(cancellationToken);
+
+    public async Task BatchAsync(Func<IClientUiSession, Task> action, CancellationToken cancellationToken = default)
     {
-        var key = (uiEvent.WindowId.ToLowerInvariant(), uiEvent.ControlPath.ToLowerInvariant(), uiEvent.EventName.ToLowerInvariant());
-        Action<IClientSession, string?>[] handlers;
-        lock (_gate)
+        ArgumentNullException.ThrowIfNull(action);
+        IClientCommandBatch batch = BeginBatch();
+        try
         {
-            handlers = _eventHandlers.TryGetValue(key, out List<Action<IClientSession, string?>>? list) ? [.. list] : [];
+            await action(this).ConfigureAwait(false);
+            await batch.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            batch.Discard();
+            throw;
+        }
+    }
+
+    public async Task BatchAsync(Func<IClientUiSession, CancellationToken, Task> action, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        IClientCommandBatch batch = BeginBatch();
+        try
+        {
+            await action(this, cancellationToken).ConfigureAwait(false);
+            await batch.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            batch.Discard();
+            throw;
+        }
+    }
+
+    internal async Task DispatchEventAsync(ClientUiEventNotification uiEvent, CancellationToken cancellationToken)
+    {
+        if (string.Equals(uiEvent.EventName, "Closed", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(uiEvent.WindowId))
+        {
+            ServerUiWindowHandle? closedHandle;
+            lock (_gate)
+            {
+                _openWindows.Remove(uiEvent.WindowId, out closedHandle);
+            }
+
+            if (closedHandle is not null)
+            {
+                await closedHandle.MarkClosedAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        foreach (Action<IClientSession, string?> handler in handlers)
+        var key = (uiEvent.WindowId.ToLowerInvariant(), uiEvent.ControlPath.ToLowerInvariant(), uiEvent.EventName.ToLowerInvariant());
+        Func<IClientSession, string?, CancellationToken, Task>[] handlers;
+        lock (_gate)
         {
-            handler(session, uiEvent.Value);
+            handlers = _eventHandlers.TryGetValue(key, out List<Func<IClientSession, string?, CancellationToken, Task>>? list) ? [.. list] : [];
+        }
+
+        foreach (Func<IClientSession, string?, CancellationToken, Task> handler in handlers)
+        {
+            try
+            {
+                await handler(session, uiEvent.Value, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                host.ReportHandlerError($"Ui.{uiEvent.EventName}({uiEvent.WindowId}/{uiEvent.ControlPath})", ex);
+            }
+        }
+    }
+
+    internal async Task CloseAllWindowsAsync(CancellationToken cancellationToken)
+    {
+        ServerUiWindowHandle[] handles;
+        lock (_gate)
+        {
+            _closed = true;
+            handles = [.. _openWindows.Values];
+            _openWindows.Clear();
+            _eventHandlers.Clear();
+        }
+
+        foreach (ServerUiWindowHandle handle in handles)
+        {
+            await handle.MarkClosedAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    internal void CloseAllWindowsNonBlocking()
+    {
+        ServerUiWindowHandle[] handles;
+        lock (_gate)
+        {
+            _closed = true;
+            handles = [.. _openWindows.Values];
+            _openWindows.Clear();
+            _eventHandlers.Clear();
+        }
+
+        foreach (ServerUiWindowHandle handle in handles)
+        {
+            handle.MarkClosedNonBlocking();
         }
     }
 }
