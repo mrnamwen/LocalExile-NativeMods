@@ -2662,6 +2662,257 @@ int test_phase2_world_rbtree_stats_area_filter_camera() {
     return 0;
 }
 
+namespace {
+using TenArgTestFn = uint64_t(NM_CALL*)(
+    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+    uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+    uint64_t a8, uint64_t a9);
+
+std::atomic<TenArgTestFn> g_ten_arg_trampoline{nullptr};
+uint64_t                  g_ten_arg_orig_seen[10] = {};
+uint64_t                  g_ten_arg_detour_seen[10] = {};
+std::atomic<int>          g_ten_arg_detour_calls{0};
+std::atomic<bool>         g_ten_arg_post_guarded_ran{false};
+thread_local bool         t_ten_arg_in_detour = false;
+
+NM_NOINLINE uint64_t NM_CALL ten_arg_target_fn(
+    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+    uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+    uint64_t a8, uint64_t a9) {
+    g_ten_arg_orig_seen[0] = a0;
+    g_ten_arg_orig_seen[1] = a1;
+    g_ten_arg_orig_seen[2] = a2;
+    g_ten_arg_orig_seen[3] = a3;
+    g_ten_arg_orig_seen[4] = a4;
+    g_ten_arg_orig_seen[5] = a5;
+    g_ten_arg_orig_seen[6] = a6;
+    g_ten_arg_orig_seen[7] = a7;
+    g_ten_arg_orig_seen[8] = a8;
+    g_ten_arg_orig_seen[9] = a9;
+    return a0 * 1ull + a1 * 3ull + a2 * 7ull + a3 * 11ull +
+           a4 * 13ull + a5 * 17ull + a6 * 19ull + a7 * 23ull +
+           a8 * 29ull + a9 * 31ull;
+}
+
+uint64_t NM_CALL ten_arg_detour_fn(
+    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+    uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+    uint64_t a8, uint64_t a9) {
+    g_ten_arg_detour_seen[0] = a0;
+    g_ten_arg_detour_seen[1] = a1;
+    g_ten_arg_detour_seen[2] = a2;
+    g_ten_arg_detour_seen[3] = a3;
+    g_ten_arg_detour_seen[4] = a4;
+    g_ten_arg_detour_seen[5] = a5;
+    g_ten_arg_detour_seen[6] = a6;
+    g_ten_arg_detour_seen[7] = a7;
+    g_ten_arg_detour_seen[8] = a8;
+    g_ten_arg_detour_seen[9] = a9;
+    g_ten_arg_detour_calls.fetch_add(1, std::memory_order_relaxed);
+
+    const auto orig = g_ten_arg_trampoline.load(std::memory_order_acquire);
+    const uint64_t ret = orig ? orig(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9) : 0ull;
+
+    if (!t_ten_arg_in_detour) {
+        struct Guard {
+            Guard() noexcept { t_ten_arg_in_detour = true; }
+            ~Guard() noexcept { t_ten_arg_in_detour = false; }
+        } guard;
+        auto post_fn = [](void*) -> int64_t {
+            g_ten_arg_post_guarded_ran.store(true, std::memory_order_release);
+            return 0;
+        };
+        nm_exception_info_t ex{};
+        (void)nativemods::invoke_guarded(post_fn, nullptr, nullptr, &ex);
+    }
+
+    return ret;
+}
+
+using TailCheckFn = int(NM_CALL*)(int);
+std::atomic<TailCheckFn> g_tail_check_tramp{nullptr};
+std::atomic<int>         g_tail_check_raw_hits{0};
+
+int NM_CALL tail_check_raw_detour(int x) {
+    g_tail_check_raw_hits.fetch_add(1, std::memory_order_relaxed);
+    const auto orig = g_tail_check_tramp.load(std::memory_order_acquire);
+    return orig ? (orig(x) + 1000) : 0;
+}
+} // namespace
+
+int test_multichain_expected_bytes_longer_than_stolen() {
+    using nativemods::HookEngine;
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // Synthesize a function whose exact stolen_len is 15 bytes (12x NOP + 3B `mov rax, rax`),
+    // followed by 4 live unpatched tail bytes (`lea eax, [arg0 + 7] ; ret`), mirroring
+    // frame.ingame_state_leave (15B stolen prologue, 16B+ expectedBytes).
+    void* code_page = HookEngine::alloc_exec_page(4096);
+    CHECK(code_page != nullptr);
+    auto* code = static_cast<uint8_t*>(code_page);
+    std::memset(code, 0x90, 12);
+    code[12] = 0x48u; // mov rax, rax (3 bytes -> total stolen_len == 15)
+    code[13] = 0x89u;
+    code[14] = 0xC0u;
+#if defined(_WIN32)
+    // lea eax, [rcx + 7] ; ret
+    code[15] = 0x8Du; code[16] = 0x41u; code[17] = 0x07u; code[18] = 0xC3u;
+    const char* kFullHex         = "9090909090909090909090904889c08d4107c3";
+    const char* kWildcardCross   = "9090909090909090909090904889????4107c3";
+    const char* kBadPrefixByte0  = "9190909090909090909090904889c08d4107c3";
+    const char* kBadPrefixByte14 = "9090909090909090909090904889c18d4107c3";
+    const char* kBadTailByte15   = "9090909090909090909090904889c08e4107c3";
+    const char* kBadTailByte18   = "9090909090909090909090904889c08d4107c2";
+    const char* kBadHexTail      = "9090909090909090909090904889c08d4107zz";
+    FlushInstructionCache(GetCurrentProcess(), code_page, 4096);
+#else
+    // lea eax, [rdi + 7] ; ret
+    code[15] = 0x8Du; code[16] = 0x47u; code[17] = 0x07u; code[18] = 0xC3u;
+    const char* kFullHex         = "9090909090909090909090904889c08d4707c3";
+    const char* kWildcardCross   = "9090909090909090909090904889????4707c3";
+    const char* kBadPrefixByte0  = "9190909090909090909090904889c08d4707c3";
+    const char* kBadPrefixByte14 = "9090909090909090909090904889c18d4707c3";
+    const char* kBadTailByte15   = "9090909090909090909090904889c08e4707c3";
+    const char* kBadTailByte18   = "9090909090909090909090904889c08d4707c2";
+    const char* kBadHexTail      = "9090909090909090909090904889c08d4707zz";
+    __builtin___clear_cache(static_cast<char*>(code_page), static_cast<char*>(code_page) + 4096);
+#endif
+
+    CHECK(HookEngine::compute_stolen_length(code, HookEngine::kAbsJumpSize) == 15u);
+    auto target_fn = reinterpret_cast<TailCheckFn>(code_page);
+    CHECK(target_fn(10) == 17);
+
+    const uint64_t target_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(code_page));
+    auto pre_cb = [](nm_hook_context_t* ctx, void*) { ctx->args[0] += 3; };
+    auto post_cb1 = [](nm_hook_context_t* ctx, void*) { ctx->return_value += 100; };
+    auto post_cb2 = [](nm_hook_context_t* ctx, void*) { ctx->return_value += 20; };
+
+    nm_hook_handle_t h1 = NM_HOOK_INVALID;
+    nm_hook_handle_t h2 = NM_HOOK_INVALID;
+    nm_hook_handle_t h3 = NM_HOOK_INVALID;
+    nm_hook_handle_t h_bad = NM_HOOK_INVALID;
+    nm_hook_handle_t h_raw = NM_HOOK_INVALID;
+
+    // 1st chain hook attaches cleanly with 19-byte expected_hex (> 15B stolen_len)
+    CHECK(nm_install_inline_chain_hook(target_addr, kFullHex, NM_HOOK_PHASE_PRE, 0, pre_cb, nullptr, &h1) == NM_OK);
+    CHECK(h1 != NM_HOOK_INVALID);
+
+    // 2nd chain hook on already-chained target with same 19-byte expected_hex MUST succeed!
+    CHECK(nm_install_inline_chain_hook(target_addr, kFullHex, NM_HOOK_PHASE_POST, 0, post_cb1, nullptr, &h2) == NM_OK);
+    CHECK(h2 != NM_HOOK_INVALID);
+
+    // 3rd chain hook with wildcards straddling the stolen/tail boundary (bytes 14 & 15) MUST succeed!
+    CHECK(nm_install_inline_chain_hook(target_addr, kWildcardCross, NM_HOOK_PHASE_POST, 1, post_cb2, nullptr, &h3) == NM_OK);
+    CHECK(h3 != NM_HOOK_INVALID);
+
+    // Real mismatches in either saved prefix [0..14] or live unpatched tail [15..18] MUST be rejected!
+    CHECK(nm_install_inline_chain_hook(target_addr, kBadPrefixByte0, NM_HOOK_PHASE_POST, 2, post_cb2, nullptr, &h_bad) == NM_ERR_BYTE_MISMATCH);
+    CHECK(nm_install_inline_chain_hook(target_addr, kBadPrefixByte14, NM_HOOK_PHASE_POST, 2, post_cb2, nullptr, &h_bad) == NM_ERR_BYTE_MISMATCH);
+    CHECK(nm_install_inline_chain_hook(target_addr, kBadTailByte15, NM_HOOK_PHASE_POST, 2, post_cb2, nullptr, &h_bad) == NM_ERR_BYTE_MISMATCH);
+    CHECK(nm_install_inline_chain_hook(target_addr, kBadTailByte18, NM_HOOK_PHASE_POST, 2, post_cb2, nullptr, &h_bad) == NM_ERR_BYTE_MISMATCH);
+    // Malformed hex on already-chained target MUST return NM_ERR_INVALID_ARG
+    CHECK(nm_install_inline_chain_hook(target_addr, "909", NM_HOOK_PHASE_POST, 2, post_cb2, nullptr, &h_bad) == NM_ERR_INVALID_ARG);
+    CHECK(nm_install_inline_chain_hook(target_addr, kBadHexTail, NM_HOOK_PHASE_POST, 2, post_cb2, nullptr, &h_bad) == NM_ERR_INVALID_ARG);
+
+    // Raw inline detour attaching to the same already-chained target with 19-byte expected_hex MUST also succeed
+    void* raw_tramp = nullptr;
+    g_tail_check_raw_hits.store(0, std::memory_order_relaxed);
+    CHECK(nm_install_inline_hook_at(target_addr, kFullHex, reinterpret_cast<void*>(&tail_check_raw_detour), &raw_tramp, &h_raw) == NM_OK);
+    CHECK(raw_tramp != nullptr && h_raw != NM_HOOK_INVALID);
+    g_tail_check_tramp.store(reinterpret_cast<TailCheckFn>(raw_tramp), std::memory_order_release);
+
+    // End-to-end call: ((10 + 3) + 7) + 100 + 20 + 1000 = 1140
+    CHECK(target_fn(10) == 1140);
+    CHECK(g_tail_check_raw_hits.load(std::memory_order_relaxed) == 1);
+
+    CHECK(nm_remove_hook(h_raw) == NM_OK);
+    CHECK(nm_remove_hook(h3) == NM_OK);
+    CHECK(nm_remove_hook(h2) == NM_OK);
+    CHECK(nm_remove_hook(h1) == NM_OK);
+    g_tail_check_tramp.store(nullptr, std::memory_order_release);
+    CHECK(target_fn(10) == 17);
+
+    CHECK(nm_shutdown() == NM_OK);
+    HookEngine::free_exec_page(code_page, 4096);
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_ten_arg_raw_inline_detour() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    const uint64_t args[10] = {
+        0x1000000000000001ull,
+        0x2000000000000002ull,
+        0x3000000000000003ull,
+        0x4000000000000004ull,
+        0x0000000500000005ull,
+        0x0000000600000006ull,
+        0x0000000700000007ull,
+        0x0000000800000008ull,
+        0x0000000900000009ull,
+        0x0000000A0000000Aull,
+    };
+    const uint64_t expected_ret =
+        args[0] * 1ull + args[1] * 3ull + args[2] * 7ull + args[3] * 11ull +
+        args[4] * 13ull + args[5] * 17ull + args[6] * 19ull + args[7] * 23ull +
+        args[8] * 29ull + args[9] * 31ull;
+
+    volatile TenArgTestFn call_fn = &ten_arg_target_fn;
+    std::memset(g_ten_arg_orig_seen, 0, sizeof(g_ten_arg_orig_seen));
+    std::memset(g_ten_arg_detour_seen, 0, sizeof(g_ten_arg_detour_seen));
+    g_ten_arg_detour_calls.store(0, std::memory_order_relaxed);
+    g_ten_arg_post_guarded_ran.store(false, std::memory_order_relaxed);
+    g_ten_arg_trampoline.store(nullptr, std::memory_order_release);
+
+    // Baseline unhooked call
+    CHECK(call_fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]) == expected_ret);
+    for (int i = 0; i < 10; ++i) {
+        CHECK(g_ten_arg_orig_seen[i] == args[i]);
+    }
+
+    // Install typed 10-arg raw inline detour
+    void* tramp = nullptr;
+    nm_hook_handle_t handle = NM_HOOK_INVALID;
+    CHECK(nm_install_inline_hook_at(
+              static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&ten_arg_target_fn)),
+              nullptr,
+              reinterpret_cast<void*>(&ten_arg_detour_fn),
+              &tramp,
+              &handle) == NM_OK);
+    CHECK(tramp != nullptr && handle != NM_HOOK_INVALID);
+    g_ten_arg_trampoline.store(reinterpret_cast<TenArgTestFn>(tramp), std::memory_order_release);
+
+    std::memset(g_ten_arg_orig_seen, 0, sizeof(g_ten_arg_orig_seen));
+    std::memset(g_ten_arg_detour_seen, 0, sizeof(g_ten_arg_detour_seen));
+
+    // Hooked call MUST forward all 10 arguments (including stack args a4..a9) and preserve 64-bit return value!
+    const uint64_t hooked_ret = call_fn(
+        args[0], args[1], args[2], args[3], args[4],
+        args[5], args[6], args[7], args[8], args[9]);
+    CHECK(hooked_ret == expected_ret);
+    CHECK(g_ten_arg_detour_calls.load(std::memory_order_relaxed) == 1);
+    CHECK(g_ten_arg_post_guarded_ran.load(std::memory_order_acquire));
+    for (int i = 0; i < 10; ++i) {
+        CHECK(g_ten_arg_detour_seen[i] == args[i]);
+        CHECK(g_ten_arg_orig_seen[i] == args[i]);
+    }
+
+    // Uninstall restores original cleanly
+    CHECK(nm_remove_hook(handle) == NM_OK);
+    g_ten_arg_trampoline.store(nullptr, std::memory_order_release);
+    std::memset(g_ten_arg_orig_seen, 0, sizeof(g_ten_arg_orig_seen));
+    CHECK(call_fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]) == expected_ret);
+    CHECK(g_ten_arg_detour_calls.load(std::memory_order_relaxed) == 1);
+    for (int i = 0; i < 10; ++i) {
+        CHECK(g_ten_arg_orig_seen[i] == args[i]);
+    }
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -2691,6 +2942,8 @@ int main() {
     if (test_phase1_input_screens_hover_and_pregame_callbacks() != 0) return 1;
     if (test_phase2_prologues_hookengine_safety() != 0) return 1;
     if (test_phase2_world_rbtree_stats_area_filter_camera() != 0) return 1;
+    if (test_multichain_expected_bytes_longer_than_stolen() != 0) return 1;
+    if (test_ten_arg_raw_inline_detour() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;
