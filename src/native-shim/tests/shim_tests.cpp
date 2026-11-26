@@ -5,6 +5,7 @@
 #include "hook_engine.hpp"
 #include "live_engine_hooks.hpp"
 #include "overlay_and_channels.hpp"
+#include "phase1_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -47,8 +48,13 @@ int test_abi_table_and_build_recognition() {
     CHECK(nm_get_abi_table(&table) == NM_OK);
     CHECK(table != nullptr);
     CHECK(table->struct_size == sizeof(nm_abi_table_t));
+    CHECK(sizeof(nm_abi_table_t) == 720u);
+    CHECK(sizeof(nm_screens_state_t) == 280u);
+    CHECK(sizeof(nm_input_event_t) == 40u);
+    CHECK(sizeof(nm_item_snapshot_t) == 448u);
+    CHECK(sizeof(nm_hover_state_t) == 952u);
     CHECK(table->abi_version == NM_ABI_VERSION);
-    CHECK(NM_ABI_VERSION == 0x00000200u);
+    CHECK(NM_ABI_VERSION == 0x00000300u);
     CHECK(table->get_host_info != nullptr);
     CHECK(table->lookup_symbol != nullptr);
     CHECK(table->install_inline_hook != nullptr);
@@ -84,6 +90,26 @@ int test_abi_table_and_build_recognition() {
     CHECK(table->clipboard_get_text != nullptr);
     CHECK(table->clipboard_set_text != nullptr);
     CHECK(table->ui_get_enabled != nullptr);
+    CHECK(table->ui_get_active_root == &nm_ui_get_active_root);
+    CHECK(table->ui_get_child_count == &nm_ui_get_child_count);
+    CHECK(table->ui_get_child_at == &nm_ui_get_child_at);
+    CHECK(table->ui_get_vtable == &nm_ui_get_vtable);
+    CHECK(table->ui_get_control_tag == &nm_ui_get_control_tag);
+    CHECK(table->ui_get_control_id == &nm_ui_get_control_id);
+    CHECK(table->ui_get_control_parent == &nm_ui_get_control_parent);
+    CHECK(table->ui_is_visible == &nm_ui_is_visible);
+    CHECK(table->ui_set_width == &nm_ui_set_width);
+    CHECK(table->ui_set_height == &nm_ui_set_height);
+    CHECK(table->ui_create_checkbox_child == &nm_ui_create_checkbox_child);
+    CHECK(table->ui_create_stack_layout == &nm_ui_create_stack_layout);
+    CHECK(table->ui_layout_update == &nm_ui_layout_update);
+    CHECK(table->ui_set_anchor == &nm_ui_set_anchor);
+    CHECK(table->screens_get_state == &nm_screens_get_state);
+    CHECK(table->screens_set_callback == &nm_screens_set_callback);
+    CHECK(table->input_set_callback == &nm_input_set_callback);
+    CHECK(table->input_is_text_focused == &nm_input_is_text_focused);
+    CHECK(table->hover_get_state == &nm_hover_get_state);
+    CHECK(table->pregame_set_callbacks == &nm_pregame_set_callbacks);
 
     // SHA-256 build recognition matches LocalExile ClientBuilds.cs verbatim
     CHECK(nativemods::identify_build_by_sha256("e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d")
@@ -116,7 +142,7 @@ int test_address_table_3293d_and_3293c() {
     CHECK(host.build_id == NM_BUILD_3_29_3D_328228);
     CHECK(std::strcmp(host.build_version, "3.29.3d") == 0);
     CHECK(host.image_base == kRebased);
-    CHECK(host.symbol_count == 122u);
+    CHECK(host.symbol_count == 240u);
 
     nm_symbol_info_t sym{};
     CHECK(nm_lookup_symbol("frame.state_stack_pass_a_hook", &sym) == NM_OK);
@@ -156,12 +182,51 @@ int test_address_table_3293d_and_3293c() {
     CHECK(nm_lookup_symbol("network.hnc_mask", &sym) == NM_OK);
     CHECK(sym.rva == 0x2feaeb0ull);
 
+    // Phase 1 verified symbols on 3.29.3d (deduplicated + ASLR-safe vtables)
+    CHECK(nm_lookup_symbol("frame.state_stack_global", &sym) == NM_OK);
+    CHECK(sym.rva == 0x45d6fc0ull && sym.kind == NM_SYM_DATA && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("frame.state_stack_get", &sym) == NM_OK);
+    CHECK(sym.rva == 0x00f2890ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("frame.state_stack_on_wndmsg", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1529910ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("frame.vtable_create_char_state", &sym) == NM_OK);
+    CHECK(sym.rva == 0x31f28e0ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("network.login_write_create_char_0x12", &sym) == NM_OK);
+    CHECK(sym.rva == 0x2146de0ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("frame.create_char_result_handler", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0cf7fb0ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.league_overlay_fill", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0cccff0ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.vtable_league_card", &sym) == NM_OK);
+    CHECK(sym.rva == 0x31eccb0ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("ui.vtable_pc_hud", &sym) == NM_OK);
+    CHECK(sym.rva == 0x31fbf20ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("ui.vtable_control", &sym) == NM_OK);
+    CHECK(sym.rva == 0x34a8f28ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("ui.ingame_ui_init", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0dad910ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("items.cursor_get_held_item", &sym) == NM_OK);
+    CHECK(sym.rva == 0x16fcbc0ull && sym.kind == NM_SYM_CODE);
+
+    // Every vtable symbol in 3.29.3d MUST have expected_bytes_hex == nullptr (ASLR safety).
+    for (uint32_t i = 0; i < host.symbol_count; ++i) {
+        nm_symbol_info_t s{};
+        CHECK(nm_get_symbol_at(i, &s) == NM_OK);
+        if (s.kind == NM_SYM_VTABLE) {
+            CHECK(s.expected_bytes_hex == nullptr);
+        }
+    }
+
     CHECK(nm_lookup_symbol("nonexistent.symbol", &sym) == NM_ERR_SYMBOL_NOT_FOUND);
 
     const nativemods::EmbeddedOffset* off_flags_3d =
         nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.control.flags");
     CHECK(off_flags_3d != nullptr);
     CHECK(off_flags_3d->offset == 0x1e8u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "frame.state_stack.active_begin")->offset == 0x08u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.league_overlay.cards_flow")->offset == 0x3c0u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.ingame_ui.inventory_panel")->offset == 0x628u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.item_view.entity")->offset == 0x420u);
     CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "nonexistent.offset") == nullptr);
 
     // 3.29.3c: code RVAs resolve, HNC mask resolves to 0x2feaed0, unverified data returns NM_ERR_SYMBOL_UNVERIFIED
@@ -172,7 +237,11 @@ int test_address_table_3293d_and_3293c() {
               "01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf") == NM_OK);
 
     CHECK(nm_get_host_info(&host) == NM_OK);
-    CHECK(host.symbol_count == 122u);
+    CHECK(host.symbol_count == 240u);
+    CHECK(nm_lookup_symbol("network.login_write_create_char_0x12", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
+    CHECK(nm_lookup_symbol("ui.vtable_pc_hud", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
 
     CHECK(nm_lookup_symbol("frame.state_stack_pass_a_hook", &sym) == NM_OK);
     CHECK(sym.rva == 0x1528fbfull);
@@ -1766,6 +1835,307 @@ int test_live_ui_vtable_mismatch_guards() {
     return 0;
 }
 
+int test_phase1_prologues_hookengine_safety() {
+    // Verify HookEngine::compute_stolen_length >= 14 on all 11 Phase 1 live 3.29.3d hook prologues.
+    const char* kPhase1Hooks[] = {
+        "frame.state_stack_on_wndmsg",
+        "ui.ingame_ui_init",
+        "frame.ingame_state_leave",
+        "ui.league_overlay_fill",
+        "frame.create_char_enter",
+        "frame.create_char_leave",
+        "ui.tab_container_select",
+        "ui.map_stash_select_group",
+        "ui.map_stash_select_key",
+        "network.login_write_create_char_0x12",
+        "frame.create_char_result_handler",
+    };
+
+    auto hex_nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
+    for (const char* name : kPhase1Hooks) {
+        const nativemods::EmbeddedSymbol* sym = nativemods::find_symbol(NM_BUILD_3_29_3D_328228, name);
+        CHECK(sym != nullptr && sym->expected_bytes_hex != nullptr);
+        const size_t hex_len = std::strlen(sym->expected_bytes_hex);
+        CHECK(hex_len == 32u); // 16 verified bytes
+        uint8_t buf[32];
+        std::memset(buf, 0x90, sizeof(buf));
+        for (size_t i = 0; i < 16u; ++i) {
+            const int hi = hex_nibble(sym->expected_bytes_hex[i * 2]);
+            const int lo = hex_nibble(sym->expected_bytes_hex[i * 2 + 1]);
+            CHECK(hi >= 0 && lo >= 0);
+            buf[i] = static_cast<uint8_t>((hi << 4) | lo);
+        }
+        const size_t stolen = nativemods::HookEngine::compute_stolen_length(buf, 14);
+        CHECK(stolen >= 14u && stolen <= 16u);
+    }
+
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_phase1_input_screens_hover_and_pregame_callbacks() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // 1. Input interception & suppression (Ctrl+Shift+RMB suppressed; plain RMB passes through; exceptions isolated)
+    struct InputCapture {
+        int      calls = 0;
+        uint32_t last_mods = 0;
+        uint8_t  last_text_focused = 0;
+    } icap{};
+
+    auto input_cb = [](const nm_input_event_t* ev, void* ud) -> int32_t {
+        auto* c = static_cast<InputCapture*>(ud);
+        ++c->calls;
+        c->last_mods = ev->modifiers;
+        c->last_text_focused = ev->is_text_input_focused;
+        if (ev->virtual_key == 0xFFu) {
+            throw std::runtime_error("faulty input handler");
+        }
+        if (ev->kind == NM_INPUT_MOUSE_DOWN &&
+            ev->mouse_button == NM_MOUSE_RIGHT &&
+            (ev->modifiers & (NM_MOD_CTRL | NM_MOD_SHIFT)) == (NM_MOD_CTRL | NM_MOD_SHIFT)) {
+            return 1; // suppress before InGameState / UIManager / InventoryGrid
+        }
+        return 0;
+    };
+
+    CHECK(nm_input_set_callback(input_cb, &icap) == NM_OK);
+
+    nm_input_event_t ev{};
+    ev.struct_size = sizeof(ev);
+    ev.win32_msg = 0x0204u; // WM_RBUTTONDOWN
+    ev.kind = NM_INPUT_MOUSE_DOWN;
+    ev.mouse_button = NM_MOUSE_RIGHT;
+    ev.modifiers = NM_MOD_CTRL | NM_MOD_SHIFT;
+    ev.mouse_x = 640;
+    ev.mouse_y = 360;
+    ev.is_text_input_focused = 0;
+    CHECK(nm_dispatch_input_event(&ev) == 1);
+    CHECK(icap.calls == 1 && icap.last_mods == (NM_MOD_CTRL | NM_MOD_SHIFT));
+
+    ev.modifiers = NM_MOD_NONE;
+    ev.is_text_input_focused = 1;
+    CHECK(nm_dispatch_input_event(&ev) == 0);
+    CHECK(icap.calls == 2 && icap.last_text_focused == 1);
+
+    // Throwing callback must be isolated and return 0 (never suppress or crash)
+    ev.virtual_key = 0xFFu;
+    CHECK(nm_dispatch_input_event(&ev) == 0);
+    CHECK(icap.calls == 3);
+
+    CHECK(nm_input_set_callback(nullptr, nullptr) == NM_OK);
+    ev.modifiers = NM_MOD_CTRL | NM_MOD_SHIFT;
+    ev.virtual_key = 0;
+    CHECK(nm_dispatch_input_event(&ev) == 0);
+    CHECK(icap.calls == 3);
+
+    // 2. Pre-Game S78 rewrite (CharacterCreating) & result callback (CharacterCreated)
+    struct PreGameCapture {
+        std::string creating_name;
+        std::string creating_league;
+        std::string creating_state;
+        std::string created_name;
+        std::string created_league;
+        uint16_t    created_result = 0xFFFFu;
+        bool        skip_campaign = true;
+    } pgcap{};
+
+    auto creating_cb = [](const char* name, const char* league, const char* start_state,
+                          char* out_buf, size_t out_cap, void* ud) -> int32_t {
+        auto* c = static_cast<PreGameCapture*>(ud);
+        c->creating_name = name;
+        c->creating_league = league;
+        c->creating_state = start_state;
+        if (std::strcmp(name, "ThrowExile") == 0) {
+            throw std::runtime_error("faulty pregame callback");
+        }
+        if (!c->skip_campaign) return 0;
+        const std::string rewritten = std::string(start_state) + "|nm:skip_campaign=1";
+        if (rewritten.size() + 1 > out_cap) return 0;
+        std::memcpy(out_buf, rewritten.c_str(), rewritten.size() + 1);
+        return 1;
+    };
+    auto created_cb = [](const char* name, const char* league, uint16_t result_code, void* ud) {
+        auto* c = static_cast<PreGameCapture*>(ud);
+        c->created_name = name;
+        c->created_league = league;
+        c->created_result = result_code;
+    };
+
+    CHECK(nm_pregame_set_callbacks(creating_cb, created_cb, &pgcap) == NM_OK);
+
+    char out_s78[256] = {};
+    CHECK(nm_dispatch_pregame_creating("RangerTest", "Standard", "DexDefault", out_s78, sizeof(out_s78)) == 1);
+    CHECK(pgcap.creating_name == "RangerTest" && pgcap.creating_league == "Standard" && pgcap.creating_state == "DexDefault");
+    CHECK(std::strcmp(out_s78, "DexDefault|nm:skip_campaign=1") == 0);
+
+    pgcap.skip_campaign = false;
+    std::memset(out_s78, 0xCC, sizeof(out_s78));
+    CHECK(nm_dispatch_pregame_creating("RangerTest", "Standard", "DexDefault", out_s78, sizeof(out_s78)) == 0);
+    CHECK(out_s78[0] == '\0');
+
+    // Exception isolation
+    pgcap.skip_campaign = true;
+    CHECK(nm_dispatch_pregame_creating("ThrowExile", "Standard", "DexDefault", out_s78, sizeof(out_s78)) == 0);
+    CHECK(out_s78[0] == '\0');
+
+    nm_dispatch_pregame_created("RangerTest", "Standard", 0u);
+    CHECK(pgcap.created_name == "RangerTest" && pgcap.created_league == "Standard" && pgcap.created_result == 0u);
+    nm_dispatch_pregame_created("RangerTest", "Standard", 3u);
+    CHECK(pgcap.created_result == 3u);
+
+    // 3. Screen lifecycle callback
+    struct ScreenEvtCapture {
+        int      count = 0;
+        int32_t  last_kind = 0;
+        void*    last_handle = nullptr;
+        uint64_t last_param = 0;
+    } scap{};
+    auto screen_cb = [](int32_t kind, void* handle, uint64_t param0, void* ud) {
+        auto* c = static_cast<ScreenEvtCapture*>(ud);
+        ++c->count;
+        c->last_kind = kind;
+        c->last_handle = handle;
+        c->last_param = param0;
+    };
+    CHECK(nm_screens_set_callback(screen_cb, &scap) == NM_OK);
+    void* fake_overlay = reinterpret_cast<void*>(0x12345678ull);
+    nm_dispatch_screen_event(NM_SCREEN_EVT_LEAGUE_OVERLAY_FILLED, fake_overlay, 2ull);
+    CHECK(scap.count == 1 && scap.last_kind == NM_SCREEN_EVT_LEAGUE_OVERLAY_FILLED &&
+          scap.last_handle == fake_overlay && scap.last_param == 2ull);
+
+    // 4. Null-arg validation & synthetic defaults for screens/hover/input/ui traversal APIs
+    nm_screens_state_t sstate{};
+    CHECK(nm_screens_get_state(nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_screens_get_state(&sstate) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(sstate.struct_size == sizeof(nm_screens_state_t));
+    CHECK(sstate.screen == NM_SCREEN_UNKNOWN && sstate.active_stash_tab_index == -1 && sstate.stash_mode == 0xFFFFFFFFu);
+
+    nm_hover_state_t hstate{};
+    CHECK(nm_hover_get_state(nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_hover_get_state(&hstate) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(hstate.struct_size == sizeof(nm_hover_state_t));
+    CHECK(hstate.cursor_mode == NM_CURSOR_EMPTY && hstate.hovered_item.present == 0 && hstate.hovered_item.grid_x == -1);
+
+    int32_t focused = 99;
+    CHECK(nm_input_is_text_focused(nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_input_is_text_focused(&focused) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(focused == 0);
+
+    uint8_t dummy[64] = {};
+    void* out_ptr = nullptr;
+    uint32_t out_u32 = 0;
+    uint64_t out_u64 = 0;
+    uint16_t out_u16 = 0;
+    int32_t out_i32 = 0;
+    size_t out_sz = 0;
+    char id_buf[32] = {};
+    CHECK(nm_ui_get_active_root(nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_get_active_root(&out_ptr) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_get_child_count(nullptr, &out_u32) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_get_child_count(dummy, &out_u32) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_get_child_at(nullptr, 0, &out_ptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_get_child_at(dummy, 0, &out_ptr) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_get_vtable(nullptr, &out_u64) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_get_vtable(dummy, &out_u64) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_get_control_tag(nullptr, &out_u16) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_get_control_tag(dummy, &out_u16) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_get_control_id(nullptr, id_buf, sizeof(id_buf), &out_sz) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_get_control_id(dummy, id_buf, sizeof(id_buf), &out_sz) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_get_control_parent(nullptr, &out_ptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_get_control_parent(dummy, &out_ptr) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_is_visible(nullptr, &out_i32) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_is_visible(dummy, &out_i32) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_set_width(nullptr, 100.0f) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_set_width(dummy, 100.0f) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_set_height(nullptr, 40.0f) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_set_height(dummy, 40.0f) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_create_checkbox_child(nullptr, "Skip", &out_ptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_create_checkbox_child(dummy, "Skip", &out_ptr) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_create_stack_layout(dummy, 1, nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_create_stack_layout(dummy, 1, &out_ptr) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_layout_update(nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_layout_update(dummy) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+    CHECK(nm_ui_set_anchor(nullptr, 3, 16.0f, 0, 20.0f) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_set_anchor(dummy, 3, 16.0f, 0, 20.0f) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+    // 5. Win32 in-memory stock UI control traversal unit test (runs under Wine / Windows)
+#if defined(_WIN32)
+    {
+        nativemods::HookEngine hooks;
+        nativemods::Phase1Services p1;
+        p1.install_live_hooks(NM_BUILD_3_29_3D_328228, 0x140000000ull, hooks);
+
+        struct alignas(16) FakeCtrl {
+            uint8_t bytes[0x300];
+        };
+        FakeCtrl parent{};
+        FakeCtrl child0{};
+        FakeCtrl child1{};
+        std::memset(&parent, 0, sizeof(parent));
+        std::memset(&child0, 0, sizeof(child0));
+        std::memset(&child1, 0, sizeof(child1));
+
+        void* children_arr[2] = {&child0, &child1};
+        void* const* begin_ptr = children_arr;
+        void* const* end_ptr = children_arr + 2;
+        std::memcpy(parent.bytes + 0xC0u, &begin_ptr, sizeof(begin_ptr));
+        std::memcpy(parent.bytes + 0xC8u, &end_ptr, sizeof(end_ptr));
+
+        const uint64_t fake_vt = 0x1431eccb0ull;
+        const uint16_t fake_tag = NM_TAG_LEAGUE_CARD;
+        void* parent_ptr = &parent;
+        std::memcpy(child0.bytes + 0x00u, &fake_vt, sizeof(fake_vt));
+        std::memcpy(child0.bytes + 0x1D8u, &fake_tag, sizeof(fake_tag));
+        std::memcpy(child0.bytes + 0x1E0u, &parent_ptr, sizeof(parent_ptr));
+
+        // Write SSO MSVC std::wstring "card0" at child0 + 0x1B8
+        const wchar_t sso_id[] = L"card0";
+        const uint64_t sso_len = 5;
+        const uint64_t sso_cap = 7;
+        std::memcpy(child0.bytes + 0x1B8u, sso_id, sizeof(sso_id));
+        std::memcpy(child0.bytes + 0x1B8u + 16u, &sso_len, sizeof(sso_len));
+        std::memcpy(child0.bytes + 0x1B8u + 24u, &sso_cap, sizeof(sso_cap));
+
+        uint32_t cnt = 0;
+        CHECK(p1.ui_get_child_count(&parent, &cnt) == NM_OK && cnt == 2u);
+        void* c0 = nullptr;
+        void* c1 = nullptr;
+        CHECK(p1.ui_get_child_at(&parent, 0, &c0) == NM_OK && c0 == &child0);
+        CHECK(p1.ui_get_child_at(&parent, 1, &c1) == NM_OK && c1 == &child1);
+        CHECK(p1.ui_get_child_at(&parent, 2, &c0) == NM_ERR_INVALID_ARG);
+
+        uint64_t vt = 0;
+        uint16_t tag = 0;
+        void* par = nullptr;
+        CHECK(p1.ui_get_vtable(&child0, &vt) == NM_OK && vt == fake_vt);
+        CHECK(p1.ui_get_control_tag(&child0, &tag) == NM_OK && tag == NM_TAG_LEAGUE_CARD);
+        CHECK(p1.ui_get_control_parent(&child0, &par) == NM_OK && par == &parent);
+
+        char id_out[32] = {};
+        size_t id_len = 0;
+        CHECK(p1.ui_get_control_id(&child0, id_out, sizeof(id_out), &id_len) == NM_OK);
+        CHECK(id_len == 5u && std::strcmp(id_out, "card0") == 0);
+
+        p1.reset(&hooks);
+    }
+#endif
+
+    // 6. Shutdown clears all Phase 1 callbacks cleanly
+    CHECK(nm_shutdown() == NM_OK);
+    CHECK(nm_dispatch_input_event(&ev) == 0);
+    CHECK(nm_dispatch_pregame_creating("A", "B", "C", out_s78, sizeof(out_s78)) == 0);
+
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -1791,6 +2161,8 @@ int main() {
     if (test_chained_hook_exception_unwind_and_active_calls() != 0) return 1;
     if (test_poe_bom_stripping_and_net_bounds() != 0) return 1;
     if (test_live_ui_vtable_mismatch_guards() != 0) return 1;
+    if (test_phase1_prologues_hookengine_safety() != 0) return 1;
+    if (test_phase1_input_screens_hover_and_pregame_callbacks() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

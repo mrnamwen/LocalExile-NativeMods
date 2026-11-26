@@ -56,6 +56,7 @@ set(SHIM_SOURCES
     src/overlay_and_channels.cpp
     src/live_audio.cpp
     src/live_engine_hooks.cpp
+    src/phase1_services.cpp
     src/coreclr_bootstrap.cpp
     src/shim_logger.cpp
     src/client_host_shim.cpp
@@ -124,6 +125,7 @@ if(BUILD_TESTING)
             src/overlay_and_channels.cpp
             src/live_audio.cpp
             src/live_engine_hooks.cpp
+            src/phase1_services.cpp
             src/coreclr_bootstrap.cpp
             src/shim_logger.cpp
             src/client_host_shim.cpp

@@ -153,6 +153,11 @@ int main() {
     SMOKE_CHECK(abi->ui_subscribe_click != nullptr);
     SMOKE_CHECK(abi->set_file_overlay_known_paths != nullptr);
     SMOKE_CHECK(abi->get_active_connection_token != nullptr);
+    SMOKE_CHECK(abi->ui_get_active_root != nullptr);
+    SMOKE_CHECK(abi->screens_get_state != nullptr);
+    SMOKE_CHECK(abi->input_set_callback != nullptr);
+    SMOKE_CHECK(abi->hover_get_state != nullptr);
+    SMOKE_CHECK(abi->pregame_set_callbacks != nullptr);
 
     constexpr const char* kSha3293d = "e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d";
     SMOKE_CHECK(p_init(NM_BUILD_3_29_3D_328228, NM_NOMINAL_IMAGE_BASE, 0x4d9a000u, kSha3293d) == NM_OK);
@@ -341,7 +346,7 @@ int main() {
     }
     SMOKE_CHECK(log_contents.find("NativeEntryPoint.Initialize(nm_abi_table_t*) returned 0") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded JsonAddressLibrary") != std::string::npos);
-    SMOKE_CHECK(log_contents.find("symbols=122") != std::string::npos);
+    SMOKE_CHECK(log_contents.find("symbols=240") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded client mod 'harvest-garden'") != std::string::npos);
     SMOKE_CHECK(log_contents.find("collectibleAlc=True") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Managed frame tick #1") != std::string::npos);

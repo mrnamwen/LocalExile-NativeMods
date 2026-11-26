@@ -9,6 +9,7 @@
 #include "live_audio.hpp"
 #include "live_engine_hooks.hpp"
 #include "overlay_and_channels.hpp"
+#include "phase1_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -41,6 +42,7 @@ struct ShimState {
     OverlayAndChannels  channels;
     LiveAudioManager    audio;
     LiveEngineHooks     live_hooks;
+    Phase1Services      phase1;
     CoreClrBootstrapper clr;
 
     nm_hook_handle_t    frame_hook_handle = NM_HOOK_INVALID;
@@ -124,6 +126,26 @@ const nm_abi_table_t kAbiTable = {
     &nm_clipboard_get_text,
     &nm_clipboard_set_text,
     &nm_ui_get_enabled,
+    &nm_ui_get_active_root,
+    &nm_ui_get_child_count,
+    &nm_ui_get_child_at,
+    &nm_ui_get_vtable,
+    &nm_ui_get_control_tag,
+    &nm_ui_get_control_id,
+    &nm_ui_get_control_parent,
+    &nm_ui_is_visible,
+    &nm_ui_set_width,
+    &nm_ui_set_height,
+    &nm_ui_create_checkbox_child,
+    &nm_ui_create_stack_layout,
+    &nm_ui_layout_update,
+    &nm_ui_set_anchor,
+    &nm_screens_get_state,
+    &nm_screens_set_callback,
+    &nm_input_set_callback,
+    &nm_input_is_text_focused,
+    &nm_hover_get_state,
+    &nm_pregame_set_callbacks,
 };
 
 #if defined(_WIN32)
@@ -334,6 +356,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
 
+    s.phase1.reset(&s.hooks);
     s.live_hooks.reset(&s.hooks);
     s.hooks.remove_all();
     s.frame_hook_handle = NM_HOOK_INVALID;
@@ -412,6 +435,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
 NM_API nm_status_t NM_CALL nm_shutdown(void) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
+    s.phase1.reset(&s.hooks);
     s.live_hooks.reset(&s.hooks);
     s.hooks.remove_all();
     s.frame_hook_handle = NM_HOOK_INVALID;
@@ -742,7 +766,10 @@ NM_API nm_status_t NM_CALL nm_audio_is_playing(int32_t channel_handle, int32_t* 
 
 NM_API nm_status_t NM_CALL nm_ui_get_root(void** out_root) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
-    return state().live_hooks.ui_get_root(out_root);
+    auto& s = state();
+    const nm_status_t st = s.live_hooks.ui_get_root(out_root);
+    if (st == NM_OK) return NM_OK;
+    return s.phase1.ui_get_active_root(nullptr, out_root);
 }
 
 NM_API nm_status_t NM_CALL nm_ui_create_window(const char* virtual_path_utf8, void** out_control) {
@@ -982,6 +1009,140 @@ NM_API nm_status_t NM_CALL nm_set_packet_tx_override(nm_packet_tx_override_t tx_
     return state().channels.set_tx_override(tx_fn, user_data);
 }
 
+/* --- ABI 0.3.0 exports --- */
+
+NM_API nm_status_t NM_CALL nm_ui_get_active_root(void** out_root) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    auto& s = state();
+    void* captured = nullptr;
+    (void)s.live_hooks.ui_get_root(&captured);
+    return s.phase1.ui_get_active_root(captured, out_root);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_child_count(void* parent_control, uint32_t* out_count) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_get_child_count(parent_control, out_count);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_child_at(void* parent_control, uint32_t index, void** out_child) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_get_child_at(parent_control, index, out_child);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_vtable(void* control, uint64_t* out_vtable) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_get_vtable(control, out_vtable);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_control_tag(void* control, uint16_t* out_tag) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_get_control_tag(control, out_tag);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_control_id(void* control, char* out_utf8, size_t capacity, size_t* out_length) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_get_control_id(control, out_utf8, capacity, out_length);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_get_control_parent(void* control, void** out_parent) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_get_control_parent(control, out_parent);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_is_visible(void* control, int32_t* out_visible) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_is_visible(control, out_visible);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_width(void* control, float width) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_set_width(control, width);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_height(void* control, float height) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_set_height(control, height);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_create_checkbox_child(void* parent_control, const char* caption_utf8, void** out_checkbox) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_create_checkbox_child(parent_control, caption_utf8, out_checkbox);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_create_stack_layout(void* parent_control, int32_t vertical, void** out_layout) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_create_stack_layout(parent_control, vertical, out_layout);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_layout_update(void* control) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_layout_update(control);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_anchor(void* control, uint32_t x_anchor, float x_offset, uint32_t y_anchor, float y_offset) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.ui_set_anchor(control, x_anchor, x_offset, y_anchor, y_offset);
+}
+
+NM_API nm_status_t NM_CALL nm_screens_get_state(nm_screens_state_t* out_state) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.screens_get_state(out_state);
+}
+
+NM_API nm_status_t NM_CALL nm_screens_set_callback(nm_screen_event_callback_t cb, void* user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.screens_set_callback(cb, user_data);
+}
+
+NM_API nm_status_t NM_CALL nm_input_set_callback(nm_input_callback_t cb, void* user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.input_set_callback(cb, user_data);
+}
+
+NM_API nm_status_t NM_CALL nm_input_is_text_focused(int32_t* out_focused) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.input_is_text_focused(out_focused);
+}
+
+NM_API nm_status_t NM_CALL nm_hover_get_state(nm_hover_state_t* out_state) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.hover_get_state(out_state);
+}
+
+NM_API nm_status_t NM_CALL nm_pregame_set_callbacks(
+    nm_pregame_creating_callback_t on_creating,
+    nm_pregame_created_callback_t  on_created,
+    void*                          user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase1.pregame_set_callbacks(on_creating, on_created, user_data);
+}
+
+NM_API void NM_CALL nm_dispatch_screen_event(int32_t event_kind, void* primary_handle, uint64_t param0) {
+    if (!state().initialized) return;
+    state().phase1.dispatch_screen_event(event_kind, primary_handle, param0);
+}
+
+NM_API int32_t NM_CALL nm_dispatch_input_event(const nm_input_event_t* ev) {
+    if (!state().initialized) return 0;
+    return state().phase1.dispatch_input_event(ev);
+}
+
+NM_API int32_t NM_CALL nm_dispatch_pregame_creating(
+    const char* name_utf8,
+    const char* league_utf8,
+    const char* start_state_utf8,
+    char*       out_start_state_utf8,
+    size_t      out_capacity) {
+    if (!state().initialized) return 0;
+    return state().phase1.dispatch_pregame_creating(
+        name_utf8, league_utf8, start_state_utf8, out_start_state_utf8, out_capacity);
+}
+
+NM_API void NM_CALL nm_dispatch_pregame_created(const char* name_utf8, const char* league_utf8, uint16_t result_code) {
+    if (!state().initialized) return;
+    state().phase1.dispatch_pregame_created(name_utf8, league_utf8, result_code);
+}
+
 NM_API nm_status_t NM_CALL nm_bootstrap_managed_host(
     const char* hostfxr_path_utf8,
     const char* runtimeconfig_path_utf8,
@@ -1117,6 +1278,7 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
         auto& s = state();
         s.live_hooks.register_startup_disk_overlays(dll_dir, s.channels);
         s.live_hooks.install_live_hooks(detected_build, base, s.hooks, s.allocator, s.channels);
+        s.phase1.install_live_hooks(detected_build, base, s.hooks);
     }
 
     // Install register-preserving prologue hook at frame.state_stack_pass_a

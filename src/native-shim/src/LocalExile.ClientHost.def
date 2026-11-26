@@ -75,6 +75,30 @@ EXPORTS
     nm_dispatch_chat_rx
     nm_dispatch_opcode_rx
     nm_set_packet_tx_override
+    nm_ui_get_active_root
+    nm_ui_get_child_count
+    nm_ui_get_child_at
+    nm_ui_get_vtable
+    nm_ui_get_control_tag
+    nm_ui_get_control_id
+    nm_ui_get_control_parent
+    nm_ui_is_visible
+    nm_ui_set_width
+    nm_ui_set_height
+    nm_ui_create_checkbox_child
+    nm_ui_create_stack_layout
+    nm_ui_layout_update
+    nm_ui_set_anchor
+    nm_screens_get_state
+    nm_screens_set_callback
+    nm_input_set_callback
+    nm_input_is_text_focused
+    nm_hover_get_state
+    nm_pregame_set_callbacks
+    nm_dispatch_screen_event
+    nm_dispatch_input_event
+    nm_dispatch_pregame_creating
+    nm_dispatch_pregame_created
     nm_bootstrap_managed_host
     nm_initialize_for_build
     nm_shutdown
