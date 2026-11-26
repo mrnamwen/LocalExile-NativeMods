@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-26  
 **Scope:** NativeMods SDK/ABI `0.4.0` — Live World Entities (`IWorldService`), Live Entity/Player Stats (`IStatsService`), Area Enter/Leave Lifecycle (`IGameLifecycle`), Client Item Filter Bridge (`IItemFilterService`), Camera & Zoom Control (`ICameraService`), Tier 1 `ServerBridge 0.4.0` (`IClientPhase2Session`), and the `DualMod.LootTools` flagship showcase (Wishlist #10 Loot Merger + AoE Pickup & #11 Filter-Aware Loot Magnet) with **zero LocalExile server edits required**.  
-**Status:** **COMPLETE & Verified across Managed, Native C++20 (Linux Release + ASan/UBSan + Win64/Wine), and Live Roslyn Gateway Compilation.** Ready for clean session start on **Phase 3 (Multi-Mod `.datc64` Merger, Dead-Slot Custom Stats, Drop-Pool Overlays & `1.0.0`)**.
+**Status:** **COMPLETE & Live `3.29.3d` Proton Verified** across Managed (`349/349`), Native C++20 (`28/28` Linux Release + ASan/UBSan + Win64/Wine), Live Roslyn Gateway Compilation, and Live Isolated `Xvfb` `3.29.3d` Proton (`25/25` hooks `OK`, `16/16` `E2E-01`..`E2E-16` PASS). Ready for clean session start on **Phase 3 (Multi-Mod `.datc64` Merger, Dead-Slot Custom Stats, Drop-Pool Overlays & `1.0.0`)**.
 
 ---
 
@@ -24,14 +24,15 @@
     - `nm_item_filter_state_t` (**784 B**)
     - `nm_item_filter_result_t` (**72 B**, `0xRRGGBBAA` colors)
     - `nm_camera_state_t` (**120 B**, 16-float row-major `view_proj`)
-  - **Live Engine Wiring & Hardening (`f992c0b`):**
+  - **Live Engine Wiring & Hardening (`f992c0b`, `506561e`):**
     - `world_create_client_object` uses raw mimalloc `allocator.alloc(0x248, 16)` / `allocator.free` matching `ClientEntity` destructor (`0x141558a50` → `mi_free`, zero `+16` slab header shift).
     - `camera_world_to_screen` reads `ui.viewport_offset_x` / `+4` as `int32_t` with `static_cast<float>`, matching `Camera::WorldToScreen` (`v_row * M` via `Camera+0x100`).
+    - `world.client_world_init_area` (`0x141653ee0`, 10 Win64 args `a0..a9`) is hooked via a typed 10-arg raw inline detour (`hooks.install_inline` → `detour_client_world_init_area`) rather than the 8-arg `install_inline_chain`, and `HookEngine::get_or_create_inline_chain_locked` verifies multi-chain `expectedBytes` tail bytes beyond `stolen_len` directly against live unpatched memory (`506561e`).
     - All 14 `components.get_*` accessors wired (`Positioned`, `Render`, `WorldItem`, `Targetable`, `Life`, `ObjectMagicProperties`, `Chest`, `Stats`, `Player`, `NPC`, `Portal`, `AreaTransition`, `MinimapIcon`, `Transitionable`) over `EntityManager` dual RB-trees (`+0x10` awake / `+0x20` asleep).
-- **Native Verification:** **`26/26`** C++20 shim tests passing across:
+- **Native Verification:** **`28/28`** C++20 shim tests passing across:
   - Linux Release (`-Wall -Wextra -Wpedantic -Werror`, `ctest` 1/1 PASS),
   - Linux Debug ASan + UBSan (`detect_leaks=1`, `ctest` 1/1 PASS),
-  - Win64 MinGW-w64 cross-compile (`-Werror`, zero non-system MinGW DLL deps, all 20 new exports verified) + Wine `nativemods_shim_tests.exe` (**`26/26` PASS**).
+  - Win64 MinGW-w64 cross-compile (`-Werror`, zero non-system MinGW DLL deps, all 20 new exports verified) + Wine `nativemods_shim_tests.exe` (**`28/28` PASS**).
 
 ---
 
@@ -78,3 +79,19 @@
   - **`37` projects** (6 `/src/`, 18 `/examples/`, 13 `/tests/` — **`10` test suites** + 3 `Phase0E2E` helper projects).
   - `python3 scripts/generate-address-table.py --check` PASS (`319` symbols / `300` offsets in both `3.29.3d` and `3.29.3c`).
   - `dotnet build NativeMods.slnx -c Release` (**0 warnings, 0 errors**) & `dotnet test NativeMods.slnx -c Release --no-build` (**`349/349`** PASS across all 10 suites: `Client.Tests` 131, `Waypoint.Tests` 69, `AssetPipeline.Tests` 41, `SiphonOrb.Tests` 22, `MaxwellPet.Tests` 19, `Phase0E2E.Tests` 18, `StashQol.Tests` 15, `LootTools.Tests` 14, `SkipCampaign.Tests` 11, `Patcher.Tests` 9).
+
+---
+
+## 5. Live Isolated `Xvfb` `3.29.3d` Proton Verification (`0.4.0`)
+
+- **Run:** `dbe7a13` (`build/phase0-proton-logs/20261126-210436-proxy-4060031/nativemods-shim.log`), Win64 `LocalExile.ClientHost.dll` (`abi=0x00000400`), `LocalExile.Client.Host.dll` (`SDK 0.4.0`), `3.29.3d.json` (`319` symbols / `300` offsets), zero non-system MinGW DLL imports.
+- **Boot & World Entry:** CoreCLR booted in **`252.60ms`** (`NativeEntryPoint.Initialize` returned `0`); loaded all 4 client mods (`harvest-garden`, `maxwell`, `phase0-e2e`, `siphon`) in collectible ALCs; clean world entry into `1_1_town` (`[world t=1s]`), survived full run + 10s soak (**`2,700+`** live frames).
+- **All Live Hooks Armed `OK` (`25/25` total, `0` `SKIP`):**
+  - `[OVERLAY]` 6/6 (`exists=OK size=OK read_range=OK read_whole=OK read_v5=OK hash_lookup=OK`), `[UI]` `Control::Load` `OK`, `[NET]` 3/3 (`chat_rx=OK ruleset_0x2c9=OK msg_pump=OK`), `PassA` frame hook `OK` (`handle=25`).
+  - `[PHASE1]` **11/11 `OK`:** `wndmsg=OK ui_init=OK ig_leave=OK league_fill=OK cc_enter=OK cc_leave=OK tab=OK map_grp=OK map_key=OK c2s_0x12=OK s2c_0x13=OK`.
+  - `[PHASE2]` **4/4 `OK`:** `init_area=OK area_load_leave=OK ig_leave=OK filter_loaded=OK`.
+- **E2E, Audio, Stability & Clean Restore:**
+  - **ALL `16/16` (`E2E-01`..`E2E-16`) PASS** (`E2E-01` reports `sdk=0.4.0`).
+  - **ZERO `[WARN]` / ZERO `[ERROR]` / ZERO SEH faults** (`msvc_cxx_passthrough=0`), `0` Hyprland window leaks across all 5 checkpoints, `0` stray processes.
+  - Non-silent FMOD PCM capture (`mean_volume=-24.4 dB`, `max_volume=-10.2 dB`), MaxwellPet + SiphonOrb live overlays & GEAL dance verified.
+  - Exact baseline SHA-256 restore verified on `/home/nam/Git/LocalExile/Client/Game.exe` (`e9ba3d31...f53d`) and `Game.patched.exe` (`ca8c1795...dcb1`), zero stray DLLs/logs.
