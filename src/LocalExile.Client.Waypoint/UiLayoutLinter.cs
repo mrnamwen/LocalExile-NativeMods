@@ -190,7 +190,7 @@ public static partial class UiLayoutLinter
         }
 
         // Strip UTF-8 / UTF-16 BOM if caller passed raw decoded text
-        string normalized = content.Length > 0 && content[0] == '\uFEFF' ? content[1..] : content;
+        string normalized = content.TrimStart('\uFEFF');
 
         // Pitfall from 07-spike-results.md:
         // "Syntax error. You must have a space before <DEFINITIONS>" if <DEFINITIONS> starts at byte 0.

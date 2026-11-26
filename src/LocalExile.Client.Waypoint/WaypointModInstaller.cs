@@ -648,11 +648,14 @@ public sealed class WaypointModInstaller
                     string dest = Path.Combine(filesDest, Path.Combine(rel.Split('/')));
                     Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
 
-                    // Encode text overlays (.ui, .ot, .it, etc.) to UTF-16LE BOM CRLF as 3.29 expects!
+                    // Encode text overlays (.ui, .ot, .it, etc. with BOM; .sm, .mat, .amd without BOM) to UTF-16LE CRLF as 3.29 expects!
                     if (ModBundlePacker.IsClientTextExtension(rel))
                     {
                         string text = DualModPackageValidator.ReadTextAutoEncoding(srcFile);
-                        File.WriteAllBytes(dest, ModBundlePacker.EncodeClientText(text));
+                        byte[] encoded = ModBundlePacker.IsClientTextNoBomExtension(rel)
+                            ? ModBundlePacker.EncodeClientTextNoBom(text)
+                            : ModBundlePacker.EncodeClientText(text);
+                        File.WriteAllBytes(dest, encoded);
                     }
                     else
                     {

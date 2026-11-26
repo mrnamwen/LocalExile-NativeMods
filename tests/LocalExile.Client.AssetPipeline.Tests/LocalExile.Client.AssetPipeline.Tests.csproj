@@ -20,5 +20,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/LocalExile.Client.AssetPipeline/LocalExile.Client.AssetPipeline.csproj" />
+    <ProjectReference Include="../../src/LocalExile.Client.ServerBridge/LocalExile.Client.ServerBridge.csproj" />
   </ItemGroup>
 </Project>

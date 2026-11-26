@@ -49,19 +49,27 @@ public static class ModBundlePacker
     public static readonly byte[] Magic = "NMB1"u8.ToArray();
     private static readonly byte[] OodleStoredBlockHeader = [0xCC, 0x06];
 
-    private static readonly HashSet<string> ClientTextExtensions = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Encoding Utf16LeNoBom = new UnicodeEncoding(bigEndian: false, byteOrderMark: false);
+
+    private static readonly HashSet<string> ClientTextBomExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".ui", ".ot", ".otc", ".ao", ".aoc", ".it", ".itc", ".act", ".epk", ".mat", ".sm", ".txt", ".xml"
+        ".ui", ".ot", ".otc", ".ao", ".aoc", ".it", ".itc", ".act", ".epk", ".ddt", ".pet", ".trl", ".txt", ".xml"
+    };
+
+    private static readonly HashSet<string> ClientTextNoBomExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".sm", ".mat", ".amd"
     };
 
     /// <summary>
-    /// Encodes a UTF-8 or UTF-16 text file to Path of Exile 3.29's expected text format:
+    /// Encodes a UTF-8 or UTF-16 text file to Path of Exile 3.29's expected BOM text format:
     /// UTF-16LE with BOM (<c>FF FE</c>) and CRLF line endings (matching <c>spikes/encode-overlay.py</c>).
     /// </summary>
     public static byte[] EncodeClientText(string text)
     {
-        string stripped = text.Length > 0 && text[0] == '\uFEFF' ? text[1..] : text;
-        string crlf = stripped.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+        ArgumentNullException.ThrowIfNull(text);
+        string stripped = text.TrimStart('\uFEFF');
+        string crlf = stripped.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal);
         byte[] payload = Encoding.Unicode.GetBytes(crlf);
         byte[] result = new byte[2 + payload.Length];
         result[0] = 0xFF;
@@ -70,8 +78,39 @@ public static class ModBundlePacker
         return result;
     }
 
-    public static bool IsClientTextExtension(string virtualPath) =>
-        ClientTextExtensions.Contains(Path.GetExtension(virtualPath));
+    /// <summary>
+    /// Encodes a UTF-8 or UTF-16 text file to Path of Exile 3.29's BOM-less text format (<c>.sm</c>, <c>.mat</c>, <c>.amd</c>):
+    /// UTF-16LE without BOM and CRLF line endings.
+    /// </summary>
+    public static byte[] EncodeClientTextNoBom(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        string stripped = text.TrimStart('\uFEFF');
+        string crlf = stripped.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal);
+        return Utf16LeNoBom.GetBytes(crlf);
+    }
+
+    /// <summary>Encodes text according to <paramref name="virtualPath"/> (UTF-16LE BOM, UTF-16LE no-BOM, or UTF-8).</summary>
+    public static byte[] EncodeClientText(string text, string virtualPath)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(virtualPath);
+        string ext = Path.GetExtension(virtualPath);
+        if (ClientTextNoBomExtensions.Contains(ext))
+            return EncodeClientTextNoBom(text);
+        if (ClientTextBomExtensions.Contains(ext))
+            return EncodeClientText(text);
+        return Encoding.UTF8.GetBytes(text);
+    }
+
+    public static bool IsClientTextNoBomExtension(string virtualPath) =>
+        ClientTextNoBomExtensions.Contains(Path.GetExtension(virtualPath));
+
+    public static bool IsClientTextExtension(string virtualPath)
+    {
+        string ext = Path.GetExtension(virtualPath);
+        return ClientTextBomExtensions.Contains(ext) || ClientTextNoBomExtensions.Contains(ext);
+    }
 
     /// <summary>
     /// Packs all files under <paramref name="sourceClientDir"/> into a deterministic
@@ -117,8 +156,9 @@ public static class ModBundlePacker
             if (encodeTextAsUtf16Le && IsClientTextExtension(virtualPath))
             {
                 string text = DualModPackageValidator.ReadTextAutoEncoding(fullPath);
-                payloadBytes = EncodeClientText(text);
-                encoding = "utf-16le-bom-crlf";
+                bool noBom = IsClientTextNoBomExtension(virtualPath);
+                payloadBytes = noBom ? EncodeClientTextNoBom(text) : EncodeClientText(text);
+                encoding = noBom ? "utf-16le-nobom-crlf" : "utf-16le-bom-crlf";
             }
             else
             {
@@ -338,10 +378,13 @@ public static class ModBundlePacker
 
     private static byte[] ReadEntryBytes(byte[] bundleBytes, BundleFileEntry entry)
     {
-        if (entry.Offset < 16 || entry.StoredSize < 0 || entry.Offset + entry.StoredSize > bundleBytes.Length)
+        if (entry.Offset < 16 || entry.StoredSize < 0 || entry.Offset > bundleBytes.Length - entry.StoredSize)
             throw new InvalidDataException("Entry offset/size falls outside bundle bounds.");
 
-        var output = new MemoryStream(entry.UncompressedSize);
+        if (entry.UncompressedSize < 0 || entry.UncompressedSize > entry.StoredSize)
+            throw new InvalidDataException($"Invalid NMB1 uncompressedSize {entry.UncompressedSize} for stored size {entry.StoredSize}.");
+
+        using var output = new MemoryStream(entry.UncompressedSize);
         long pos = entry.Offset;
         long end = entry.Offset + entry.StoredSize;
         int blocksRead = 0;
@@ -359,13 +402,16 @@ public static class ModBundlePacker
                 throw new InvalidDataException("Invalid Oodle stored block marker (expected 0xCC 0x06).");
 
             pos += 6;
-            if (pos + chunkLen > end)
+            if (chunkLen > end - pos)
                 throw new InvalidDataException("Truncated stored block payload.");
 
             output.Write(bundleBytes, (int)pos, chunkLen);
             pos += chunkLen;
             blocksRead++;
         }
+
+        if (blocksRead == 0)
+            throw new InvalidDataException("NMB1 entry contains no stored blocks.");
 
         if (blocksRead != entry.BlockCount)
             throw new InvalidDataException($"Block count mismatch: expected {entry.BlockCount}, read {blocksRead}.");

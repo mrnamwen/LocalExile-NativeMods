@@ -373,6 +373,99 @@ public sealed class WaypointInstallerAndExtenderTests
         }
     }
 
+    [Fact]
+    public void Installer_DeploysSmMatAmdWithoutBomAndPreservesBomOnUiOt()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), "nm-bom-install-test-" + Guid.NewGuid().ToString("N"));
+        string serverRoot = Path.Combine(workspace, "LocalExile");
+        string pkgDir = Path.Combine(workspace, "pkg-bom");
+
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(serverRoot, "Client"));
+            Directory.CreateDirectory(Path.Combine(pkgDir, "client", "Metadata", "UI", "Mods", "Cat"));
+            Directory.CreateDirectory(Path.Combine(pkgDir, "client", "Metadata", "Pet", "Mods", "Cat"));
+            Directory.CreateDirectory(Path.Combine(pkgDir, "client", "Art", "Models", "Mods", "Cat", "textures"));
+
+            var manifest = new DualModManifest
+            {
+                Id = "cat",
+                Name = "BOM Check",
+                Version = "1.0.0",
+                CompatibleClientVersions = ["0.5.2-beta"],
+                NativeClient = new NativeClientManifest
+                {
+                    SdkVersionRange = ">=0.1.0-poc <2.0.0",
+                    SupportedBuilds = ["3.29.3d"],
+                    PayloadDir = "client"
+                }
+            };
+            File.WriteAllText(Path.Combine(pkgDir, "mod.json"), manifest.ToJson());
+
+            // .ui / .ot (UTF-8 source) -> must get UTF-16LE BOM + CRLF
+            File.WriteAllText(Path.Combine(pkgDir, "client", "Metadata", "UI", "Mods", "Cat", "Panel.ui"), "// cat\n<DEFINITIONS>\nbegin Frame\n\tid = cat;\nend\n", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(pkgDir, "client", "Metadata", "Pet", "Mods", "Cat", "Cat.ot"), "version 3\nextends \"Metadata/Pet/Pet\"\n", new UTF8Encoding(false));
+
+            // .sm (BOM-contaminated UTF-16LE!) -> must strip BOM and keep UTF-16LE CRLF without \0-doubling
+            byte[] contaminatedSm = [0xFF, 0xFE, .. Encoding.Unicode.GetBytes("version 6\nBoneGroups 0\n")];
+            File.WriteAllBytes(Path.Combine(pkgDir, "client", "Art", "Models", "Mods", "Cat", "cat.sm"), contaminatedSm);
+
+            // .mat (already BOM-less UTF-16LE) -> must stay BOM-less UTF-16LE without \0-doubling
+            byte[] noBomMat = new UnicodeEncoding(false, false).GetBytes("{\"version\":4}");
+            File.WriteAllBytes(Path.Combine(pkgDir, "client", "Art", "Models", "Mods", "Cat", "textures", "cat.mat"), noBomMat);
+
+            // .amd (UTF-8 input) -> must convert to BOM-less UTF-16LE CRLF
+            File.WriteAllText(Path.Combine(pkgDir, "client", "Art", "Models", "Mods", "Cat", "cat.amd"), "version 5\n0\nBoneGroups 0\n", new UTF8Encoding(false));
+
+            var installer = new WaypointModInstaller();
+            var report = installer.Install(pkgDir, serverRoot, new InstallOptions
+            {
+                CurrentSdkVersion = SemVer.Parse("0.1.0-poc"),
+                PackClientBundle = true,
+                DeployLooseOverlays = true
+            });
+            Assert.True(report.Succeeded, report.ToHumanReadableSummary());
+
+            string clientModDir = Path.Combine(serverRoot, "Mods", "Client", "cat");
+            string bundlePath = Path.Combine(clientModDir, report.BundleFile!);
+            string bundleManifestPath = Path.Combine(clientModDir, "manifest.json");
+            Assert.True(ModBundlePacker.Verify(bundlePath, bundleManifestPath).IsValid);
+
+            void AssertBomFile(string relPath, string expectedText)
+            {
+                byte[] loose = File.ReadAllBytes(Path.Combine(clientModDir, "files", Path.Combine(relPath.Split('/'))));
+                byte[] packed = ModBundlePacker.ReadEntry(bundlePath, bundleManifestPath, relPath);
+                Assert.Equal(loose, packed);
+                Assert.Equal(0xFF, loose[0]);
+                Assert.Equal(0xFE, loose[1]);
+                Assert.Equal(expectedText, Encoding.Unicode.GetString(loose, 2, loose.Length - 2));
+            }
+
+            void AssertNoBomFile(string relPath, string expectedText)
+            {
+                byte[] loose = File.ReadAllBytes(Path.Combine(clientModDir, "files", Path.Combine(relPath.Split('/'))));
+                byte[] packed = ModBundlePacker.ReadEntry(bundlePath, bundleManifestPath, relPath);
+                Assert.Equal(loose, packed);
+                Assert.Equal(0, loose.Length & 1);
+                Assert.False(loose[0] == 0xFF && loose[1] == 0xFE, $"Unexpected BOM in {relPath}");
+                string decoded = Encoding.Unicode.GetString(loose);
+                Assert.DoesNotContain('\0', decoded);
+                Assert.DoesNotContain('\uFEFF', decoded);
+                Assert.Equal(expectedText, decoded);
+            }
+
+            AssertBomFile("metadata/ui/mods/cat/panel.ui", "// cat\r\n<DEFINITIONS>\r\nbegin Frame\r\n\tid = cat;\r\nend\r\n");
+            AssertBomFile("metadata/pet/mods/cat/cat.ot", "version 3\r\nextends \"Metadata/Pet/Pet\"\r\n");
+            AssertNoBomFile("art/models/mods/cat/cat.sm", "version 6\r\nBoneGroups 0\r\n");
+            AssertNoBomFile("art/models/mods/cat/textures/cat.mat", "{\"version\":4}");
+            AssertNoBomFile("art/models/mods/cat/cat.amd", "version 5\r\n0\r\nBoneGroups 0\r\n");
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
     private static string FindRepoRoot()
     {
         string? dir = AppContext.BaseDirectory;

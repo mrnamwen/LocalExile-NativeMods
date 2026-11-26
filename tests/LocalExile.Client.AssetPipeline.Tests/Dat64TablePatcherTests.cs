@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
 using LocalExile.Client.AssetPipeline.Dat64;
+using LocalExile.Client.ServerBridge;
 using Xunit;
 
 namespace LocalExile.Client.AssetPipeline.Tests;
@@ -16,6 +17,50 @@ public sealed class Dat64TablePatcherTests
         Assert.Equal(0xA1EB592Eu, PoeHashing.Hash32("Metadata/Items/Pets/Mods/MaxwellPet"));
         Assert.Equal(0x1F3AB11Au, PoeHashing.Hash32("Metadata/Pet/Mods/Maxwell/MaxwellPet"));
         Assert.Equal((ushort)0xAE20, PoeHashing.FoldHash16(0x1F3AB11Au));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("a")]
+    [InlineData("ab")]
+    [InlineData("abc")]
+    [InlineData("abcd")]
+    [InlineData("abcde")]
+    [InlineData("abcdef")]
+    [InlineData("abcdefg")]
+    [InlineData("Metadata/Items/Pets/Kiwi1")]
+    [InlineData("Metadata/Items/Pets/AfterlifeCatPet")]
+    [InlineData("Metadata/Items/Pets/Mods/MaxwellPet")]
+    [InlineData("Metadata/Pet/Mods/Maxwell/MaxwellPet")]
+    [InlineData("Metadata/Items/Currency/CurrencyRemoveMod")]
+    [InlineData("Café")]
+    [InlineData("Ümlaut")]
+    [InlineData("Éxalted")]
+    [InlineData("Maxwell — Pet")]
+    [InlineData("猫ペット")]
+    [InlineData("🐱🐾")]
+    public void PoeContentHash_MurmurHash2MatchesPoeHashingHash32AcrossAsciiAndUtf8(string input)
+    {
+        uint expected = PoeHashing.Hash32(input);
+        uint actualString = PoeContentHash.MurmurHash2(input);
+        uint actualSpan = PoeContentHash.MurmurHash2(Encoding.UTF8.GetBytes(input));
+
+        Assert.Equal(expected, actualString);
+        Assert.Equal(expected, actualSpan);
+        Assert.Equal(PoeHashing.FoldHash16(expected), PoeContentHash.FoldHash16(actualString));
+    }
+
+    [Fact]
+    public void PoeContentHash_MatchesPoeHashingOnLongHeapStringsAndNullArgument()
+    {
+        string longAscii = new('a', 1500);
+        string longUtf8 = new('猫', 400); // 1200 UTF-8 bytes (> 1024 stackalloc threshold)
+
+        Assert.Equal(PoeHashing.Hash32(longAscii), PoeContentHash.MurmurHash2(longAscii));
+        Assert.Equal(PoeHashing.Hash32(longUtf8), PoeContentHash.MurmurHash2(longUtf8));
+
+        Assert.Throws<ArgumentNullException>(() => PoeHashing.Hash32(null!));
+        Assert.Throws<ArgumentNullException>(() => PoeContentHash.MurmurHash2((string)null!));
     }
 
     [Fact]

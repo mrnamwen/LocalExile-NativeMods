@@ -186,7 +186,13 @@ public static class Program
 
         foreach (string matFile in Directory.GetFiles(ResolveVirtualPath(rootDir, "Art/Models/Mods/Maxwell/textures"), "*.mat"))
         {
-            string matText = Encoding.Unicode.GetString(File.ReadAllBytes(matFile));
+            byte[] matBytes = File.ReadAllBytes(matFile);
+            if (matBytes.Length >= 2 && matBytes[0] == 0xFF && matBytes[1] == 0xFE)
+            {
+                throw new InvalidDataException($"Unexpected UTF-16LE BOM in '{matFile}'.");
+            }
+
+            string matText = Encoding.Unicode.GetString(matBytes);
             using JsonDocument doc = JsonDocument.Parse(matText);
             if (doc.RootElement.GetProperty("version").GetInt32() != 4)
             {
@@ -570,6 +576,11 @@ public static class Program
         if (expectBom && !hasBom)
         {
             throw new InvalidDataException($"Expected UTF-16LE BOM in '{path}'.");
+        }
+
+        if (!expectBom && hasBom)
+        {
+            throw new InvalidDataException($"Unexpected UTF-16LE BOM in '{path}'.");
         }
 
         string text = Encoding.Unicode.GetString(bytes, hasBom ? 2 : 0, bytes.Length - (hasBom ? 2 : 0));

@@ -33,14 +33,21 @@ public sealed record FileOverlayEntry(
     string? SourceLocation = null);
 
 /// <summary>
-/// Encodes and decodes Path of Exile 3.29 client text assets (<c>.ui</c>, <c>.ot</c>, <c>.it</c>, <c>.ao</c>, <c>.mat</c>)
-/// using UTF-16LE with BOM (<c>0xFF 0xFE</c>) and CRLF line endings.
+/// Encodes and decodes Path of Exile 3.29 client text assets using UTF-16LE with CRLF line endings
+/// (with <c>0xFF 0xFE</c> BOM for <c>.ui</c>, <c>.ot</c>, <c>.it</c>, <c>.ao</c>, etc., and without BOM for <c>.sm</c>, <c>.mat</c>, <c>.amd</c>).
 /// </summary>
 public static class ClientTextEncoding
 {
+    private static readonly Encoding Utf16LeNoBom = new UnicodeEncoding(bigEndian: false, byteOrderMark: false);
+
     private static readonly HashSet<string> Utf16ClientExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".ui", ".ot", ".otc", ".it", ".itc", ".ao", ".aoc", ".mat", ".sm", ".act", ".epk", ".ddt", ".pet", ".trl",
+        ".ui", ".ot", ".otc", ".it", ".itc", ".ao", ".aoc", ".act", ".epk", ".ddt", ".pet", ".trl",
+    };
+
+    private static readonly HashSet<string> Utf16NoBomClientExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".sm", ".mat", ".amd",
     };
 
     /// <summary>Normalizes a virtual game path to lowercase with forward slashes and no leading slash.</summary>
@@ -57,16 +64,23 @@ public static class ClientTextEncoding
         return Utf16ClientExtensions.Contains(ext);
     }
 
+    /// <summary>Returns <c>true</c> when the virtual path extension requires BOM-less UTF-16LE CRLF encoding in the 3.29 client (<c>.sm</c>, <c>.mat</c>, <c>.amd</c>).</summary>
+    public static bool RequiresUtf16LeNoBomCrlf(string virtualPath)
+    {
+        string ext = Path.GetExtension(virtualPath);
+        return Utf16NoBomClientExtensions.Contains(ext);
+    }
+
     /// <summary>
     /// Encodes text as UTF-16LE with leading BOM (<c>0xFF 0xFE</c>) and CRLF line endings,
-    /// matching <c>spikes/encode-overlay.py</c>.
+    /// stripping any pre-existing leading <c>\uFEFF</c> character so repeated encoding is idempotent.
     /// </summary>
     /// <param name="text">Input text with any line ending style.</param>
     /// <returns>Encoded byte array beginning with <c>0xFF 0xFE</c>.</returns>
     public static byte[] EncodeUtf16LeBomCrlf(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        string crlf = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal);
+        string crlf = NormalizeToCrlfWithoutLeadingBom(text);
         byte[] payload = Encoding.Unicode.GetBytes(crlf);
         byte[] result = new byte[payload.Length + 2];
         result[0] = 0xFF;
@@ -76,7 +90,42 @@ public static class ClientTextEncoding
     }
 
     /// <summary>
-    /// Decodes a byte buffer from UTF-16LE (with or without BOM) or UTF-8 into a managed string.
+    /// Encodes text as BOM-less UTF-16LE with CRLF line endings (used by <c>.sm</c>, <c>.mat</c>, <c>.amd</c>),
+    /// stripping any pre-existing leading <c>\uFEFF</c> character so repeated encoding is idempotent.
+    /// </summary>
+    /// <param name="text">Input text with any line ending style.</param>
+    /// <returns>Encoded UTF-16LE byte array without a BOM prefix.</returns>
+    public static byte[] EncodeUtf16LeNoBomCrlf(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        string crlf = NormalizeToCrlfWithoutLeadingBom(text);
+        return Utf16LeNoBom.GetBytes(crlf);
+    }
+
+    /// <summary>
+    /// Encodes <paramref name="text"/> using the PoE 3.29 client encoding required by <paramref name="virtualPath"/>:
+    /// UTF-16LE BOM CRLF, BOM-less UTF-16LE CRLF (<c>.sm</c>, <c>.mat</c>, <c>.amd</c>), or UTF-8.
+    /// </summary>
+    public static byte[] EncodeTextForPath(string virtualPath, string text)
+    {
+        ArgumentNullException.ThrowIfNull(virtualPath);
+        ArgumentNullException.ThrowIfNull(text);
+
+        if (RequiresUtf16LeBomCrlf(virtualPath))
+        {
+            return EncodeUtf16LeBomCrlf(text);
+        }
+
+        if (RequiresUtf16LeNoBomCrlf(virtualPath))
+        {
+            return EncodeUtf16LeNoBomCrlf(text);
+        }
+
+        return Encoding.UTF8.GetBytes(text);
+    }
+
+    /// <summary>
+    /// Decodes a byte buffer from UTF-16LE (with or without BOM), UTF-16BE (with or without BOM), or UTF-8 into a managed string.
     /// </summary>
     public static string DecodeText(ReadOnlySpan<byte> bytes)
     {
@@ -85,12 +134,74 @@ public static class ClientTextEncoding
             return Encoding.Unicode.GetString(bytes[2..]);
         }
 
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+        {
+            return Encoding.BigEndianUnicode.GetString(bytes[2..]);
+        }
+
         if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
         {
             return Encoding.UTF8.GetString(bytes[3..]);
         }
 
+        if (bytes.Length >= 2 && (bytes.Length & 1) == 0 && bytes.IndexOf((byte)0) >= 0)
+        {
+            int evenZeros = 0;
+            int oddZeros = 0;
+            for (int i = 0; i < bytes.Length; i += 2)
+            {
+                if (bytes[i] == 0)
+                {
+                    evenZeros++;
+                }
+
+                if (bytes[i + 1] == 0)
+                {
+                    oddZeros++;
+                }
+            }
+
+            if (evenZeros > oddZeros)
+            {
+                string beText = Encoding.BigEndianUnicode.GetString(bytes);
+                if (ContainsUnexpectedAsciiControlChar(beText))
+                {
+                    string leText = Encoding.Unicode.GetString(bytes);
+                    if (!ContainsUnexpectedAsciiControlChar(leText))
+                    {
+                        return leText;
+                    }
+                }
+
+                return beText;
+            }
+
+            return Encoding.Unicode.GetString(bytes);
+        }
+
         return Encoding.UTF8.GetString(bytes);
+    }
+
+    private static bool ContainsUnexpectedAsciiControlChar(string text)
+    {
+        foreach (char c in text)
+        {
+            if ((c >= '\x01' && c <= '\x08') || (c >= '\x0B' && c <= '\x0C') || (c >= '\x0E' && c <= '\x1F'))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string NormalizeToCrlfWithoutLeadingBom(string text)
+    {
+        string stripped = text.TrimStart('\uFEFF');
+        return stripped
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Replace("\n", "\r\n", StringComparison.Ordinal);
     }
 }
 

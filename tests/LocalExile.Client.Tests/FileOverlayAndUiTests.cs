@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 using LocalExile.Client.Host;
 using LocalExile.Client.Host.Native;
@@ -503,5 +505,379 @@ public sealed class FileOverlayAndUiTests
         Assert.Equal(1, rowClicks);
 
         win.Close();
+    }
+
+    [Fact]
+    public void FileOverlay_ReadsNmb1SingleAndMultiChunkBundlesAndRejectsCorruption()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"nm-nmb1-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            const int blockSize = 0x40000;
+
+            // 1. 0-byte entry
+            byte[] emptyPayload = [];
+            // 2. Single-chunk entry whose length is 1740 (0x06CC LE = CC 06 00 00, proving chunkLen != raw marker)
+            byte[] edgeLenPayload = Encoding.ASCII.GetBytes(new string('X', 1740));
+            // 3. Multi-chunk binary entry (> 0x40000 bytes)
+            byte[] multiChunkPayload = new byte[blockSize + 12345];
+            new Random(99).NextBytes(multiChunkPayload);
+
+            static byte[] EncodeNmb1Blocks(byte[] payload, int blkSize, out int blockCount)
+            {
+                using var ms = new MemoryStream();
+                Span<byte> lenBuf = stackalloc byte[4];
+                if (payload.Length == 0)
+                {
+                    BinaryPrimitives.WriteInt32LittleEndian(lenBuf, 0);
+                    ms.Write(lenBuf);
+                    ms.Write([0xCC, 0x06]);
+                    blockCount = 1;
+                    return ms.ToArray();
+                }
+
+                blockCount = 0;
+                int pos = 0;
+                while (pos < payload.Length)
+                {
+                    int chunkLen = Math.Min(blkSize, payload.Length - pos);
+                    BinaryPrimitives.WriteInt32LittleEndian(lenBuf, chunkLen);
+                    ms.Write(lenBuf);
+                    ms.Write([0xCC, 0x06]);
+                    ms.Write(payload, pos, chunkLen);
+                    pos += chunkLen;
+                    blockCount++;
+                }
+
+                return ms.ToArray();
+            }
+
+            byte[] emptyBlocks = EncodeNmb1Blocks(emptyPayload, blockSize, out int emptyCount);
+            byte[] edgeBlocks = EncodeNmb1Blocks(edgeLenPayload, blockSize, out int edgeCount);
+            byte[] multiBlocks = EncodeNmb1Blocks(multiChunkPayload, blockSize, out int multiCount);
+
+            using var bundleMs = new MemoryStream();
+            Span<byte> header = stackalloc byte[16];
+            "NMB1"u8.CopyTo(header[..4]);
+            BinaryPrimitives.WriteInt32LittleEndian(header[4..8], 1);
+            BinaryPrimitives.WriteInt32LittleEndian(header[8..12], 3);
+            BinaryPrimitives.WriteInt32LittleEndian(header[12..16], blockSize);
+            bundleMs.Write(header);
+
+            long offEmpty = bundleMs.Position;
+            bundleMs.Write(emptyBlocks);
+            long offEdge = bundleMs.Position;
+            bundleMs.Write(edgeBlocks);
+            long offMulti = bundleMs.Position;
+            bundleMs.Write(multiBlocks);
+
+            string bundlePath = Path.Combine(tempDir, "nmb1.bundle.bin");
+            string manifestPath = Path.Combine(tempDir, "manifest.json");
+            File.WriteAllBytes(bundlePath, bundleMs.ToArray());
+
+            static string Sha(byte[] data) => Convert.ToHexStringLower(SHA256.HashData(data));
+            File.WriteAllText(manifestPath, $$"""
+                {
+                  "formatVersion": 1,
+                  "blockSize": {{blockSize}},
+                  "files": [
+                    {
+                      "virtualPath": "mods/demo/empty.bin",
+                      "offset": {{offEmpty}},
+                      "uncompressedSize": 0,
+                      "storedSize": {{emptyBlocks.Length}},
+                      "blockCount": {{emptyCount}},
+                      "sha256": "{{Sha(emptyPayload)}}"
+                    },
+                    {
+                      "virtualPath": "mods/demo/edge1740.txt",
+                      "offset": {{offEdge}},
+                      "uncompressedSize": {{edgeLenPayload.Length}},
+                      "storedSize": {{edgeBlocks.Length}},
+                      "blockCount": {{edgeCount}},
+                      "sha256": "{{Sha(edgeLenPayload)}}"
+                    },
+                    {
+                      "virtualPath": "art/2dart/mods/demo/atlas.dds",
+                      "offset": {{offMulti}},
+                      "uncompressedSize": {{multiChunkPayload.Length}},
+                      "storedSize": {{multiBlocks.Length}},
+                      "blockCount": {{multiCount}},
+                      "sha256": "{{Sha(multiChunkPayload)}}"
+                    }
+                  ]
+                }
+                """);
+
+            using var bridge = new SimulatedNativeBridge();
+            using var host = new ClientHostRuntime(bridge);
+            using IDisposable sub = host.FileOverlayService.RegisterBundle(bundlePath, manifestPath);
+
+            Assert.Equal(emptyPayload, host.FileOverlayService.ReadAllBytes("mods/demo/empty.bin"));
+            Assert.Equal(edgeLenPayload, host.FileOverlayService.ReadAllBytes("mods/demo/edge1740.txt"));
+            Assert.Equal(new string('X', 1740), host.FileOverlayService.ReadAllText("mods/demo/edge1740.txt"));
+            Assert.Equal(multiChunkPayload, host.FileOverlayService.ReadAllBytes("art/2dart/mods/demo/atlas.dds"));
+
+            // Corrupt stored block marker must throw InvalidDataException
+            byte[] badMarkerBundle = File.ReadAllBytes(bundlePath);
+            badMarkerBundle[offEdge + 4] = 0xAA;
+            string badMarkerPath = Path.Combine(tempDir, "bad-marker.bundle.bin");
+            File.WriteAllBytes(badMarkerPath, badMarkerBundle);
+            using (host.FileOverlayService.RegisterBundle(badMarkerPath, manifestPath, priority: 10))
+            {
+                Assert.Throws<InvalidDataException>(() => host.FileOverlayService.ReadAllBytes("mods/demo/edge1740.txt"));
+            }
+
+            // Corrupt NMB1 header magic must throw InvalidDataException
+            byte[] badMagicBundle = File.ReadAllBytes(bundlePath);
+            badMagicBundle[0] = (byte)'X';
+            string badMagicPath = Path.Combine(tempDir, "bad-magic.bundle.bin");
+            File.WriteAllBytes(badMagicPath, badMagicBundle);
+            using (host.FileOverlayService.RegisterBundle(badMagicPath, manifestPath, priority: 10))
+            {
+                Assert.Throws<InvalidDataException>(() => host.FileOverlayService.ReadAllBytes("mods/demo/edge1740.txt"));
+            }
+
+            // Truncated bundle file must throw InvalidDataException
+            byte[] truncatedBundle = File.ReadAllBytes(bundlePath)[..^100];
+            string truncatedPath = Path.Combine(tempDir, "truncated.bundle.bin");
+            File.WriteAllBytes(truncatedPath, truncatedBundle);
+            using (host.FileOverlayService.RegisterBundle(truncatedPath, manifestPath, priority: 10))
+            {
+                Assert.Throws<InvalidDataException>(() => host.FileOverlayService.ReadAllBytes("art/2dart/mods/demo/atlas.dds"));
+            }
+
+            // Adversarial NMB1: headerBlockSize == int.MaxValue and chunkLen == int.MaxValue must throw InvalidDataException (no signed int overflow)
+            using var overflowMs = new MemoryStream();
+            Span<byte> overflowHdr = stackalloc byte[16];
+            "NMB1"u8.CopyTo(overflowHdr[..4]);
+            BinaryPrimitives.WriteInt32LittleEndian(overflowHdr[4..8], 1);
+            BinaryPrimitives.WriteInt32LittleEndian(overflowHdr[8..12], 1);
+            BinaryPrimitives.WriteInt32LittleEndian(overflowHdr[12..16], int.MaxValue);
+            overflowMs.Write(overflowHdr);
+            Span<byte> overflowBlkHdr = stackalloc byte[6];
+            BinaryPrimitives.WriteInt32LittleEndian(overflowBlkHdr[..4], int.MaxValue);
+            overflowBlkHdr[4] = 0xCC;
+            overflowBlkHdr[5] = 0x06;
+            overflowMs.Write(overflowBlkHdr);
+            overflowMs.Write([0x41, 0x42, 0x43, 0x44]);
+
+            string overflowBundlePath = Path.Combine(tempDir, "overflow.bundle.bin");
+            string overflowManifestPath = Path.Combine(tempDir, "overflow.manifest.json");
+            File.WriteAllBytes(overflowBundlePath, overflowMs.ToArray());
+            File.WriteAllText(overflowManifestPath, $$"""
+                {
+                  "formatVersion": 1,
+                  "blockSize": {{int.MaxValue}},
+                  "files": [
+                    {
+                      "virtualPath": "mods/demo/overflow.bin",
+                      "offset": 16,
+                      "storedSize": 10
+                    }
+                  ]
+                }
+                """);
+            using (host.FileOverlayService.RegisterBundle(overflowBundlePath, overflowManifestPath, priority: 20))
+            {
+                Assert.Throws<InvalidDataException>(() => host.FileOverlayService.ReadAllBytes("mods/demo/overflow.bin"));
+            }
+
+            // Adversarial NMB1: storedSize == 0 with omitted blockCount/uncompressedSize must throw InvalidDataException
+            string zeroStoredManifestPath = Path.Combine(tempDir, "zero-stored.manifest.json");
+            File.WriteAllText(zeroStoredManifestPath, $$"""
+                {
+                  "formatVersion": 1,
+                  "blockSize": {{blockSize}},
+                  "files": [
+                    {
+                      "virtualPath": "mods/demo/zero-stored.bin",
+                      "offset": 16,
+                      "storedSize": 0
+                    }
+                  ]
+                }
+                """);
+            using (host.FileOverlayService.RegisterBundle(bundlePath, zeroStoredManifestPath, priority: 20))
+            {
+                Assert.Throws<InvalidDataException>(() => host.FileOverlayService.ReadAllBytes("mods/demo/zero-stored.bin"));
+            }
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ClientTextEncoding_EncodesSmMatAmdWithoutBomAndPreservesBomOnUiOt()
+    {
+        foreach (string bomPath in new[]
+        {
+            "a.ui", "a.ot", "a.otc", "a.it", "a.itc", "a.ao", "a.aoc", "a.act", "a.epk", "a.ddt", "a.pet", "a.trl",
+        })
+        {
+            Assert.True(ClientTextEncoding.RequiresUtf16LeBomCrlf(bomPath), bomPath);
+            Assert.False(ClientTextEncoding.RequiresUtf16LeNoBomCrlf(bomPath), bomPath);
+        }
+
+        foreach (string noBomPath in new[] { "a.sm", "a.mat", "a.amd", "ART/MODELS/TEST.SM" })
+        {
+            Assert.False(ClientTextEncoding.RequiresUtf16LeBomCrlf(noBomPath), noBomPath);
+            Assert.True(ClientTextEncoding.RequiresUtf16LeNoBomCrlf(noBomPath), noBomPath);
+        }
+
+        Assert.False(ClientTextEncoding.RequiresUtf16LeBomCrlf("config.json"));
+        Assert.False(ClientTextEncoding.RequiresUtf16LeNoBomCrlf("config.json"));
+
+        // Idempotent BOM stripping on both encoders
+        byte[] bomEncoded = ClientTextEncoding.EncodeUtf16LeBomCrlf("\uFEFFline1\nline2\r\nline3\rline4");
+        Assert.Equal(0xFF, bomEncoded[0]);
+        Assert.Equal(0xFE, bomEncoded[1]);
+        Assert.Equal("line1\r\nline2\r\nline3\r\nline4", Encoding.Unicode.GetString(bomEncoded, 2, bomEncoded.Length - 2));
+
+        byte[] noBomEncoded = ClientTextEncoding.EncodeUtf16LeNoBomCrlf("\uFEFFline1\nline2\r\nline3\rline4");
+        Assert.False(noBomEncoded[0] == 0xFF && noBomEncoded[1] == 0xFE);
+        Assert.Equal("line1\r\nline2\r\nline3\r\nline4", Encoding.Unicode.GetString(noBomEncoded));
+
+        // DecodeText handles FF FE, FE FF, EF BB BF, and BOM-less UTF-16LE/BE (even with leading U+0400)
+        const string nonAsciiStart = "\u0400version 6\r\n";
+        byte[] bomlessLe = new UnicodeEncoding(bigEndian: false, byteOrderMark: false).GetBytes(nonAsciiStart);
+        byte[] bomlessBe = new UnicodeEncoding(bigEndian: true, byteOrderMark: false).GetBytes(nonAsciiStart);
+        byte[] withBeBom = [0xFE, 0xFF, .. bomlessBe];
+        byte[] withUtf8Bom = [0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("utf8-bom")];
+
+        Assert.Equal(nonAsciiStart, ClientTextEncoding.DecodeText(bomlessLe));
+        Assert.Equal(nonAsciiStart, ClientTextEncoding.DecodeText(bomlessBe));
+        Assert.Equal(nonAsciiStart, ClientTextEncoding.DecodeText(withBeBom));
+        Assert.Equal("utf8-bom", ClientTextEncoding.DecodeText(withUtf8Bom));
+
+        // Virtual file registration emits BOM-less UTF-16LE CRLF for .sm/.mat/.amd and BOM for .ot
+        using var bridge = new SimulatedNativeBridge();
+        using var host = new ClientHostRuntime(bridge);
+
+        using var smSub = host.FileOverlayService.RegisterVirtualTextFile("Art/Models/Mods/Cat/cat.sm", "version 6\nBoneGroups 0\n");
+        using var matSub = host.FileOverlayService.RegisterVirtualTextFile("Art/Models/Mods/Cat/cat.mat", "{\"version\":4}");
+        using var amdSub = host.FileOverlayService.RegisterVirtualTextFile("Art/Models/Mods/Cat/cat.amd", "version 5\nBoneGroups 0\n");
+        using var otSub = host.FileOverlayService.RegisterVirtualTextFile("Metadata/Pet/Mods/Cat/Cat.ot", "version 3\nextends \"Metadata/Pet/Pet\"\n");
+
+        foreach (string p in new[]
+        {
+            "Art/Models/Mods/Cat/cat.sm",
+            "Art/Models/Mods/Cat/cat.mat",
+            "Art/Models/Mods/Cat/cat.amd",
+        })
+        {
+            byte[]? raw = host.FileOverlayService.ReadAllBytes(p);
+            Assert.NotNull(raw);
+            Assert.False(raw![0] == 0xFF && raw[1] == 0xFE, $"Unexpected BOM on {p}");
+            Assert.Equal(0, raw.Length & 1);
+            string? text = host.FileOverlayService.ReadAllText(p);
+            Assert.NotNull(text);
+            Assert.DoesNotContain('\0', text!);
+        }
+
+        Assert.Equal("version 6\r\nBoneGroups 0\r\n", host.FileOverlayService.ReadAllText("Art/Models/Mods/Cat/cat.sm"));
+        Assert.Equal("{\"version\":4}", host.FileOverlayService.ReadAllText("Art/Models/Mods/Cat/cat.mat"));
+        Assert.Equal("version 5\r\nBoneGroups 0\r\n", host.FileOverlayService.ReadAllText("Art/Models/Mods/Cat/cat.amd"));
+
+        byte[]? otRaw = host.FileOverlayService.ReadAllBytes("Metadata/Pet/Mods/Cat/Cat.ot");
+        Assert.NotNull(otRaw);
+        Assert.Equal(0xFF, otRaw![0]);
+        Assert.Equal(0xFE, otRaw[1]);
+        Assert.Equal("version 3\r\nextends \"Metadata/Pet/Pet\"\r\n", host.FileOverlayService.ReadAllText("Metadata/Pet/Mods/Cat/Cat.ot"));
+
+        // Double-BOM stripping across EncodeUtf16LeNoBomCrlf, EncodeUtf16LeBomCrlf, and RegisterVirtualTextFile
+        const string doubleBomInput = "\uFEFF\uFEFFhello";
+        byte[] doubleBomNoBom = ClientTextEncoding.EncodeUtf16LeNoBomCrlf(doubleBomInput);
+        Assert.False(doubleBomNoBom[0] == 0xFF && doubleBomNoBom[1] == 0xFE);
+        Assert.Equal("hello", ClientTextEncoding.DecodeText(doubleBomNoBom));
+
+        byte[] doubleBomWithBom = ClientTextEncoding.EncodeUtf16LeBomCrlf(doubleBomInput);
+        Assert.Equal(0xFF, doubleBomWithBom[0]);
+        Assert.Equal(0xFE, doubleBomWithBom[1]);
+        Assert.Equal("hello", ClientTextEncoding.DecodeText(doubleBomWithBom));
+
+        foreach (string p in new[]
+        {
+            "Art/Models/Mods/Cat/doublebom.sm",
+            "Art/Models/Mods/Cat/doublebom.mat",
+            "Art/Models/Mods/Cat/doublebom.amd",
+        })
+        {
+            using var sub = host.FileOverlayService.RegisterVirtualTextFile(p, doubleBomInput);
+            byte[]? raw = host.FileOverlayService.ReadAllBytes(p);
+            Assert.NotNull(raw);
+            Assert.False(raw![0] == 0xFF && raw[1] == 0xFE, $"Unexpected BOM on {p}");
+            Assert.Equal("hello", host.FileOverlayService.ReadAllText(p));
+        }
+
+        // Standalone / predominant BOM-less UTF-16LE with 0x00 low bytes (U+0400) vs genuine UTF-16BE
+        Encoding utf16LeNoBomEnc = new UnicodeEncoding(bigEndian: false, byteOrderMark: false);
+        Encoding utf16BeNoBomEnc = new UnicodeEncoding(bigEndian: true, byteOrderMark: false);
+        Assert.Equal("\u0400", ClientTextEncoding.DecodeText(utf16LeNoBomEnc.GetBytes("\u0400")));
+        Assert.Equal("\u0400\u0400a", ClientTextEncoding.DecodeText(utf16LeNoBomEnc.GetBytes("\u0400\u0400a")));
+        Assert.Equal("hello\r\n", ClientTextEncoding.DecodeText(utf16BeNoBomEnc.GetBytes("hello\r\n")));
+    }
+
+    [Fact]
+    public void FileOverlay_RejectsInvalidNmb1UncompressedSizeBeforeAllocation()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "nm-nmb1-uncompressed-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            const int blockSize = 0x40000;
+            using var bundleMs = new MemoryStream();
+            Span<byte> hdr = stackalloc byte[16];
+            "NMB1"u8.CopyTo(hdr[..4]);
+            BinaryPrimitives.WriteInt32LittleEndian(hdr[4..8], 1);
+            BinaryPrimitives.WriteInt32LittleEndian(hdr[8..12], 1);
+            BinaryPrimitives.WriteInt32LittleEndian(hdr[12..16], blockSize);
+            bundleMs.Write(hdr);
+
+            Span<byte> blkHdr = stackalloc byte[6];
+            BinaryPrimitives.WriteInt32LittleEndian(blkHdr[..4], 4);
+            blkHdr[4] = 0xCC;
+            blkHdr[5] = 0x06;
+            bundleMs.Write(blkHdr);
+            bundleMs.Write([0x41, 0x42, 0x43, 0x44]);
+
+            string bundlePath = Path.Combine(tempDir, "slice.bundle.bin");
+            File.WriteAllBytes(bundlePath, bundleMs.ToArray());
+
+            using var bridge = new SimulatedNativeBridge();
+            using var host = new ClientHostRuntime(bridge);
+
+            foreach ((string name, int uncompressedSize) in new[] { ("intmax", int.MaxValue), ("negone", -1) })
+            {
+                string manifestPath = Path.Combine(tempDir, $"{name}.manifest.json");
+                File.WriteAllText(manifestPath, $$"""
+                    {
+                      "formatVersion": 1,
+                      "blockSize": {{blockSize}},
+                      "files": [
+                        {
+                          "virtualPath": "mods/demo/{{name}}.bin",
+                          "offset": 16,
+                          "uncompressedSize": {{uncompressedSize}},
+                          "storedSize": 10,
+                          "blockCount": 1
+                        }
+                      ]
+                    }
+                    """);
+                using (host.FileOverlayService.RegisterBundle(bundlePath, manifestPath, priority: 10))
+                {
+                    Assert.Throws<InvalidDataException>(() => host.FileOverlayService.ReadAllBytes($"mods/demo/{name}.bin"));
+                }
+            }
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 }

@@ -1,5 +1,7 @@
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -14,14 +16,22 @@ namespace LocalExile.Client.Host.Services;
 
 /// <summary>
 /// Layered file overlay service supporting virtual files, loose directories, and packed bundle overlays
-/// with deterministic priority ordering, automatic UTF-16LE BOM CRLF encoding for client text files,
+/// with deterministic priority ordering, automatic UTF-16LE CRLF encoding for client text files,
 /// and asset invalidation.
 /// </summary>
 public sealed class FileOverlayService : IFileOverlayService
 {
     private sealed record VirtualFileLayer(long Id, string NormalizedPath, byte[] Bytes, string OwnerModId, int Priority);
     private sealed record DirectoryLayer(long Id, string RootDirectory, string OwnerModId, int Priority, Dictionary<string, string> IndexedFiles);
-    private sealed record BundleEntrySlice(string NormalizedPath, long Offset, int Size);
+    private sealed record BundleEntrySlice(
+        string NormalizedPath,
+        long Offset,
+        int Size,
+        int? UncompressedSize = null,
+        int? BlockCount = null,
+        int? FormatVersion = null,
+        int BlockSize = 0x40000,
+        string? Sha256 = null);
     private sealed record BundleLayer(long Id, string BundlePath, string ManifestPath, string OwnerModId, int Priority, Dictionary<string, BundleEntrySlice> Entries);
 
     private readonly INativeBridge _bridge;
@@ -111,9 +121,7 @@ public sealed class FileOverlayService : IFileOverlayService
     internal IDisposable RegisterVirtualTextFileForMod(string ownerModId, string virtualPath, string text, int priority)
     {
         ArgumentNullException.ThrowIfNull(text);
-        byte[] encoded = ClientTextEncoding.RequiresUtf16LeBomCrlf(virtualPath)
-            ? ClientTextEncoding.EncodeUtf16LeBomCrlf(text)
-            : Encoding.UTF8.GetBytes(text);
+        byte[] encoded = ClientTextEncoding.EncodeTextForPath(virtualPath, text);
         return RegisterVirtualFileForMod(ownerModId, virtualPath, encoded, priority);
     }
 
@@ -322,34 +330,156 @@ public sealed class FileOverlayService : IFileOverlayService
 
     private static byte[] ReadBundleSlice(string bundlePath, BundleEntrySlice slice)
     {
-        using var fs = new FileStream(bundlePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        fs.Seek(slice.Offset, SeekOrigin.Begin);
-        byte[] raw = new byte[slice.Size];
-        int read = 0;
-        while (read < raw.Length)
+        if (slice.FormatVersion is int fv && fv != 1)
         {
-            int n = fs.Read(raw, read, raw.Length - read);
-            if (n == 0)
+            throw new InvalidDataException($"Unsupported bundle format version {fv}.");
+        }
+
+        using var fs = new FileStream(bundlePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        byte[] hdr = new byte[(int)Math.Min(16, fs.Length)];
+        if (hdr.Length > 0)
+        {
+            fs.ReadExactly(hdr);
+        }
+
+        bool hasNmb1Magic = hdr.Length == 16 && hdr.AsSpan(0, 4).SequenceEqual("NMB1"u8);
+        bool isNmb1 = slice.FormatVersion == 1 || (slice.FormatVersion is null && hasNmb1Magic && slice.Offset >= 16);
+
+        if (isNmb1)
+        {
+            if (!hasNmb1Magic)
             {
-                break;
+                throw new InvalidDataException("Invalid NMB1 bundle header.");
             }
 
-            read += n;
+            int headerVersion = BinaryPrimitives.ReadInt32LittleEndian(hdr.AsSpan(4, 4));
+            int headerEntryCount = BinaryPrimitives.ReadInt32LittleEndian(hdr.AsSpan(8, 4));
+            int headerBlockSize = BinaryPrimitives.ReadInt32LittleEndian(hdr.AsSpan(12, 4));
+            if (headerVersion != 1)
+            {
+                throw new InvalidDataException($"Unsupported NMB1 header version {headerVersion}.");
+            }
+
+            if (headerEntryCount < 0)
+            {
+                throw new InvalidDataException($"Invalid NMB1 entry count {headerEntryCount}.");
+            }
+
+            if (headerBlockSize <= 0)
+            {
+                throw new InvalidDataException($"Invalid NMB1 block size {headerBlockSize}.");
+            }
+
+            if (slice.BlockSize <= 0)
+            {
+                throw new InvalidDataException($"Invalid NMB1 manifest block size {slice.BlockSize}.");
+            }
+
+            if (slice.BlockSize != headerBlockSize)
+            {
+                throw new InvalidDataException($"NMB1 block size mismatch: manifest {slice.BlockSize}, header {headerBlockSize}.");
+            }
+
+            if (slice.Offset < 16 || slice.Size < 0 || slice.Offset > fs.Length - slice.Size)
+            {
+                throw new InvalidDataException("NMB1 entry offset/size falls outside bundle bounds.");
+            }
+
+            fs.Seek(slice.Offset, SeekOrigin.Begin);
+            byte[] raw = new byte[slice.Size];
+            fs.ReadExactly(raw);
+
+            if (slice.UncompressedSize is int expectedUncompressed && (expectedUncompressed < 0 || expectedUncompressed > raw.Length))
+            {
+                throw new InvalidDataException($"Invalid NMB1 uncompressedSize {expectedUncompressed} for stored size {raw.Length}.");
+            }
+
+            using var output = slice.UncompressedSize is int cap ? new MemoryStream(cap) : new MemoryStream();
+            int pos = 0;
+            int blocksRead = 0;
+            while (pos < raw.Length)
+            {
+                if (pos + 6 > raw.Length)
+                {
+                    throw new InvalidDataException("Truncated NMB1 stored block header.");
+                }
+
+                int chunkLen = BinaryPrimitives.ReadInt32LittleEndian(raw.AsSpan(pos, 4));
+                if (chunkLen < 0 || chunkLen > headerBlockSize)
+                {
+                    throw new InvalidDataException($"Invalid NMB1 stored block length {chunkLen}.");
+                }
+
+                if (raw[pos + 4] != 0xCC || raw[pos + 5] != 0x06)
+                {
+                    throw new InvalidDataException("Invalid NMB1 stored block marker (expected 0xCC 0x06).");
+                }
+
+                pos += 6;
+                if (chunkLen > raw.Length - pos)
+                {
+                    throw new InvalidDataException("Truncated NMB1 stored block payload.");
+                }
+
+                output.Write(raw, pos, chunkLen);
+                pos += chunkLen;
+                blocksRead++;
+            }
+
+            if (blocksRead == 0)
+            {
+                throw new InvalidDataException("NMB1 entry contains no stored blocks.");
+            }
+
+            if (slice.BlockCount is int expectedBlocks && blocksRead != expectedBlocks)
+            {
+                throw new InvalidDataException($"NMB1 block count mismatch: expected {expectedBlocks}, read {blocksRead}.");
+            }
+
+            byte[] result = output.ToArray();
+            if (slice.UncompressedSize is int expectedSize && result.Length != expectedSize)
+            {
+                throw new InvalidDataException($"NMB1 uncompressed size mismatch: expected {expectedSize}, got {result.Length}.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(slice.Sha256) &&
+                !Convert.ToHexStringLower(SHA256.HashData(result)).Equals(slice.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"NMB1 entry '{slice.NormalizedPath}' failed SHA-256 verification.");
+            }
+
+            return result;
         }
+
+        if (slice.Offset < 0 || slice.Size < 0 || slice.Offset > fs.Length - slice.Size)
+        {
+            throw new InvalidDataException("Bundle entry offset/size falls outside bundle bounds.");
+        }
+
+        fs.Seek(slice.Offset, SeekOrigin.Begin);
+        byte[] legacyRaw = new byte[slice.Size];
+        fs.ReadExactly(legacyRaw);
 
         // Unwrap stored Oodle block prefix (0xCC 0x06) when present (10-verification.md §2).
-        if (raw.Length >= 2 && raw[0] == 0xCC && raw[1] == 0x06)
+        if (legacyRaw.Length >= 2 && legacyRaw[0] == 0xCC && legacyRaw[1] == 0x06)
         {
-            return raw[2..];
+            return legacyRaw[2..];
         }
 
-        return raw;
+        return legacyRaw;
     }
 
     private static Dictionary<string, BundleEntrySlice> ParseBundleManifest(string manifestPath)
     {
         var map = new Dictionary<string, BundleEntrySlice>(StringComparer.Ordinal);
         using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        int? formatVersion = doc.RootElement.TryGetProperty("formatVersion", out JsonElement fv) && fv.ValueKind == JsonValueKind.Number
+            ? fv.GetInt32()
+            : null;
+        int blockSize = doc.RootElement.TryGetProperty("blockSize", out JsonElement bs) && bs.ValueKind == JsonValueKind.Number
+            ? bs.GetInt32()
+            : 0x40000;
+
         if (doc.RootElement.TryGetProperty("files", out JsonElement files) && files.ValueKind == JsonValueKind.Array)
         {
             foreach (JsonElement item in files.EnumerateArray())
@@ -364,8 +494,18 @@ public sealed class FileOverlayService : IFileOverlayService
                 long offset = item.TryGetProperty("offset", out JsonElement o) && o.ValueKind == JsonValueKind.Number ? o.GetInt64() : 0;
                 int size = item.TryGetProperty("size", out JsonElement s) && s.ValueKind == JsonValueKind.Number ? s.GetInt32()
                     : item.TryGetProperty("storedSize", out JsonElement ss) && ss.ValueKind == JsonValueKind.Number ? ss.GetInt32() : 0;
+                int? uncompressedSize = item.TryGetProperty("uncompressedSize", out JsonElement us) && us.ValueKind == JsonValueKind.Number
+                    ? us.GetInt32()
+                    : null;
+                int? blockCount = item.TryGetProperty("blockCount", out JsonElement bc) && bc.ValueKind == JsonValueKind.Number
+                    ? bc.GetInt32()
+                    : null;
+                string? sha256 = item.TryGetProperty("sha256", out JsonElement sh) && sh.ValueKind == JsonValueKind.String
+                    ? sh.GetString()
+                    : null;
+
                 string normalized = ClientTextEncoding.NormalizeVirtualPath(path);
-                map[normalized] = new BundleEntrySlice(normalized, offset, size);
+                map[normalized] = new BundleEntrySlice(normalized, offset, size, uncompressedSize, blockCount, formatVersion, blockSize, sha256);
             }
         }
 

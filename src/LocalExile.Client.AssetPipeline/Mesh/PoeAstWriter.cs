@@ -29,6 +29,7 @@ public sealed record AstValidationInfo(
 public static class PoeAstWriter
 {
     public const byte AstVersion = 7;
+    private static readonly Encoding Utf16LeNoBom = new UnicodeEncoding(bigEndian: false, byteOrderMark: false);
 
     /// <summary>
     /// Default Maxwell spinning + floating clips (<c>happy</c>, <c>idle</c>, <c>run</c>).
@@ -172,7 +173,7 @@ public static class PoeAstWriter
         }
 
         sb.Append("BoneGroups 0\r\n");
-        return Encoding.Unicode.GetBytes(sb.ToString());
+        return Utf16LeNoBom.GetBytes(sb.ToString());
     }
 
     /// <summary>

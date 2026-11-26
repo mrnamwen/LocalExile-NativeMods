@@ -47,6 +47,25 @@ public sealed class GlbMeshAstAndAudioTests
         Assert.Contains("extends \"Metadata/Pet/Pet\"", otText, StringComparison.Ordinal);
         Assert.DoesNotContain("StateMachine", otText, StringComparison.Ordinal);
 
+        // Validate .sm, .mat, and .amd are BOM-less UTF-16LE (no 0xFF 0xFE prefix)
+        foreach (string noBomPath in new[]
+        {
+            "Art/Models/Mods/Maxwell/maxwell.sm",
+            "Art/Models/Mods/Maxwell/maxwell.amd",
+            "Art/Models/Mods/Maxwell/textures/maxwell_body.mat",
+            "Art/Models/Mods/Maxwell/textures/maxwell_whiskers.mat",
+        })
+        {
+            byte[] noBomBytes = bundle.Files[noBomPath];
+            Assert.True(noBomBytes.Length >= 2, $"Expected non-empty UTF-16LE content in '{noBomPath}'.");
+            Assert.Equal(0, noBomBytes.Length & 1);
+            Assert.False(noBomBytes[0] == 0xFF && noBomBytes[1] == 0xFE, $"Unexpected UTF-16LE BOM in '{noBomPath}'.");
+            Assert.False(noBomBytes[0] == 0xFE && noBomBytes[1] == 0xFF, $"Unexpected UTF-16BE BOM in '{noBomPath}'.");
+            string decoded = Encoding.Unicode.GetString(noBomBytes);
+            Assert.DoesNotContain('\uFEFF', decoded);
+            Assert.DoesNotContain('\0', decoded);
+        }
+
         // Validate .mat files parse as version 4 JSON, use valid PoE 3.29 format labels (never "RGBA8"), and whiskers includes ForceAlpha
         string bodyMat = Encoding.Unicode.GetString(bundle.Files["Art/Models/Mods/Maxwell/textures/maxwell_body.mat"]);
         Assert.DoesNotContain("\"RGBA8\"", bodyMat, StringComparison.Ordinal);

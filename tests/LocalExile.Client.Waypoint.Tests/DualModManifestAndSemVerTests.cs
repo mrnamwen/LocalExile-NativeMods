@@ -179,4 +179,97 @@ public sealed class DualModManifestAndSemVerTests
         Assert.Contains(conflicts, c => c.Code == "CNF005" && c.Kind == "CustomControl");
         Assert.Contains(conflicts, c => c.Code == "CNF006" && c.Kind == "ContentRegistry");
     }
+
+    [Theory]
+    [InlineData("BaseItemTypes")]
+    [InlineData("ItemVisualIdentity")]
+    [InlineData("CurrencyItems")]
+    [InlineData("MtxTypes")]
+    [InlineData("MTXTypes")]
+    [InlineData("MtxTypeGameSpecific")]
+    [InlineData("mtxtypegamespecific")]
+    [InlineData("Pet")]
+    [InlineData("pet")]
+    [InlineData("MonsterVarieties")]
+    [InlineData("NPCs")]
+    [InlineData("Chests")]
+    [InlineData("Projectiles")]
+    [InlineData("MiscObjects")]
+    [InlineData("MiscAnimated")]
+    [InlineData("HideoutDoodads")]
+    [InlineData("ExecuteGEAL")]
+    [InlineData("ClientStrings")]
+    [InlineData("currencyitems")]
+    [InlineData("itemvisualidentity")]
+    public void ValidateManifest_AcceptsAllVerifiedAppendableRegistryTablesWithoutNc018(string tableName)
+    {
+        var manifest = new DualModManifest
+        {
+            Id = "registry-check",
+            Version = "1.0.0",
+            CompatibleClientVersions = ["0.5.2-beta"],
+            NativeClient = new NativeClientManifest
+            {
+                SdkVersionRange = ">=0.1.0-poc <2.0.0",
+                SupportedBuilds = ["3.29.3d"],
+                ContentRegistries = [new(tableName, $"Metadata/Mods/Test/{tableName}_Row", "append")]
+            }
+        };
+
+        var report = DualModPackageValidator.ValidateManifest(manifest);
+
+        Assert.True(report.IsValid, string.Join("; ", report.Errors.Select(e => $"{e.Code}: {e.Message}")));
+        Assert.DoesNotContain(report.Warnings, w => w.Code == "NC018");
+    }
+
+    [Fact]
+    public void ValidateManifest_EmitsNc018ForUnverifiedRegistryTable()
+    {
+        var manifest = new DualModManifest
+        {
+            Id = "unverified-table",
+            Version = "1.0.0",
+            CompatibleClientVersions = ["0.5.2-beta"],
+            NativeClient = new NativeClientManifest
+            {
+                SdkVersionRange = ">=0.1.0-poc <2.0.0",
+                SupportedBuilds = ["3.29.3d"],
+                ContentRegistries = [new("UnverifiedCustomTable", "Metadata/Mods/Test/Row", "append")]
+            }
+        };
+
+        var report = DualModPackageValidator.ValidateManifest(manifest);
+
+        Assert.True(report.IsValid);
+        Assert.Contains(report.Warnings, w => w.Code == "NC018" && w.Message.Contains("UnverifiedCustomTable", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("DualMod.MaxwellPet")]
+    [InlineData("DualMod.SiphonOrb")]
+    [InlineData("DualMod.HarvestGarden")]
+    public void ValidateManifest_RealShowcaseModManifestsHaveZeroNc018Warnings(string exampleFolderName)
+    {
+        string modJsonPath = Path.Combine(FindRepoRoot(), "examples", exampleFolderName, "mod.json");
+        var manifest = DualModManifest.LoadFromFile(modJsonPath);
+
+        var report = DualModPackageValidator.ValidateManifest(manifest);
+
+        Assert.True(report.IsValid, string.Join("; ", report.Errors.Select(e => $"{e.Code}: {e.Message}")));
+        Assert.DoesNotContain(report.Warnings, w => w.Code == "NC018");
+        Assert.Empty(report.Warnings);
+    }
+
+    private static string FindRepoRoot()
+    {
+        string? dir = AppContext.BaseDirectory;
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir, "NativeMods.slnx")))
+                return dir;
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        throw new DirectoryNotFoundException("Could not locate NativeMods repository root.");
+    }
 }

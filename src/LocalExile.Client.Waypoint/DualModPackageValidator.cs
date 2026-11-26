@@ -36,10 +36,15 @@ public static class DualModPackageValidator
         "3.29.3d", "3.29.3c"
     };
 
-    /// <summary>Tables verified appendable in 10-verification.md §5.</summary>
+    /// <summary>Tables verified appendable in 10-verification.md §5 and live 3.29.3d testing.</summary>
     public static readonly IReadOnlySet<string> AppendableRegistryTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "BaseItemTypes",
+        "ItemVisualIdentity",
+        "CurrencyItems",
+        "MtxTypes",
+        "MtxTypeGameSpecific",
+        "Pet",
         "MonsterVarieties",
         "NPCs",
         "Chests",
@@ -543,16 +548,70 @@ public static class DualModPackageValidator
         return Convert.ToHexStringLower(SHA256.HashData(stream));
     }
 
-    internal static string ReadTextAutoEncoding(string path)
+    /// <summary>Reads a text file from disk, auto-detecting UTF-16LE/BE (with or without BOM) or UTF-8 and stripping leading BOM characters.</summary>
+    public static string ReadTextAutoEncoding(string path)
     {
         byte[] bytes = File.ReadAllBytes(path);
+        string text;
         if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
-            return System.Text.Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
-        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
-            return System.Text.Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
-        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-            return System.Text.Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
-        return System.Text.Encoding.UTF8.GetString(bytes);
+        {
+            text = System.Text.Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+        }
+        else if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+        {
+            text = System.Text.Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+        }
+        else if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        {
+            text = System.Text.Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
+        }
+        else if (bytes.Length >= 2 && (bytes.Length & 1) == 0 && bytes.AsSpan().IndexOf((byte)0) >= 0)
+        {
+            int evenZeros = 0;
+            int oddZeros = 0;
+            for (int i = 0; i < bytes.Length; i += 2)
+            {
+                if (bytes[i] == 0) evenZeros++;
+                if (bytes[i + 1] == 0) oddZeros++;
+            }
+
+            if (evenZeros > oddZeros)
+            {
+                string beText = System.Text.Encoding.BigEndianUnicode.GetString(bytes);
+                if (ContainsUnexpectedAsciiControlChar(beText))
+                {
+                    string leText = System.Text.Encoding.Unicode.GetString(bytes);
+                    text = !ContainsUnexpectedAsciiControlChar(leText) ? leText : beText;
+                }
+                else
+                {
+                    text = beText;
+                }
+            }
+            else
+            {
+                text = System.Text.Encoding.Unicode.GetString(bytes);
+            }
+        }
+        else
+        {
+            text = System.Text.Encoding.UTF8.GetString(bytes);
+        }
+
+        return text.TrimStart('\uFEFF');
+    }
+
+    private static bool ContainsUnexpectedAsciiControlChar(string text)
+    {
+        foreach (char c in text)
+        {
+            if ((c >= '\x01' && c <= '\x08') || (c >= '\x0B' && c <= '\x0C') || (c >= '\x0E' && c <= '\x1F'))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void ValidateNativeClientSection(

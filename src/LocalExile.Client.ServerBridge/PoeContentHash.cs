@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Text;
 
 namespace LocalExile.Client.ServerBridge;
 
@@ -12,8 +13,8 @@ public static class PoeContentHash
     private const uint Murmur2Multiplier = 0x5BD1E995u;
 
     /// <summary>
-    /// Computes Path of Exile 3.29's 32-bit MurmurHash2 (seed <c>0</c>) over <paramref name="metadataPath"/>
-    /// with each UTF-16 code unit narrowed to its low byte (matching <c>0x14247b370</c> -&gt; <c>0x140df6e10</c>).
+    /// Computes Path of Exile 3.29's 32-bit MurmurHash2 (seed <c>0</c>) over UTF-8 encoded <paramref name="metadataPath"/>
+    /// (matching <c>0x14247b370</c> -&gt; <c>0x140df6e10</c> and <c>PoeHashing.Hash32</c>).
     /// </summary>
     /// <param name="metadataPath">Virtual metadata path (for example <c>Metadata/Items/Pets/Mods/MaxwellPet</c>).</param>
     /// <returns>The 32-bit unsigned hash matching PoE 3.29's <c>HASH32</c> / <c>ObjectTypeHash</c>.</returns>
@@ -21,24 +22,15 @@ public static class PoeContentHash
     {
         ArgumentNullException.ThrowIfNull(metadataPath);
 
-        if (metadataPath.Length <= 256)
+        int maxBytes = Encoding.UTF8.GetMaxByteCount(metadataPath.Length);
+        if (maxBytes <= 1024)
         {
-            Span<byte> stackBuffer = stackalloc byte[metadataPath.Length];
-            for (int i = 0; i < metadataPath.Length; i++)
-            {
-                stackBuffer[i] = (byte)metadataPath[i];
-            }
-
-            return MurmurHash2(stackBuffer);
+            Span<byte> stackBuffer = stackalloc byte[maxBytes];
+            int written = Encoding.UTF8.GetBytes(metadataPath, stackBuffer);
+            return MurmurHash2(stackBuffer[..written]);
         }
 
-        byte[] heapBuffer = new byte[metadataPath.Length];
-        for (int i = 0; i < metadataPath.Length; i++)
-        {
-            heapBuffer[i] = (byte)metadataPath[i];
-        }
-
-        return MurmurHash2(heapBuffer);
+        return MurmurHash2(Encoding.UTF8.GetBytes(metadataPath));
     }
 
     /// <summary>
