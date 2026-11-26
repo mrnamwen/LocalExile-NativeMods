@@ -2,7 +2,7 @@
 
 Developer documentation for the **NativeMods 3.29** Proof of Concept — a universal client script extender, managed `.NET 10` mod host, public Client SDK, LocalExile Server Bridge, PE32+ patcher, and Waypoint dual-side mod integration targeting **Path of Exile 3.29.3c and 3.29.3d**.
 
-> **Status:** Proof of Concept (`SdkVersion 0.1.0-poc`, C ABI `0.1.0`). All reverse-engineered addresses, offsets, and constraints are grounded in [`07-spike-results.md`](../07-spike-results.md), [`08-deep-analysis.md`](../08-deep-analysis.md), [`10-verification.md`](../10-verification.md) (authoritative where `08`/`09` disagree), [`11-client-sdk.md`](../11-client-sdk.md), and [`12-ceiling.md`](../12-ceiling.md).
+> **Status:** Phase 0 (`0.2.0`) & **Phase 1 (`0.3.0`) Complete** (`SdkVersion 0.3.0`, C ABI `0.3.0`, `240` verified `3.29.3d` symbols / `160` offsets). All reverse-engineered addresses, offsets, and constraints are grounded in [`07-spike-results.md`](../07-spike-results.md), [`08-deep-analysis.md`](../08-deep-analysis.md), [`10-verification.md`](../10-verification.md) (authoritative where `08`/`09` disagree), [`11-client-sdk.md`](../11-client-sdk.md), [`12-ceiling.md`](../12-ceiling.md), and [`.codexmind/research/phase1-0.3.0-notes.md`](../.codexmind/research/phase1-0.3.0-notes.md).
 
 ## Documentation Index
 
@@ -69,8 +69,11 @@ flowchart TB
 | `src/LocalExile.Client.ServerBridge/` | LocalExile Gateway-side bridge for handshake negotiation, typed messaging, server-driven UI, and reusable Pet MTX Cosmetics `K` menu registration (`PoeContentHash`, `CustomPetMtxDefinition`, `LocalExilePetMtxRegistrar`) |
 | `src/LocalExile.Client.AssetPipeline/` | 3.29.3d asset & `.datc64` pipeline library + CLI (`.glb` → `.smd`/`.ast` v7, DX10 `.dds` + `.dds.header`, `Dat64TablePatcher` / `MaxwellDatPatcher`, `Bundles2Reader`, `AudioTranscoder`) |
 | `src/LocalExile.Client.Waypoint/` | Waypoint manifest parser, `.ui`/conflict validator, stored-block bundle packer, and installer |
-| `examples/DualMod.HarvestGarden/` | End-to-end dual-side Harvest Garden PoC mod |
+| `examples/DualMod.HarvestGarden/` | End-to-end dual-side Harvest Garden showcase mod |
 | `examples/DualMod.MaxwellPet/` | End-to-end brand-new Pet MTX dual-side mod (`Maxwell the Cat`, Cosmetics `K` menu, `.ui` panel, looping `.ogg` audio) |
+| `examples/DualMod.SiphonOrb/` | End-to-end brand-new Custom Currency dual-side mod (`Orb of Siphoning` / `Charged Orb of Siphoning`, affix steal/imbue) |
+| `examples/DualMod.StashQol/` | Phase 1 (`0.3.0`) in-game QoL showcase (8 features: Deposit All, Vendor All, Sort, Map/Blight upgrades, Regex Roller, `Ctrl+Shift+RMB` bulk use, PoB import + toasts) |
+| `examples/DualMod.SkipCampaign/` | Phase 1 (`0.3.0`) pre-game showcase (`LeagueOverlay` & `CreateCharacterBar` toggle, `IPreGameService` `C→S 0x12` injection, `GameEvents.CharacterCreated`) |
 | `scripts/` | Cross-compilation (`build-win64.sh`), Maxwell asset generator (`build-maxwell-assets.sh`), and isolated `Xvfb` Proton test runners (`run-r1-proton.sh`, `run-maxwell-proton.sh`) |
 | `tests/` | Automated xUnit test suites for Patcher, SDK/Host/ServerBridge, AssetPipeline, MaxwellPet, and Waypoint/HarvestGarden E2E |
 | `.codexmind/` | Cross-session research findings, architecture decisions, and known regressions |
@@ -90,7 +93,7 @@ dotnet build NativeMods.slnx -c Release
 dotnet test NativeMods.slnx -c Release --no-build
 ```
 
-Verified baseline: **105/105 .NET xUnit tests passing** (`NativeMods.slnx`: 82 — `LocalExile.Client.Tests`: 41, `LocalExile.Client.Waypoint.Tests`: 32, `LocalExile.Client.Patcher.Tests`: 9; plus `LocalExile.Client.AssetPipeline.Tests`: 10 and `LocalExile.Client.MaxwellPet.Tests`: 13) with 0 warnings and 0 errors (`TreatWarningsAsErrors=true`).
+Verified baseline (`0.3.0`): **`310/310` .NET xUnit tests passing** across all 9 test suites (`33` solution projects: `LocalExile.Client.Tests`: 106, `LocalExile.Client.Waypoint.Tests`: 69, `LocalExile.Client.AssetPipeline.Tests`: 41, `LocalExile.Client.SiphonOrb.Tests`: 22, `LocalExile.Client.MaxwellPet.Tests`: 19, `LocalExile.Client.Phase0E2E.Tests`: 18, `DualMod.StashQol.Tests`: 15, `DualMod.SkipCampaign.Tests`: 11, `LocalExile.Client.Patcher.Tests`: 9) with 0 warnings and 0 errors (`TreatWarningsAsErrors=true`).
 
 ### 2. Build and Run Native Shim Host-Side Tests (Linux / Cross-Platform)
 
@@ -100,7 +103,7 @@ cmake --build build/native-shim
 ctest --test-dir build/native-shim --output-on-failure
 ```
 
-Verified baseline: **10/10 C++20 shim tests passing** under `-Wall -Wextra -Wpedantic -Werror`.
+Verified baseline (`0.3.0`): **`24/24` C++20 shim tests passing** under `-Wall -Wextra -Wpedantic -Werror`.
 
 ### 3. Inspect Addresses and Run the Patcher CLI
 

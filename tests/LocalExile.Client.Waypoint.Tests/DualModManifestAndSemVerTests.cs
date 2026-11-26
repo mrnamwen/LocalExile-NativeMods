@@ -229,7 +229,7 @@ public sealed class DualModManifestAndSemVerTests
     }
 
     [Fact]
-    public void AppendableRegistryTables_ContainsAll18LiveVerifiedTables_AndLeavesStatsUnclosed()
+    public void AppendableRegistryTables_ContainsAll18LiveVerifiedTables_AndClosesStats()
     {
         string[] expected =
         [
@@ -259,23 +259,32 @@ public sealed class DualModManifestAndSemVerTests
             Assert.Contains(table, DualModPackageValidator.AppendableRegistryTables, StringComparer.OrdinalIgnoreCase);
         }
 
-        Assert.DoesNotContain("Stats", DualModPackageValidator.ClosedRegistryTables, StringComparer.OrdinalIgnoreCase);
-        var statsManifest = new DualModManifest
+        Assert.Contains("ItemClasses", DualModPackageValidator.ClosedRegistryTables, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("Stats", DualModPackageValidator.ClosedRegistryTables, StringComparer.OrdinalIgnoreCase);
+
+        foreach (string statsName in new[] { "Stats", "stats" })
         {
-            Id = "stats-probe",
-            Version = "1.0.0",
-            CompatibleClientVersions = ["0.5.2-beta"],
-            NativeClient = new NativeClientManifest
+            var statsManifest = new DualModManifest
             {
-                SdkVersionRange = ">=0.1.0-poc <2.0.0",
-                SupportedBuilds = ["3.29.3d"],
-                ContentRegistries = [new("Stats", "custom_probe_stat", "append")]
-            }
-        };
-        var report = DualModPackageValidator.ValidateManifest(statsManifest);
-        Assert.True(report.IsValid);
-        Assert.DoesNotContain(report.Errors, e => e.Code == "NC016");
-        Assert.Contains(report.Warnings, w => w.Code == "NC017");
+                Id = "stats-probe",
+                Version = "1.0.0",
+                CompatibleClientVersions = ["0.5.2-beta"],
+                NativeClient = new NativeClientManifest
+                {
+                    SdkVersionRange = ">=0.1.0-poc <2.0.0",
+                    SupportedBuilds = ["3.29.3d"],
+                    ContentRegistries = [new(statsName, "custom_probe_stat", "append")]
+                }
+            };
+            var report = DualModPackageValidator.ValidateManifest(statsManifest);
+            Assert.False(report.IsValid);
+            var nc016 = Assert.Single(report.Errors, e => e.Code == "NC016");
+            Assert.Contains("23,362", nc016.Message, StringComparison.Ordinal);
+            Assert.Contains("0x5b43", nc016.Message, StringComparison.Ordinal);
+            Assert.Contains("StatDescriptions", nc016.Message, StringComparison.Ordinal);
+            Assert.Contains("StatsComponent", nc016.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(report.Warnings, w => w.Code == "NC017");
+        }
     }
 
     [Fact]

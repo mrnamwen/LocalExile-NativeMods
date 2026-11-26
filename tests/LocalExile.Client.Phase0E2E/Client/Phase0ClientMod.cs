@@ -78,7 +78,7 @@ public sealed class Phase0ClientMod : IClientMod
         EmitAssertion(
             "E2E-01",
             SdkVersion.Parsed >= new Version(0, 2, 0)
-                && SdkVersion.Current.StartsWith("0.2.0", StringComparison.Ordinal)
+                && SdkVersion.IsCompatible(">=0.2.0 <2.0.0")
                 && _loadOnGameThread,
             $"sdk={SdkVersion.Current} parsed={SdkVersion.Parsed} isOnGameThread={_loadOnGameThread}");
 

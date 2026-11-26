@@ -1,20 +1,22 @@
 # NativeMods Modding Reference (Humans & AI Agents)
 
-A complete, copy-paste-ready guide to building, testing, packaging, and verifying **Path of Exile 3.29** mods for [LocalExile](https://github.com/LocalExile/LocalExile) using **NativeMods** (`SdkVersion 0.2.0`, C ABI `0.2.0`).
+A complete, copy-paste-ready guide to building, testing, packaging, and verifying **Path of Exile 3.29** mods for [LocalExile](https://github.com/LocalExile/LocalExile) using **NativeMods** (`SdkVersion 0.3.0`, C ABI `0.3.0`).
 
 > **For AI Coding Agents — Fast Orientation**
 > - **Frozen target builds:** Path of Exile **3.29.3c** and **3.29.3d** only (Win64 / Proton).
 > - **Never modify stock client files:** Never write to `Client/Game.exe`, `Client/Content.ggpk`, or `Client/Bundles2/`. All mod assets ship as loose overlays (`NATIVEMODS_OVERLAY_DIR` / `Mods/Client/<id>/files/`) or stored-block `NMB1` bundles.
-> - **Reference implementations in this repo (`0.2.0`):**
+> - **Reference implementations in this repo (`0.3.0`):**
 >   - `examples/DualMod.HarvestGarden/` — Dual-side mod with custom UI control (`GrowthGauge`), GEAL built-in (`GardenRipen`), custom ruleset (`0xA1`), async `On<T>` handlers, and graceful vanilla chat fallback.
 >   - `examples/DualMod.MaxwellPet/` — Brand-new Pet MTX mod (appended `.datc64` rows, event-driven `LocalExileGatewayHost` + `OnCosmeticChanged` Cosmetics `K` menu integration, `.ui` panel with `ITextBox.MaxLength` / `ICheckBox`, looping `.ogg` audio, `.glb`/`.dds`/`.ast` pipeline via `scripts/build-maxwell-assets.sh`).
 >   - `examples/DualMod.SiphonOrb/` — Brand-new dual-stage Custom Currency mod (**Orb of Siphoning** + **Charged Orb of Siphoning**): `LocalExileGatewayHost` + `LocalExileGatewayTransactions` + `LocalExileItemAffixService`, appended `BaseItemTypes`/`ItemVisualIdentity`/`CurrencyItems` `.datc64` rows, flood-fill alpha-cutout `78x78` RGBA8 currency icons, Recombinator-style `SiphonPicker.ui`, persistent `ModSection.Enchant` stored affix on the Charged Orb, and `C->S 0x0071`/`0x0072` currency routing via `scripts/build-siphon-assets.sh`.
+>   - `examples/DualMod.StashQol/` — Phase 1 (`0.3.0`) in-game QoL showcase implementing all 8 features (Deposit All, Vendor All, Inventory Sort, Map Tier Upgrade, Blight Oil Upgrade, Regex Roller, `Ctrl+Shift+RMB` Bulk Stack Use, PoB Passive Import + HUD Toasts) using `IScreensService`, `IInputService`/`IKeybindRegistry`, `IHoverService`, `IToastService`, and `LocalExile` Part 2a Gateway hooks.
+>   - `examples/DualMod.SkipCampaign/` — Phase 1 (`0.3.0`) pre-game character creation showcase registering a `Skip Campaign` checkbox on `ScreenSlot.LeagueCardModes` & `ScreenSlot.CreateCharacterBar`, injecting `skip_campaign=1` into `CreateCharacter.S78` via `IPreGameService`, and configuring spawn/progression via `GameEvents.CharacterCreated`.
 > - **Key libraries:**
->   - Client mods compile against **`LocalExile.Client.Sdk`** (`0.2.0`) *only* (never `LocalExile.Client.Host`).
->   - Server mods use **`LocalExile.Client.ServerBridge`** (`0.2.0`: `LocalExileGatewayHost`, async `On<T>` / `OnClientReady`, UI batching, `Window.Closed`, `LocalExileGatewayTransactions`, Pet MTX & custom currency registration, and item affix manipulation).
+>   - Client mods compile against **`LocalExile.Client.Sdk`** (`0.3.0`) *only* (never `LocalExile.Client.Host`).
+>   - Server mods use **`LocalExile.Client.ServerBridge`** (`0.3.0`: `LocalExileGatewayHost`, Tier 1 `IClientPhase1Session`, async `On<T>` / `OnClientReady`, UI batching, `Window.Closed`, `LocalExileGatewayTransactions`, Pet MTX & custom currency registration, and item affix manipulation).
 >   - Asset conversion & `.datc64` row appending use **`LocalExile.Client.AssetPipeline`**.
 >   - Validation, `.ui` linting, `NMB1` bundling, and installation use **`LocalExile.Client.Waypoint`**.
-> - **Build & test gate:** `dotnet build NativeMods.slnx -c Release` and `dotnet test NativeMods.slnx -c Release --no-build` (`TreatWarningsAsErrors=true`, `net10.0`; includes all 6 `src/`, 9 `examples/`, and 6 test projects).
+> - **Build & test gate:** `dotnet build NativeMods.slnx -c Release` and `dotnet test NativeMods.slnx -c Release --no-build` (`TreatWarningsAsErrors=true`, `net10.0`; `33` projects across `src/`, `examples/`, and `tests/`).
 
 ---
 
@@ -33,6 +35,7 @@ A complete, copy-paste-ready guide to building, testing, packaging, and verifyin
    - [3.5 GEAL Built-Ins, Custom Rulesets & Custom Opcodes](#35-geal-built-ins-custom-rulesets--custom-opcodes)
    - [3.6 Adding Brand-New In-Game Content (NOT Replacers)](#36-adding-brand-new-in-game-content-not-replacers)
    - [3.7 Using `Raw` Memory & Native Hooks Safely](#37-using-raw-memory--native-hooks-safely)
+   - [3.8 Phase 1 (`0.3.0`) APIs: Stock Screens, Input/Keybinds, Hover, Toasts, Pre-Game & Tier 1 ServerBridge](#38-phase-1-030-apis-stock-screens-inputkeybinds-hover-toasts-pre-game--tier-1-serverbridge)
 4. [Testing, Cross-Compilation & Live Proton Verification](#4-testing-cross-compilation--live-proton-verification)
    - [4.1 Fast Deterministic Unit & E2E Testing](#41-fast-deterministic-unit--e2e-testing)
    - [4.2 Cross-Compiling Win64 DLLs & Wine Smoke Test](#42-cross-compiling-win64-dlls--wine-smoke-test)
@@ -331,7 +334,7 @@ Violating any of these verified 3.29.3c/d invariants causes hard crashes, infini
 
 ### 1. Frozen 3.29.3c & 3.29.3d Target Only
 - `nativeClient.supportedBuilds` must only contain `"3.29.3d"` and/or `"3.29.3c"` (any other build fails validation with `NC004`).
-- Under Proton/Wine and Windows ASLR, `Game.patched.exe` relocates (empirically observed at `0x6FFFF8A30000` instead of `0x140000000`). **Never hardcode absolute addresses** — always resolve symbols via `context.Addresses` (`IAddressLibrary`), which rebases verified RVAs against `ImageBase`. `data/addresses/3.29.3d.json` (`122` symbols, `37` offsets, `18` constants) is code-generated directly into `src/native-shim/src/address_table.cpp` (`scripts/generate-address-table.py --check`).
+- Under Proton/Wine and Windows ASLR, `Game.patched.exe` relocates (empirically observed at `0x6FFFF8A30000` instead of `0x140000000`). **Never hardcode absolute addresses** — always resolve symbols via `context.Addresses` (`IAddressLibrary`), which rebases verified RVAs against `ImageBase`. `data/addresses/3.29.3d.json` (`240` symbols, `160` offsets, `18` constants) is code-generated directly into `src/native-shim/src/address_table.cpp` (`scripts/generate-address-table.py --check`).
 
 ### 2. Zero Edits to Stock `Client/` Files
 - Never modify `Client/Game.exe`, `Client/Content.ggpk`, or `Client/Bundles2/`.
@@ -351,7 +354,7 @@ Path of Exile 3.29 silently fails or throws C++ parse exceptions on wrong encodi
 | File Extensions | Required Encoding | Helper |
 |---|---|---|
 | `.ui`, `.ot`, `.otc`, `.it`, `.itc`, `.ao`, `.aoc`, `.act`, `.epk`, `.ddt`, `.pet`, `.trl` | **UTF-16LE with BOM (`0xFF 0xFE`) + CRLF (`\r\n`)** | `ClientTextEncoding.EncodeUtf16LeBomCrlf`, `ClientTextEncoding.EncodeTextForPath`, `IFileOverlayService.RegisterVirtualTextFile`, `ModBundlePacker.EncodeClientText` |
-| `.sm` (v6), `.mat` (v4 JSON), `.amd` | **UTF-16LE without BOM + CRLF (`\r\n`)** | `ClientTextEncoding.EncodeUtf16LeNoBomCrlf`, `ClientTextEncoding.EncodeTextForPath`, `ModBundlePacker.EncodeClientTextNoBom`, `PoeAstWriter.BuildAmd`, `GlbToPoeMeshConverter` |
+| `.sm` (v6), `.mat` (v4 JSON), `.amd`, `art/uiimages1.txt` | **UTF-16LE without BOM + CRLF (`\r\n`)** | `ClientTextEncoding.EncodeUtf16LeNoBomCrlf`, `ClientTextEncoding.EncodeTextForPath`, `ModBundlePacker.EncodeClientTextNoBom`, `PoeAstWriter.BuildAmd`, `GlbToPoeMeshConverter` |
 | `mod.json`, `settings.json`, `manifest.json` | UTF-8 | Standard JSON |
 
 `FileOverlayService.RegisterVirtualTextFile` automatically dispatches through `ClientTextEncoding.EncodeTextForPath` (so `.sm`/`.mat`/`.amd` registered virtually get BOM-less UTF-16LE CRLF), and BOM stripping via `TrimStart('\uFEFF')` is idempotent.
@@ -386,6 +389,11 @@ Always lint every `.ui` file with `UiLayoutLinter.Lint(...)` before testing in-g
 - **Servers NEVER push executable code to clients.** Client assemblies are installed explicitly by the player via Waypoint and verified by SHA-256 (`assemblySha256` / `bundleSha256` / `integrity`).
 - Package limits enforced by `DualModPackageValidator`: `MaxManifestBytes = 128 KB`, `MaxPackageBytes = 64 MB`, `MaxPackageFiles = 2000`, zero symlinks/reparse points, zip-slip rejection.
 - `rawAccess: true` requires a non-empty `rawAccessJustification` (`NC008`) and is blocked by `WaypointModInstaller` unless `InstallOptions.AllowRawAccess == true`.
+
+### 10. `ModHost` Auto-Reload Hazard (Server Mods)
+- LocalExile's server `ModHost` watches `Mods/Binaries/<id>/` and triggers a hot-reload whenever any file inside a mod's binary folder changes. **Never write runtime state, caches, or logs into `Mods/Binaries/<id>/`**, or your server mod will enter a continuous reload loop.
+- Persist server mod state through LocalExile's `IPlayerWorld.AccountData` / `CharacterData` APIs or write files under `<LocalExileRoot>/data/mods/<id>/`.
+- NativeMods' client runtime files under `Mods/Client/` (`.extender-state.json`, `.nativemods-ledger.json`, `keybinds.json`, Phase 3 `.merged-cache/`) sit outside `ModFolders.Folder` (`Mods/Binaries`) and do not trigger `ModHost` reloads.
 
 ---
 
@@ -784,8 +792,10 @@ context.TrackDisposable(context.Game.Opcodes.RegisterStreamHandler(
 NativeMods is built to **add brand-new items, world objects, and Pet MTXs** alongside stock content — never overwriting or sacrificing an existing stock pet or item.
 
 #### Appendable vs. Closed `.datc64` Tables
-- **Appendable registry tables (`DualModPackageValidator.AppendableRegistryTables` — 15 verified tables):** `BaseItemTypes`, `ItemVisualIdentity`, `CurrencyItems`, `MtxTypes`, `MtxTypeGameSpecific`, `Pet`, `MonsterVarieties`, `NPCs`, `Chests`, `Projectiles`, `MiscObjects`, `MiscAnimated`, `HideoutDoodads`, `ExecuteGEAL`, `ClientStrings`.
-- **Closed tables (`DualModPackageValidator.ClosedRegistryTables`):** `ItemClasses` (bound to compiled C++ enums — fails validation with `NC016`). `Stats` emits warning `NC017`.
+- **Appendable registry tables (`DualModPackageValidator.AppendableRegistryTables` — 18 live-verified tables):** `BaseItemTypes`, `ItemVisualIdentity`, `CurrencyItems`, `MtxTypes`, `MtxTypeGameSpecific`, `Pet`, `MonsterVarieties`, `NPCs`, `Chests`, `Projectiles`, `MiscObjects`, `MiscAnimated`, `HideoutDoodads`, `ExecuteGEAL`, `ClientStrings`, `Mods`, `ModType`, `BuffDefinitions`.
+- **Closed tables (`DualModPackageValidator.ClosedRegistryTables` — fails validation with `NC016`):**
+  - `ItemClasses` (bound to a compiled 103-entry C++ enum).
+  - **`Stats`** (`Stats.datc64` row count **must remain strictly `23,362` / `0x5b42`** — appending even 1 row collides with compiled `StatId::INVALID` `0x5b43` across 35+ sites, triggers `"Stats enum is out of sync"`, and causes unchecked heap OOB across 4 fixed-size tables). For custom stats, use in-place non-ID column edits, Phase 3 dead-slot allocation (`30` verified `old_do_not_use_*`/`currently_unused_*` rows keeping stock `Id` + Route A `Metadata/StatDescriptions/*.txt` overlays so `LocalExile`'s `Stat.Checksum` still passes), or unbounded high-ID `StatsComponent` (`0x1b3` varint) entity stats.
 
 #### Step 1: Computing PoE 3.29 `HASH32` & `HASH16`
 Path of Exile 3.29 computes `MtxTypes.HASH32`, `MtxTypeGameSpecific.HASH32`, `Pet.HASH32`, and `S→C 0x02bb` `ObjectTypeHash` using **32-bit MurmurHash2 (seed `0`) over narrow UTF-8/ASCII bytes** (`Game.exe 0x140df6e10`), and `Pet.HASH16` via XOR fold `((hash32 >> 16) ^ (hash32 & 0xFFFF))`:
@@ -1109,6 +1119,64 @@ Most mods never need `IRawMemory`. If you do need direct symbol reads, native ca
 
 ---
 
+### 3.8 Phase 1 (`0.3.0`) APIs: Stock Screens, Input/Keybinds, Hover, Toasts, Pre-Game & Tier 1 ServerBridge
+
+Phase 1 (`SdkVersion 0.3.0`, C ABI `0.3.0`) adds five first-class services on `context.Game` (`IGameServices`) plus Tier 1 `ServerBridge` parity so mods can attach native controls to stock PoE screens, intercept key/mouse chords, inspect hovered/cursor items, display HUD toasts, and inject pre-game character-creation options:
+
+```csharp
+using LocalExile.Client.Sdk.Engine;
+
+// 1. Stock Screens & Conflict-Free Auto-Flow Toolbars (IScreensService)
+//    9 managed ScreenSlots: InventoryToolbar, StashHeader, StashFooter, MapTabBar, BlightTabBar,
+//    PassiveTreeHeader, HudTopRight, LeagueCardModes (auto-reinjected on LeagueOverlay::Fill), CreateCharacterBar
+context.TrackDisposable(context.Game.Screens.RegisterSlotButton(
+    ScreenSlot.InventoryToolbar,
+    id: "mymod.deposit_all",
+    text: "Deposit All",
+    onClick: () => context.Net.Send(new DepositAllRequest()),
+    options: new SlotAttachmentOptions(Order: 10, Width: 118f, Height: 30f)));
+
+context.Game.Screens.ActiveStashTabChanged += ev =>
+{
+    if (ev.Current is { Type: StashTabType.Map, MapTier: int tier })
+        context.Logger.Info($"Active Map Tab '{ev.Current.Name}' (T{tier})");
+};
+
+// 2. Suppressible Input, Text-Input Focus Guard & Keybind Registry (IInputService / IKeybindRegistry)
+//    Persisted to Mods/Client/keybinds.json with automatic conflict warnings.
+context.TrackDisposable(context.Game.Input.Keybinds.Register(
+    id: "mymod.bulk_use",
+    displayName: "Bulk Use Currency Stack",
+    defaultChord: KeyChord.FromMouse(MouseButton.Right, KeyModifiers.Control | KeyModifiers.Shift),
+    onTriggered: () =>
+    {
+        // 3. Hovered & Cursor Item Inspection (IHoverService)
+        HoveredItemInfo? hovered = context.Game.Hover.RefreshHoveredItem();
+        if (hovered is { StackSize: > 1 })
+            context.Net.Send(new BulkUseRequest(hovered.InventoryId, hovered.ItemId));
+    },
+    suppressGameInput: true));
+
+// 4. Queued HUD Toasts (IToastService — anchored to ScreenSlot.HudTopRight)
+context.Game.Toasts.Show("Deposit Complete", "Moved 14 items to affinity tabs.", ToastSeverity.Success);
+
+// 5. Pre-Game Character Creation Options (IScreensService.RegisterLeagueCardMode + IPreGameService)
+ILeagueModeRegistration skipMode = context.Game.Screens.RegisterLeagueCardMode(
+    new LeagueModeCheckboxOptions(Id: "skip_campaign", Caption: "Skip Campaign", DefaultChecked: false));
+context.TrackDisposable(skipMode);
+
+context.Game.PreGame.CharacterCreating += createCtx =>
+{
+    if (skipMode.GetChecked(createCtx.League))
+        createCtx.SetOption("skip_campaign", "1"); // Appends "|nm:skip_campaign=1" to C->S 0x12 S78
+};
+```
+
+- **Tier 1 Server-Only Parity (`IClientPhase1Session` in `LocalExile.Client.ServerBridge`):** Server-only Roslyn mods can drive Phase 1 client capabilities without shipping a client `.dll` via `OnSlotButtonClickAsync`, `ShowToastAsync`, `RegisterHotkeyAsync`/`OnHotkeyAsync`, `OnScreenChangedAsync`, and `OnHoverChangedAsync` (handled automatically on the client by `ServerBridgeTier1Handler` with ref-counted multi-mod cleanup).
+- **Reference Showcases:** See `examples/DualMod.StashQol/` (all 8 in-game QoL workflows) and `examples/DualMod.SkipCampaign/` (pre-game `LeagueOverlay` + `CreateCharacterBar` + `GameEvents.CharacterCreated`).
+
+---
+
 ## 4. Testing, Cross-Compilation & Live Proton Verification
 
 ### 4.1 Fast Deterministic Unit & E2E Testing
@@ -1237,7 +1305,8 @@ When verifying a live Proton run, check `nativemods-shim.log` for:
 | `UI010` / `UI013` (`error: ":" expected`) | Unknown property on a stock 3.29.3d control | Run `UiLayoutLinter.Lint(...)` and use only known properties |
 | `PAY003` in `DualModPackageValidator` | Asset path is outside `Mods/<id>/` (or `Mods/<last-hyphen-segment>/`) and not listed in `replaces` | Move asset under `Mods/<namespace>/` or explicitly list stock override in `nativeClient.replaces` |
 | `NC008` / `RawAccessDeniedException` | Mod uses `context.Raw` without `rawAccess: true` + `rawAccessJustification` | Add both fields to `mod.json` (and pass `InstallOptions.AllowRawAccess = true` on install) |
-| `NC016` | Attempted to append to a closed `.datc64` table (`ItemClasses`) | Ride an existing `ItemClasses` value and append to `BaseItemTypes` instead |
+| `NC016` | Attempted to append to a closed `.datc64` table (`ItemClasses` or `Stats`) | For `ItemClasses`, ride an existing class and append to `BaseItemTypes`. For `Stats` (`23,362` fixed rows; `0x5b43` = `StatId::INVALID`), use in-place non-ID edits, Phase 3 dead-slot allocation (`old_do_not_use_*`/`currently_unused_*` keeping stock `Id` + Route A `StatDescriptions/*.txt`), or high-ID `StatsComponent` (`0x1b3`) stats |
+| Server mod reloads endlessly | Server mod wrote a file inside `Mods/Binaries/<id>/` triggering `ModHost` watcher | Persist runtime state via `IPlayerWorld.AccountData`/`CharacterData` or `<LocalExileRoot>/data/mods/<id>/` instead |
 | `ModUnloadResult.UnloadedCleanly == false` | Collectible ALC pinned by static cache or leaked delegate | Use `context.Net.Send`/`CollectibleJsonCodec` (never static `JsonSerializerOptions`), call `context.TrackDisposable(...)`, and unsubscribe `Game.Frame` in `Unload()` |
 | Client disconnects / buffer underflow on `0x02bb` pet spawn | `.ot` file added an extra serialized component (e.g., `StateMachine`) | Extend `"Metadata/Pet/Pet"` with **zero extra serialized components** |
 | Client crashes opening Cosmetics (`K`) tab | Owned `MtxTypes.HASH32` missing or mismatched in `MtxTypeGameSpecific.datc64` | Ensure `MtxTypeGameSpecific.HASH32 == MtxTypes.HASH32 == MurmurHash2(MtxTypes.Id, 0)` and both tables are overlaid before startup via `NATIVEMODS_OVERLAY_DIR` |

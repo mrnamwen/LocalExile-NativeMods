@@ -59,10 +59,15 @@ public static class DualModPackageValidator
         "BuffDefinitions"
     };
 
-    /// <summary>Tables bound to compiled enums/code in 10-verification.md §5 that cannot safely accept appended rows.</summary>
+    /// <summary>
+    /// Tables bound to compiled enums or fixed-size structures in 3.29 that cannot safely accept appended rows
+    /// (<c>ItemClasses</c> compiled 103-entry enum; <c>Stats</c> fixed 23,362 / 0x5b42 rows where 0x5b43 is
+    /// compiled <c>StatId::INVALID</c> across 35+ sites and 4 fixed-size tables OOB on <c>statId &gt;= 0x5b43</c>).
+    /// </summary>
     public static readonly IReadOnlySet<string> ClosedRegistryTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "ItemClasses"
+        "ItemClasses",
+        "Stats"
     };
 
     /// <summary>
@@ -755,13 +760,11 @@ public static class DualModPackageValidator
 
             if (ClosedRegistryTables.Contains(reg.Table))
             {
-                diagnostics.Add(new(DiagnosticSeverity.Error, "NC016",
-                    $"Content registry table '{reg.Table}' is closed (compiled enum in 3.29 binary) and cannot accept appended rows."));
-            }
-            else if (reg.Table.Equals("Stats", StringComparison.OrdinalIgnoreCase))
-            {
-                diagnostics.Add(new(DiagnosticSeverity.Warning, "NC017",
-                    "Appended rows in 'Stats' are display-only/inert in 3.29 compiled code unless read generically."));
+                string closedMessage = reg.Table.Equals("Stats", StringComparison.OrdinalIgnoreCase)
+                    ? "Content registry table 'Stats' is closed in 3.29 (row count must remain 23,362 / 0x5b42 because 0x5b43 is compiled StatId::INVALID across 35+ sites and 4 fixed-size tables OOB on statId >= 0x5b43). " +
+                      "Use in-place non-ID column edits, Phase 3 dead-slot allocation (30 unused old_do_not_use_*/currently_unused_* stock rows keeping stock Id + Route A Metadata/StatDescriptions/*.txt overlays), or unbounded high-ID StatsComponent (0x1b3 varint) entity stats instead."
+                    : $"Content registry table '{reg.Table}' is closed (compiled enum in 3.29 binary) and cannot accept appended rows.";
+                diagnostics.Add(new(DiagnosticSeverity.Error, "NC016", closedMessage));
             }
             else if (!AppendableRegistryTables.Contains(reg.Table))
             {
