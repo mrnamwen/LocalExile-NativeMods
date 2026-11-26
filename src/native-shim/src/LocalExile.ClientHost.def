@@ -153,6 +153,12 @@ EXPORTS
     nm_ui_unregister_custom_control_kind
     nm_dispatch_tooltip_augment
     nm_dispatch_affinity_route
+    nm_stack_set_u32_wire_enabled
+    nm_stack_set_format_millions_enabled
+    nm_stack_set_entity_override
+    nm_ui_set_compact_sockets_enabled
+    nm_world_play_effect
+    nm_world_create_client_object_ex
     nm_bootstrap_managed_host
     nm_initialize_for_build
     nm_shutdown

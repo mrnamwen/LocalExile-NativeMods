@@ -20,7 +20,7 @@ constexpr std::array<BuildDescriptor, 3> kKnownBuilds = {{
     {NM_BUILD_3_29_3D_328228, "3.29.3d", "e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d", 328228},
 }};
 
-constexpr std::array<EmbeddedSymbol, 426> kSymbols3293d = {{
+constexpr std::array<EmbeddedSymbol, 447> kSymbols3293d = {{
     {"frame.state_stack_pass_a",           "frame",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x1528f40ull,  "48895c241048896c24184889742420"},
     {"frame.state_stack_pass_a_hook",      "frame",        NM_SYM_CODE,         NM_SYM_STATUS_LIVE_VERIFIED,    0x1528fbfull,  "488b5d284883eb10"},
     {"frame.ingame_tick",                  "frame",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x0d54a00ull,  "40534883ec400fb6"},
@@ -447,9 +447,30 @@ constexpr std::array<EmbeddedSymbol, 426> kSymbols3293d = {{
     {"network.send_move_to_affinity_0xe1", "network",      NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x216f570ull,  "48895c2408488974241048897c24184c"},
     {"network.write_move_to_affinity_0xe1", "network",      NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x1f9e240ull,  "48895c2410488974241848897c242055"},
     {"network.vtable_packet_move_affinity_0xe1", "network",      NM_SYM_VTABLE,       NM_SYM_STATUS_STATIC_VERIFIED,  0x35caa80ull,  nullptr},
+    {"items.stack_deserialise",            "items",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x23fb5f0ull,  "4883ec58488b42084c8bc9488b4a104c"},
+    {"items.stack_serialise",              "items",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x23fb5b0ull,  "48895c2408574883ec200fb75918488b"},
+    {"items.stack_copy",                   "items",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x23fb650ull,  "8b4118894218c3cccccccccccccccccc"},
+    {"items.stack_get_size",               "items",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x016c7c0ull,  "8b4118c3cccccccccccccccccccccccc"},
+    {"items.vtable_stack",                 "items",        NM_SYM_VTABLE,       NM_SYM_STATUS_STATIC_VERIFIED,  0x363f638ull,  nullptr},
+    {"items.item_deserialise",             "items",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x21f2d00ull,  "48895c24085556574154415541564157"},
+    {"items.item_deserialise_framed",      "items",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x21f2c30ull,  "4055415641574883ec40488d6c242048"},
+    {"ui.format_stack_count",              "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16e2200ull,  "48895c2408574881ec500100008bfa48"},
+    {"ui.split_window_show",               "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x026c0e0ull,  "48895c2408488974241048897c24184c"},
+    {"network.write_split_stack_0x7c",     "network",      NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x1f97160ull,  "48895c2410574883ec20488bd9488bfa"},
+    {"items.sockets_get_count",            "items",        NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x21ea140ull,  "4c8b492833d24c8b4130498bc1498bc8"},
+    {"ui.socket_overlay_ctor",             "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16de6d0ull,  "48895c241048896c2418488974242048"},
+    {"ui.socket_overlay_set_cell_side",    "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16dee60ull,  "40564883ec30f30f108124040000488b"},
+    {"ui.socket_overlay_rebuild",          "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16df7a0ull,  "40534883ec504883b93804000000488b"},
+    {"ui.socket_overlay_layout",           "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16e0130ull,  "488bc448895810488968184889702057"},
+    {"ui.socket_overlay_hit_test",         "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16deba0ull,  "488bc448895818565741564883ec7048"},
+    {"ui.socket_element_set_size",         "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16ddee0ull,  "48895c2420574883ec30488bf9f30f11"},
+    {"ui.socket_element_draw",             "ui",           NM_SYM_CODE,         NM_SYM_STATUS_STATIC_VERIFIED,  0x16de1e0ull,  "488bc456415441574881ec2001000080"},
+    {"ui.vtable_socket_overlay",           "ui",           NM_SYM_VTABLE,       NM_SYM_STATUS_STATIC_VERIFIED,  0x3483208ull,  nullptr},
+    {"ui.vtable_socket_element",           "ui",           NM_SYM_VTABLE,       NM_SYM_STATUS_STATIC_VERIFIED,  0x3482068ull,  nullptr},
+    {"ui.vtable_item_view",                "ui",           NM_SYM_VTABLE,       NM_SYM_STATUS_STATIC_VERIFIED,  0x3485388ull,  nullptr},
 }};
 
-constexpr std::array<EmbeddedSymbol, 426> kSymbols3293c = {{
+constexpr std::array<EmbeddedSymbol, 447> kSymbols3293c = {{
     {"frame.state_stack_pass_a",           "frame",        NM_SYM_CODE,         NM_SYM_STATUS_CODE_SHARED,      0x1528f40ull,  nullptr},
     {"frame.state_stack_pass_a_hook",      "frame",        NM_SYM_CODE,         NM_SYM_STATUS_CODE_SHARED,      0x1528fbfull,  "488b5d284883eb10"},
     {"frame.ingame_tick",                  "frame",        NM_SYM_CODE,         NM_SYM_STATUS_CODE_SHARED,      0x0d54a00ull,  nullptr},
@@ -876,9 +897,30 @@ constexpr std::array<EmbeddedSymbol, 426> kSymbols3293c = {{
     {"network.send_move_to_affinity_0xe1", "network",      NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
     {"network.write_move_to_affinity_0xe1", "network",      NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
     {"network.vtable_packet_move_affinity_0xe1", "network",      NM_SYM_VTABLE,       NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.stack_deserialise",            "items",        NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.stack_serialise",              "items",        NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.stack_copy",                   "items",        NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.stack_get_size",               "items",        NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.vtable_stack",                 "items",        NM_SYM_VTABLE,       NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.item_deserialise",             "items",        NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.item_deserialise_framed",      "items",        NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.format_stack_count",              "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.split_window_show",               "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"network.write_split_stack_0x7c",     "network",      NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"items.sockets_get_count",            "items",        NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.socket_overlay_ctor",             "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.socket_overlay_set_cell_side",    "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.socket_overlay_rebuild",          "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.socket_overlay_layout",           "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.socket_overlay_hit_test",         "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.socket_element_set_size",         "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.socket_element_draw",             "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.vtable_socket_overlay",           "ui",           NM_SYM_VTABLE,       NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.vtable_socket_element",           "ui",           NM_SYM_VTABLE,       NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
+    {"ui.vtable_item_view",                "ui",           NM_SYM_VTABLE,       NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
 }};
 
-constexpr std::array<EmbeddedOffset, 357> kOffsets3293d = {{
+constexpr std::array<EmbeddedOffset, 373> kOffsets3293d = {{
     {"ui.control.children_container",      0xb8u},
     {"ui.control.children_begin",          0xc0u},
     {"ui.control.children_end",            0xc8u},
@@ -1236,9 +1278,25 @@ constexpr std::array<EmbeddedOffset, 357> kOffsets3293d = {{
     {"items.instance_client.personal_affinity_map", 0xc4e0u},
     {"items.instance_client.guild_affinity_map", 0xc520u},
     {"items.instance_client.locker_affinity_flags", 0xc54au},
+    {"items.stack.size",                   0x18u},
+    {"items.stack.static_ptr",             0x10u},
+    {"items.stack_static.tab_max",         0x20u},
+    {"items.stack_static.inv13_max",       0x24u},
+    {"items.stack_static.inv_max",         0x28u},
+    {"ui.inv_item_view.cell_side",         0x588u},
+    {"ui.inv_item_view.socket_overlay",    0x578u},
+    {"ui.item_view.cell_side",             0x35cu},
+    {"ui.item_view.width",                 0x360u},
+    {"ui.item_view.height",                0x364u},
+    {"ui.item_view.socket_overlay",        0x370u},
+    {"ui.socket_overlay.cols",             0x420u},
+    {"ui.socket_overlay.cell_side",        0x424u},
+    {"ui.socket_overlay.entity",           0x430u},
+    {"ui.socket_overlay.sockets_comp",     0x438u},
+    {"ui.socket_element.cell_side",        0x280u},
 }};
 
-constexpr std::array<EmbeddedOffset, 357> kOffsets3293c = {{
+constexpr std::array<EmbeddedOffset, 373> kOffsets3293c = {{
     {"ui.control.children_container",      0xb8u},
     {"ui.control.children_begin",          0xc0u},
     {"ui.control.children_end",            0xc8u},
@@ -1596,6 +1654,22 @@ constexpr std::array<EmbeddedOffset, 357> kOffsets3293c = {{
     {"items.instance_client.personal_affinity_map", 0xc4e0u},
     {"items.instance_client.guild_affinity_map", 0xc520u},
     {"items.instance_client.locker_affinity_flags", 0xc54au},
+    {"items.stack.size",                   0x18u},
+    {"items.stack.static_ptr",             0x10u},
+    {"items.stack_static.tab_max",         0x20u},
+    {"items.stack_static.inv13_max",       0x24u},
+    {"items.stack_static.inv_max",         0x28u},
+    {"ui.inv_item_view.cell_side",         0x588u},
+    {"ui.inv_item_view.socket_overlay",    0x578u},
+    {"ui.item_view.cell_side",             0x35cu},
+    {"ui.item_view.width",                 0x360u},
+    {"ui.item_view.height",                0x364u},
+    {"ui.item_view.socket_overlay",        0x370u},
+    {"ui.socket_overlay.cols",             0x420u},
+    {"ui.socket_overlay.cell_side",        0x424u},
+    {"ui.socket_overlay.entity",           0x430u},
+    {"ui.socket_overlay.sockets_comp",     0x438u},
+    {"ui.socket_element.cell_side",        0x280u},
 }};
 
 int hex_nibble(char c) {

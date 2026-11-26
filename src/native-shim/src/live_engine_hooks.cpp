@@ -1070,7 +1070,13 @@ void LiveEngineHooks::register_startup_disk_overlays(
     // 1. Auto-discover Mods/Client/<mod>/{client,files} first (lower priority than explicit NATIVEMODS_OVERLAY_DIR).
     std::string mods_dir = get_env_str(L"NATIVEMODS_MODS_DIR");
     if (mods_dir.empty() && !dll_dir_utf8.empty()) {
-        mods_dir = dll_dir_utf8 + "\\Mods\\Client";
+        const std::string local_mods = dll_dir_utf8 + "\\Mods\\Client";
+        const std::string parent_mods = dll_dir_utf8 + "\\..\\Mods\\Client";
+        if (dir_exists(local_mods)) {
+            mods_dir = local_mods;
+        } else if (dir_exists(parent_mods)) {
+            mods_dir = parent_mods;
+        }
     }
     if (!mods_dir.empty() && dir_exists(mods_dir)) {
         const std::wstring pattern = utf8_to_wide_hooks((mods_dir + "\\*").c_str());

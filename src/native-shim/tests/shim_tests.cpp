@@ -8,6 +8,7 @@
 #include "phase1_services.hpp"
 #include "phase2_services.hpp"
 #include "phase4_services.hpp"
+#include "phase5_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -50,7 +51,7 @@ int test_abi_table_and_build_recognition() {
     CHECK(nm_get_abi_table(&table) == NM_OK);
     CHECK(table != nullptr);
     CHECK(table->struct_size == sizeof(nm_abi_table_t));
-    CHECK(sizeof(nm_abi_table_t) == 1120u);
+    CHECK(sizeof(nm_abi_table_t) == 1168u);
     CHECK(sizeof(nm_screens_state_t) == 280u);
     CHECK(sizeof(nm_input_event_t) == 40u);
     CHECK(sizeof(nm_item_snapshot_t) == 448u);
@@ -67,7 +68,7 @@ int test_abi_table_and_build_recognition() {
     CHECK(sizeof(nm_native_ruleset_callbacks_t) == 64u);
     CHECK(sizeof(nm_custom_ui_control_callbacks_t) == 32u);
     CHECK(table->abi_version == NM_ABI_VERSION);
-    CHECK(NM_ABI_VERSION == 0x00000500u);
+    CHECK(NM_ABI_VERSION == 0x00000600u);
     CHECK(table->get_host_info != nullptr);
     CHECK(table->lookup_symbol != nullptr);
     CHECK(table->install_inline_hook != nullptr);
@@ -173,6 +174,12 @@ int test_abi_table_and_build_recognition() {
     CHECK(table->ruleset_unregister_native == &nm_ruleset_unregister_native);
     CHECK(table->ui_register_custom_control_kind == &nm_ui_register_custom_control_kind);
     CHECK(table->ui_unregister_custom_control_kind == &nm_ui_unregister_custom_control_kind);
+    CHECK(table->stack_set_u32_wire_enabled == &nm_stack_set_u32_wire_enabled);
+    CHECK(table->stack_set_format_millions_enabled == &nm_stack_set_format_millions_enabled);
+    CHECK(table->stack_set_entity_override == &nm_stack_set_entity_override);
+    CHECK(table->ui_set_compact_sockets_enabled == &nm_ui_set_compact_sockets_enabled);
+    CHECK(table->world_play_effect == &nm_world_play_effect);
+    CHECK(table->world_create_client_object_ex == &nm_world_create_client_object_ex);
 
     // SHA-256 build recognition matches LocalExile ClientBuilds.cs verbatim
     CHECK(nativemods::identify_build_by_sha256("e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d")
@@ -205,7 +212,7 @@ int test_address_table_3293d_and_3293c() {
     CHECK(host.build_id == NM_BUILD_3_29_3D_328228);
     CHECK(std::strcmp(host.build_version, "3.29.3d") == 0);
     CHECK(host.image_base == kRebased);
-    CHECK(host.symbol_count == 426u);
+    CHECK(host.symbol_count == 447u);
 
     nm_symbol_info_t sym{};
     CHECK(nm_lookup_symbol("frame.state_stack_pass_a_hook", &sym) == NM_OK);
@@ -368,7 +375,7 @@ int test_address_table_3293d_and_3293c() {
               "01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf") == NM_OK);
 
     CHECK(nm_get_host_info(&host) == NM_OK);
-    CHECK(host.symbol_count == 426u);
+    CHECK(host.symbol_count == 447u);
     CHECK(nm_lookup_symbol("ui.item_popup_build_sections", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
     CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
     CHECK(nm_lookup_symbol("ui.control_factory_map_global", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
@@ -3504,6 +3511,368 @@ int test_phase4_geal_builtin_register_alignment() {
     return 0;
 }
 
+int test_phase5_prologues_and_address_table() {
+    using nativemods::HookEngine;
+
+    constexpr uint64_t kRebased = 0x7ff650000000ull;
+    CHECK(nm_initialize_for_build(
+              NM_BUILD_3_29_3D_328228,
+              kRebased,
+              0x4d9a000u,
+              "e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d") == NM_OK);
+
+    nm_host_info_t host{};
+    CHECK(nm_get_host_info(&host) == NM_OK);
+    CHECK(host.symbol_count == 447u);
+
+    uint32_t off_count = 0;
+    const nativemods::EmbeddedOffset* offs = nativemods::get_offset_table(NM_BUILD_3_29_3D_328228, off_count);
+    CHECK(offs != nullptr);
+    CHECK(off_count == 373u);
+
+    // Verify all 16 new Phase 5 offsets resolve to exact verified values.
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.stack.size")->offset == 0x18u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.stack.static_ptr")->offset == 0x10u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.stack_static.tab_max")->offset == 0x20u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.stack_static.inv13_max")->offset == 0x24u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "items.stack_static.inv_max")->offset == 0x28u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.inv_item_view.cell_side")->offset == 0x588u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.inv_item_view.socket_overlay")->offset == 0x578u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.item_view.cell_side")->offset == 0x35cu);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.item_view.width")->offset == 0x360u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.item_view.height")->offset == 0x364u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.item_view.socket_overlay")->offset == 0x370u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.socket_overlay.cols")->offset == 0x420u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.socket_overlay.cell_side")->offset == 0x424u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.socket_overlay.entity")->offset == 0x430u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.socket_overlay.sockets_comp")->offset == 0x438u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.socket_element.cell_side")->offset == 0x280u);
+
+    // Every vtable and data symbol across all 447 symbols MUST have expected_bytes_hex == nullptr.
+    for (uint32_t i = 0; i < host.symbol_count; ++i) {
+        nm_symbol_info_t s{};
+        CHECK(nm_get_symbol_at(i, &s) == NM_OK);
+        if (s.kind == NM_SYM_VTABLE || s.kind == NM_SYM_DATA) {
+            CHECK(s.expected_bytes_hex == nullptr);
+        }
+    }
+
+    // Verify all 4 new Phase 5 vtables resolve cleanly with expected_bytes_hex == nullptr.
+    const std::pair<const char*, uint64_t> p5_vtables[] = {
+        {"items.vtable_stack",       0x363f638ull},
+        {"ui.vtable_socket_overlay", 0x3483208ull},
+        {"ui.vtable_socket_element", 0x3482068ull},
+        {"ui.vtable_item_view",      0x3485388ull},
+    };
+    for (const auto& [name, rva] : p5_vtables) {
+        nm_symbol_info_t s{};
+        CHECK(nm_lookup_symbol(name, &s) == NM_OK);
+        CHECK(s.kind == NM_SYM_VTABLE);
+        CHECK(s.rva == rva);
+        CHECK(s.expected_bytes_hex == nullptr);
+    }
+
+    // Verify key Phase 5 TargetChain-hooked prologues decode cleanly >= 14B via HookEngine::compute_stolen_length.
+    auto hex_to_bytes = [](const char* hex) -> std::vector<uint8_t> {
+        std::vector<uint8_t> out;
+        const size_t n = std::strlen(hex) / 2u;
+        out.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            auto nib = [](char c) -> uint8_t {
+                if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+                if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+                return static_cast<uint8_t>(c - 'A' + 10);
+            };
+            out.push_back(static_cast<uint8_t>((nib(hex[i * 2]) << 4) | nib(hex[i * 2 + 1])));
+        }
+        return out;
+    };
+
+    const std::pair<const char*, size_t> p5_hook_prologues[] = {
+        {"items.stack_deserialise",         15u},
+        {"items.stack_serialise",           14u},
+        {"items.item_deserialise",          14u},
+        {"items.item_deserialise_framed",   15u},
+        {"ui.format_stack_count",           15u},
+        {"ui.split_window_show",            15u},
+        {"network.write_split_stack_0x7c",  16u},
+        {"items.sockets_get_count",         16u},
+        {"ui.socket_overlay_ctor",          15u},
+        {"ui.socket_overlay_set_cell_side", 14u},
+        {"ui.socket_overlay_rebuild",       14u},
+        {"ui.socket_overlay_layout",        15u},
+        {"ui.socket_overlay_hit_test",      15u},
+        {"ui.socket_element_draw",          15u},
+    };
+    for (const auto& [sym_name, expected_stolen] : p5_hook_prologues) {
+        nm_symbol_info_t s{};
+        CHECK(nm_lookup_symbol(sym_name, &s) == NM_OK);
+        CHECK(s.kind == NM_SYM_CODE);
+        CHECK(s.expected_bytes_hex != nullptr);
+        std::vector<uint8_t> bytes = hex_to_bytes(s.expected_bytes_hex);
+        // Pad tail with safe NOPs beyond 16B signature window if needed for full insn decode
+        bytes.resize(32u, 0x90u);
+        const size_t stolen = HookEngine::compute_stolen_length(bytes.data(), HookEngine::kAbsJumpSize);
+        CHECK(stolen == expected_stolen);
+    }
+
+    // Also confirm 3.29.3c mirrors all 447 symbols & 373 offsets with Phase 5 marked unverified_3_29_3c.
+    CHECK(nm_initialize_for_build(
+              NM_BUILD_3_29_3C_328126,
+              kRebased,
+              0x4d9a000u,
+              "01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf") == NM_OK);
+    CHECK(nm_get_host_info(&host) == NM_OK);
+    CHECK(host.symbol_count == 447u);
+    nm_symbol_info_t sym3c{};
+    CHECK(nm_lookup_symbol("items.stack_deserialise", &sym3c) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym3c.rva == 0ull && sym3c.status == NM_SYM_STATUS_UNVERIFIED);
+    CHECK(nm_lookup_symbol("ui.vtable_socket_overlay", &sym3c) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym3c.rva == 0ull && sym3c.expected_bytes_hex == nullptr);
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_phase5_u32_stack_wire_format_and_override() {
+    using nativemods::Phase5Services;
+
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x140000000ull, 0x1000000u, nullptr) == NM_OK);
+
+    // Toggle flags via C ABI and verify reset on nm_shutdown / re-init
+    CHECK(nm_stack_set_u32_wire_enabled(1) == NM_OK);
+    CHECK(nm_stack_set_format_millions_enabled(1) == NM_OK);
+    CHECK(nm_ui_set_compact_sockets_enabled(1) == NM_OK);
+    CHECK(nm_shutdown() == NM_OK);
+    CHECK(nm_stack_set_u32_wire_enabled(1) == NM_ERR_NOT_INITIALIZED);
+
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x140000000ull, 0x1000000u, nullptr) == NM_OK);
+
+    // 1. Stack::Deserialise 0xFFFF + LE u32 wire sentinel tests
+    alignas(8) uint8_t fake_stack[0x20] = {};
+    constexpr size_t kSizeOff = 0x18u;
+
+    // 1a. Disabled mode: vanilla passthrough even if stream starts with 0xFFFF + u32(1000000)
+    {
+        const uint8_t wire[6] = {0xFFu, 0xFFu, 0x40u, 0x42u, 0x0Fu, 0x00u}; // 0xFFFF + LE 1,000,000
+        Phase5Services::StackWireStream st{wire, sizeof(wire), 0u};
+        uint32_t initial = 7u;
+        std::memcpy(fake_stack + kSizeOff, &initial, sizeof(initial));
+        CHECK(!Phase5Services::try_deserialise_u32_stack_wire(false, fake_stack, kSizeOff, &st));
+        CHECK(st.pos == 0u);
+        uint32_t after = 0u;
+        std::memcpy(&after, fake_stack + kSizeOff, sizeof(after));
+        CHECK(after == 7u);
+    }
+
+    // 1b. Enabled mode on normal vanilla value (<= 65534): returns false for vanilla passthrough
+    {
+        const uint8_t wire[2] = {0xFEu, 0xFFu}; // 65534
+        Phase5Services::StackWireStream st{wire, sizeof(wire), 0u};
+        CHECK(!Phase5Services::try_deserialise_u32_stack_wire(true, fake_stack, kSizeOff, &st));
+        CHECK(st.pos == 0u);
+    }
+
+    // 1c. Enabled mode on 0xFFFF + LE u32(65535) (boundary value!)
+    {
+        const uint8_t wire[6] = {0xFFu, 0xFFu, 0xFFu, 0xFFu, 0x00u, 0x00u};
+        Phase5Services::StackWireStream st{wire, sizeof(wire), 0u};
+        CHECK(Phase5Services::try_deserialise_u32_stack_wire(true, fake_stack, kSizeOff, &st));
+        CHECK(st.pos == 6u);
+        uint32_t val = 0u;
+        std::memcpy(&val, fake_stack + kSizeOff, sizeof(val));
+        CHECK(val == 65535u);
+    }
+
+    // 1d. Enabled mode on 0xFFFF + LE u32(1,000,000) at non-zero offset with trailing bytes
+    {
+        const uint8_t wire[10] = {0xAAu, 0xBBu, 0xFFu, 0xFFu, 0x40u, 0x42u, 0x0Fu, 0x00u, 0xCCu, 0xDDu};
+        Phase5Services::StackWireStream st{wire, sizeof(wire), 2u};
+        CHECK(Phase5Services::try_deserialise_u32_stack_wire(true, fake_stack, kSizeOff, &st));
+        CHECK(st.pos == 8u);
+        uint32_t val = 0u;
+        std::memcpy(&val, fake_stack + kSizeOff, sizeof(val));
+        CHECK(val == 1000000u);
+    }
+
+    // 1e. Short-buffer guard: 0xFFFF with fewer than 6 bytes remaining MUST NOT read OOB or advance pos!
+    for (uint64_t trunc_len = 2u; trunc_len < 6u; ++trunc_len) {
+        const uint8_t wire[5] = {0xFFu, 0xFFu, 0x40u, 0x42u, 0x0Fu};
+        Phase5Services::StackWireStream st{wire, trunc_len, 0u};
+        uint32_t before = 123u;
+        std::memcpy(fake_stack + kSizeOff, &before, sizeof(before));
+        CHECK(!Phase5Services::try_deserialise_u32_stack_wire(true, fake_stack, kSizeOff, &st));
+        CHECK(st.pos == 0u);
+        uint32_t after = 0u;
+        std::memcpy(&after, fake_stack + kSizeOff, sizeof(after));
+        CHECK(after == 123u);
+    }
+
+    // 1f. pos > size guard
+    {
+        const uint8_t wire[6] = {0xFFu, 0xFFu, 0x01u, 0x00u, 0x00u, 0x00u};
+        Phase5Services::StackWireStream st{wire, 4u, 6u};
+        CHECK(!Phase5Services::try_deserialise_u32_stack_wire(true, fake_stack, kSizeOff, &st));
+    }
+
+    // 2. ui.format_stack_count millions formatting
+    std::string fmt;
+    CHECK(!Phase5Services::format_stack_count_millions(0u, fmt));
+    CHECK(!Phase5Services::format_stack_count_millions(9999u, fmt));
+    CHECK(!Phase5Services::format_stack_count_millions(999999u, fmt));
+    CHECK(Phase5Services::format_stack_count_millions(1000000u, fmt) && fmt == "1M");
+    CHECK(Phase5Services::format_stack_count_millions(1099999u, fmt) && fmt == "1M");
+    CHECK(Phase5Services::format_stack_count_millions(1200000u, fmt) && fmt == "1.2M");
+    CHECK(Phase5Services::format_stack_count_millions(1299999u, fmt) && fmt == "1.2M");
+    CHECK(Phase5Services::format_stack_count_millions(12345678u, fmt) && fmt == "12.3M");
+    CHECK(Phase5Services::format_stack_count_millions(100000000u, fmt) && fmt == "100M");
+    CHECK(Phase5Services::format_stack_count_millions(0xFFFFFFFFu, fmt) && fmt == "4294.9M" && fmt.size() <= 7u);
+
+    // 3. Sideband Stack+0x18 override
+    CHECK(Phase5Services::apply_stack_override_to_component(fake_stack, kSizeOff, 1000000u));
+    uint32_t overridden = 0u;
+    std::memcpy(&overridden, fake_stack + kSizeOff, sizeof(overridden));
+    CHECK(overridden == 1000000u);
+    CHECK(!Phase5Services::apply_stack_override_to_component(nullptr, kSizeOff, 100u));
+    CHECK(!Phase5Services::apply_stack_override_to_component(fake_stack, kSizeOff, 0u));
+    CHECK(nm_stack_set_entity_override(0u, 100u) == NM_ERR_INVALID_ARG);
+    CHECK(nm_stack_set_entity_override(42u, 0u) == NM_ERR_INVALID_ARG);
+    CHECK(nm_stack_set_entity_override(42u, 1000000u) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_phase5_compact_sockets_and_world_vfx() {
+    using nativemods::Phase5Services;
+
+    // 1. Compact socket layout solver (vanilla no-op vs 6-socket on 2x2 / 1x3 / 1x1)
+    {
+        const auto stock_2x2 = Phase5Services::compute_compact_socket_layout(2, 2, 4);
+        CHECK(!stock_2x2.compacted && stock_2x2.cols == 2u && std::fabs(stock_2x2.scale - 1.0f) < 1e-5f);
+
+        const auto stock_2x3 = Phase5Services::compute_compact_socket_layout(2, 3, 6);
+        CHECK(!stock_2x3.compacted && stock_2x3.cols == 2u && std::fabs(stock_2x3.scale - 1.0f) < 1e-5f);
+
+        const auto compact_2x2_6 = Phase5Services::compute_compact_socket_layout(2, 2, 6);
+        CHECK(compact_2x2_6.compacted && compact_2x2_6.cols == 3u && compact_2x2_6.rows == 2u);
+        CHECK(std::fabs(compact_2x2_6.scale - (2.0f / 3.0f)) < 1e-5f);
+
+        const auto compact_2x2_5 = Phase5Services::compute_compact_socket_layout(2, 2, 5);
+        CHECK(compact_2x2_5.compacted && compact_2x2_5.cols == 3u && compact_2x2_5.rows == 2u);
+        CHECK(std::fabs(compact_2x2_5.scale - (2.0f / 3.0f)) < 1e-5f);
+
+        const auto compact_1x3_6 = Phase5Services::compute_compact_socket_layout(1, 3, 6);
+        CHECK(compact_1x3_6.compacted && compact_1x3_6.cols == 2u && compact_1x3_6.rows == 3u);
+        CHECK(std::fabs(compact_1x3_6.scale - 0.5f) < 1e-5f);
+
+        const auto compact_1x3_4 = Phase5Services::compute_compact_socket_layout(1, 3, 4);
+        CHECK(compact_1x3_4.compacted && compact_1x3_4.cols == 1u && compact_1x3_4.rows == 4u);
+        CHECK(std::fabs(compact_1x3_4.scale - 0.75f) < 1e-5f);
+    }
+
+    // 2. XMM1 float packing (#163 note #1: low 32 bits IEEE-754 float, NEVER double cast!)
+    {
+        const uint64_t packed = Phase5Services::pack_xmm_f32(52.0f);
+        CHECK((packed >> 32) == 0ull);
+        CHECK(static_cast<uint32_t>(packed & 0xFFFFFFFFull) == 0x42500000u);
+        CHECK(std::fabs(Phase5Services::unpack_xmm_f32(packed) - 52.0f) < 1e-5f);
+    }
+
+    // 3. Anti-double-scaling on repeated Rebuild + SetCellSide + full restore on n <= w*h or disable (#163 note #2)
+    {
+        uint32_t cols = 2u;
+        float cell_side = 78.0f;
+
+        // First Rebuild on 2x2 item with 6 sockets -> cols=3, cell_side=52.0f
+        CHECK(Phase5Services::apply_socket_overlay_rebuild_pre(true, 2, 2, 6, 78.0f, cols, cell_side));
+        CHECK(cols == 3u);
+        CHECK(std::fabs(cell_side - 52.0f) < 1e-4f);
+
+        // Repeated Rebuild MUST NOT double-scale (remains 52.0f, not 34.67f!)
+        CHECK(Phase5Services::apply_socket_overlay_rebuild_pre(true, 2, 2, 6, 78.0f, cols, cell_side));
+        CHECK(cols == 3u);
+        CHECK(std::fabs(cell_side - 52.0f) < 1e-4f);
+
+        // SetCellSide packs 52.0f into low 32 bits of xmm1_bits
+        uint64_t xmm1 = Phase5Services::pack_xmm_f32(78.0f);
+        CHECK(Phase5Services::apply_socket_overlay_set_cell_side_pre(true, 2, 2, 6, 78.0f, cols, xmm1));
+        CHECK(cols == 3u);
+        CHECK((xmm1 >> 32) == 0ull);
+        CHECK(std::fabs(Phase5Services::unpack_xmm_f32(xmm1) - 52.0f) < 1e-4f);
+
+        // Restore when item changes to n <= item_w * item_h (4 sockets on 2x2)
+        CHECK(!Phase5Services::apply_socket_overlay_rebuild_pre(true, 2, 2, 4, 78.0f, cols, cell_side));
+        CHECK(cols == 2u);
+        CHECK(std::fabs(cell_side - 78.0f) < 1e-4f);
+
+        // Compact again, then restore when compact_enabled is toggled OFF
+        CHECK(Phase5Services::apply_socket_overlay_rebuild_pre(true, 1, 3, 6, 78.0f, cols, cell_side));
+        CHECK(cols == 2u && std::fabs(cell_side - 39.0f) < 1e-4f);
+        CHECK(!Phase5Services::apply_socket_overlay_set_cell_side_pre(false, 1, 3, 6, 78.0f, cols, xmm1));
+        CHECK(cols == 1u);
+        CHECK(std::fabs(Phase5Services::unpack_xmm_f32(xmm1) - 78.0f) < 1e-4f);
+    }
+
+    // 4. world_play_effect & world_create_client_object_ex (validation + transform + path normalization)
+    {
+        CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x140000000ull, 0x1000000u, nullptr) == NM_OK);
+
+        CHECK(nm_world_play_effect(0u, nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_play_effect(0u, "") == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_play_effect(0u, "   ") == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_play_effect(0u, "Metadata/Effects/Spells/fireball/fireball.ot") == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+        uint64_t handle = 123u;
+        CHECK(nm_world_create_client_object_ex(nullptr, 1.0f, 2.0f, 3.0f, 0.5f, 1.5f, &handle) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_create_client_object_ex("", 1.0f, 2.0f, 3.0f, 0.5f, 1.5f, &handle) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_create_client_object_ex("Metadata/Test.ot", 1.0f, 2.0f, 3.0f, 0.5f, -1.0f, &handle) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_create_client_object_ex("Metadata/Test.ot", 1.0f, 2.0f, 3.0f, 0.5f, 1.5f, nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_world_create_client_object_ex("Metadata/Test.ot", 100.0f, 200.0f, 10.0f, 1.57f, 2.0f, &handle) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(handle == 0u);
+
+        CHECK(Phase5Services::normalize_effect_path("  \\Metadata\\Effects\\Test.ot  ") == "Metadata/Effects/Test.ot");
+        CHECK(Phase5Services::looks_like_metadata_path("Metadata/Effects/Test.ot"));
+        CHECK(!Phase5Services::looks_like_metadata_path("PlayBurstEffect"));
+
+        // Verify Positioned + Render transform math (rotation at +0x29C, scale on Render bounds +0x12C)
+        alignas(16) uint8_t fake_pos[0x2C0] = {};
+        alignas(16) uint8_t fake_render[0x140] = {};
+        const float init_bounds[3] = {10.0f, 20.0f, 30.0f};
+        std::memcpy(fake_render + 0x12Cu, init_bounds, sizeof(init_bounds));
+
+        CHECK(Phase5Services::apply_client_object_transform(
+            fake_pos, 0x294u, 0x298u, 0x29Cu, 0x2B8u, 0x2BCu, 0x2B4u,
+            fake_render, 0x120u, 0x12Cu,
+            250.0f, 500.0f, 12.5f, 1.5707963f, 2.0f));
+
+        int32_t gx = 0, gy = 0;
+        float rot = 0.0f, wx = 0.0f, wy = 0.0f, wz = 0.0f;
+        float rpos[3] = {}, rbounds[3] = {};
+        std::memcpy(&gx, fake_pos + 0x294u, sizeof(gx));
+        std::memcpy(&gy, fake_pos + 0x298u, sizeof(gy));
+        std::memcpy(&rot, fake_pos + 0x29Cu, sizeof(rot));
+        std::memcpy(&wx, fake_pos + 0x2B8u, sizeof(wx));
+        std::memcpy(&wy, fake_pos + 0x2BCu, sizeof(wy));
+        std::memcpy(&wz, fake_pos + 0x2B4u, sizeof(wz));
+        std::memcpy(rpos, fake_render + 0x120u, sizeof(rpos));
+        std::memcpy(rbounds, fake_render + 0x12Cu, sizeof(rbounds));
+
+        CHECK(gx == 23 && gy == 46);
+        CHECK(std::fabs(rot - 1.5707963f) < 1e-5f);
+        CHECK(std::fabs(wx - 250.0f) < 1e-4f && std::fabs(wy - 500.0f) < 1e-4f && std::fabs(wz - 12.5f) < 1e-4f);
+        CHECK(std::fabs(rpos[0] - 250.0f) < 1e-4f && std::fabs(rpos[1] - 500.0f) < 1e-4f && std::fabs(rpos[2] - 12.5f) < 1e-4f);
+        CHECK(std::fabs(rbounds[0] - 20.0f) < 1e-4f && std::fabs(rbounds[1] - 40.0f) < 1e-4f && std::fabs(rbounds[2] - 60.0f) < 1e-4f);
+
+        CHECK(nm_shutdown() == NM_OK);
+    }
+
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -3539,6 +3908,9 @@ int main() {
     if (test_phase4_rich_ui_tooltips_and_stash_affinity() != 0) return 1;
     if (test_phase4_geal_rulesets_and_custom_ui_registries() != 0) return 1;
     if (test_phase4_geal_builtin_register_alignment() != 0) return 1;
+    if (test_phase5_prologues_and_address_table() != 0) return 1;
+    if (test_phase5_u32_stack_wire_format_and_override() != 0) return 1;
+    if (test_phase5_compact_sockets_and_world_vfx() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;
