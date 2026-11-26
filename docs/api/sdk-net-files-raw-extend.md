@@ -3,7 +3,7 @@
 
 # Client SDK — Networking, Overlays, Protocol, Extend & Raw
 
-> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `46`
+> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `59`
 >
 > Typed bidirectional networking (`INetChannel`), GEAL script invocation (`IScriptService`), file overlays (`IFileOverlayService`, `ClientTextEncoding`), wire protocol codecs (`MessageCodec`, `ModEnvelope`), extend registries (`IGealBuiltinRegistry`, `IUiControlRegistry`, `IRulesetRegistry`, `IOpcodeRegistry`, `IContentRegistry`), and gated raw memory/hooks (`IRawMemory`).
 
@@ -19,6 +19,10 @@
 | [`FileOverlayEntry`](#fileoverlayentry) | `record` | `LocalExile.Client.Sdk.Engine` | Describes a registered file overlay entry. |
 | [`ClientTextEncoding`](#clienttextencoding) | `class` | `LocalExile.Client.Sdk.Engine` | Encodes and decodes Path of Exile 3.29 client text assets using UTF-16LE with CRLF line endings (with `0xFF 0xFE` BOM for `.ui`, `.ot`, `.it`, `.ao`, etc., and without BOM for `.sm`, `.mat`, `.amd`). |
 | [`IFileOverlayService`](#ifileoverlayservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Manages layered file overlays served to the 3.29 client without modifying stock `Content.ggpk` or bundle files. Resolution order is highest priority first, with virtual files defaulting above loose directories and bundle overlays. |
+| [`UiItemGridOptions`](#uiitemgridoptions) | `record` | `LocalExile.Client.Sdk.Engine` | Configuration options for creating a slab-safe composite `IUiItemGrid`. |
+| [`UiGridItem`](#uigriditem) | `record` | `LocalExile.Client.Sdk.Engine` | Item descriptor placed inside an `IUiItemGrid` supporting multi-cell `(Width, Height)` footprints. |
+| [`UiGridCellEventArgs`](#uigridcelleventargs) | `record` | `LocalExile.Client.Sdk.Engine` | Event payload raised when a cell in an `IUiItemGrid` is clicked or hovered. |
+| [`IUiItemGrid`](#iuiitemgrid) | `interface` | `LocalExile.Client.Sdk.Engine` | Clean, slab-safe composite item grid built atop native `Frame`/`Picture`/`Label`/`Button` controls and `ITooltipService` with zero server `InventorySet` coupling. |
 | [`NetTransportKind`](#nettransportkind) | `enum` | `LocalExile.Client.Sdk.Engine` | Identifies the underlying wire transport used by `INetChannel`. |
 | [`NetTransportInfo`](#nettransportinfo) | `record` | `LocalExile.Client.Sdk.Engine` | Describes the active network transport configuration and limits. |
 | [`INetChannel`](#inetchannel) | `interface` | `LocalExile.Client.Sdk.Engine` | Scoped bidirectional networking channel between a client mod and its LocalExile server half. |
@@ -29,6 +33,15 @@
 | [`GealInvocationResult`](#gealinvocationresult) | `record` | `LocalExile.Client.Sdk.Engine` | Outcome of invoking a GEAL built-in, object function, or object event. |
 | [`IScriptService`](#iscriptservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Interacts with the client's GEAL script VM (724 stock client built-ins plus any mod-registered built-ins). |
 | [`IChatService`](#ichatservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Provides access to client chat interceptors and C→S chat line transmission. |
+| [`StashKind`](#stashkind) | `enum` | `LocalExile.Client.Sdk.Engine` | Target stash container kind for Ctrl+Click affinity routing (`StashControl + 0x580`). |
+| [`StashAffinityItemContext`](#stashaffinityitemcontext) | `record` | `LocalExile.Client.Sdk.Engine` | Context supplied to `IStashAffinityService` routers and stock affinity rules when evaluating a Ctrl+Click stash transfer (`ui.stash_get_affinity_targets` / `items.compute_affinity_bitset`). |
+| [`StashAffinityRoute`](#stashaffinityroute) | `record` | `LocalExile.Client.Sdk.Engine` | Target stash tab route injected into `StashControl::GetAffinityTargets` and transmitted in `C→S 0x00E1`. Bypasses the stock 22-affinity cap (`0..21`) by targeting any arbitrary `TabIndex`. |
+| [`IStashAffinityService`](#istashaffinityservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Intercepts Ctrl+Click stash affinity routing (`ui.stash_get_affinity_targets` `0xa83460`) and stock affinity bitset calculation (`items.compute_affinity_bitset` `0x1589b20`) so mods can route custom `ItemClass` or predicate-matched items to arbitrary stash tabs (`game.StashAffinity`). |
+| [`TooltipLine`](#tooltipline) | `record` | `LocalExile.Client.Sdk.Engine` | Single styled line inside a stock item tooltip augmentation or custom mod tooltip. |
+| [`TooltipSection`](#tooltipsection) | `record` | `LocalExile.Client.Sdk.Engine` | Logical section of lines appended to a stock item tooltip or displayed inside a custom tooltip. |
+| [`TooltipContent`](#tooltipcontent) | `record` | `LocalExile.Client.Sdk.Engine` | Complete custom tooltip payload displayed by `ShowTooltip` or `AttachTooltip`. |
+| [`ItemTooltipContext`](#itemtooltipcontext) | `record` | `LocalExile.Client.Sdk.Engine` | Context passed to registered stock item tooltip augmenters when the client builds an `ItemPopup` (`ui.item_popup_build_sections`), including when the player toggles Alt for Advanced Mod Descriptions. |
+| [`ITooltipService`](#itooltipservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Stock item tooltip augmentation (`ui.item_popup_build_sections`) and NativeMods-owned custom anchored tooltip overlay service (`game.Tooltips`). |
 | [`IGealBuiltinRegistry`](#igealbuiltinregistry) | `interface` | `LocalExile.Client.Sdk.Extend` | Registers custom GEAL built-in functions callable from `.ot` client scripts. |
 | [`ICustomUiControl`](#icustomuicontrol) | `interface` | `LocalExile.Client.Sdk.Extend` | Contract implemented by custom UI controls registered via `IUiControlRegistry` and instantiated from `.ui` files. |
 | [`IUiControlRegistry`](#iuicontrolregistry) | `interface` | `LocalExile.Client.Sdk.Extend` | Registers custom UI control factories usable from `.ui` layouts alongside the client's 47 stock controls. |
@@ -188,6 +201,122 @@ public interface IFileOverlayService
 | `string? ReadAllText(string virtualPath)` | Reads and decodes a text file from the highest-priority overlay or game archive, or `null` if absent. |
 | `void Invalidate(string virtualPath)` | Invalidates any cached engine representation of `virtualPath` (for hot-reloading assets). |
 | `IReadOnlyList<FileOverlayEntry> GetRegisteredOverlays()` | Returns a snapshot of all currently registered overlays. |
+
+---
+
+### `UiItemGridOptions`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/ItemGridTypes.cs`
+
+Configuration options for creating a slab-safe composite `IUiItemGrid`.
+
+```csharp
+public sealed record UiItemGridOptions(int Columns, int Rows, float CellSize = 48f, float CellPadding = 2f, string? CellBackgroundTexture = null, bool ShowTooltipsOnHover = true)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `int Columns` | Number of horizontal grid cells (> 0). |
+| `int Rows` | Number of vertical grid cells (> 0). |
+| `float CellSize = 48f` | Pixel width and height of a single 1x1 cell (> 0). |
+| `float CellPadding = 2f` | Optional pixel gap between adjacent cells (>= 0). |
+| `string? CellBackgroundTexture = null` | Optional virtual texture path applied to each cell background. |
+| `bool ShowTooltipsOnHover = true` | When `true`, hovering an occupied cell automatically displays its tooltip via `ITooltipService`. |
+
+---
+
+### `UiGridItem`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/ItemGridTypes.cs`
+
+Item descriptor placed inside an `IUiItemGrid` supporting multi-cell `(Width, Height)` footprints.
+
+```csharp
+public sealed record UiGridItem(string ItemId, int Col, int Row, int Width = 1, int Height = 1, string? IconPath = null, int StackSize = 1, ItemRarity Rarity = ItemRarity.Normal, string? Title = null, IReadOnlyList<TooltipLine>? TooltipLines = null, object? Tag = null)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string ItemId` | Unique identifier for this item within the grid. |
+| `int Col` | Zero-based top-left column coordinate. |
+| `int Row` | Zero-based top-left row coordinate. |
+| `int Width = 1` | Horizontal footprint in grid cells (>= 1). |
+| `int Height = 1` | Vertical footprint in grid cells (>= 1). |
+| `string? IconPath = null` | Optional virtual texture path for the item's icon (`IPicture`). |
+| `int StackSize = 1` | Displayed stack count (shown when > 1). |
+| `ItemRarity Rarity = ItemRarity.Normal` | Item rarity tier controlling border/tooltip header styling. |
+| `string? Title = null` | Optional display title shown in hover tooltips. |
+| `IReadOnlyList<TooltipLine>? TooltipLines = null` | Optional custom tooltip lines displayed on hover. |
+| `object? Tag = null` | Optional mod-defined state payload associated with this item. |
+
+---
+
+### `UiGridCellEventArgs`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/ItemGridTypes.cs`
+
+Event payload raised when a cell in an `IUiItemGrid` is clicked or hovered.
+
+```csharp
+public sealed record UiGridCellEventArgs(int Col, int Row, UiGridItem? Item, KeyModifiers Modifiers = KeyModifiers.None)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `int Col` | Zero-based cell column coordinate. |
+| `int Row` | Zero-based cell row coordinate. |
+| `UiGridItem? Item` | Item occupying `(Col, Row)`, or `null` if the cell is empty. |
+| `KeyModifiers Modifiers = KeyModifiers.None` | Keyboard modifiers active during the interaction. |
+
+---
+
+### `IUiItemGrid`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/ItemGridTypes.cs`
+
+Clean, slab-safe composite item grid built atop native `Frame`/`Picture`/`Label`/`Button` controls and `ITooltipService` with zero server `InventorySet` coupling.
+
+```csharp
+public interface IUiItemGrid: IUiControl, IDisposable
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `int Columns { get; }` | Number of horizontal columns in this grid. |
+| `int Rows { get; }` | Number of vertical rows in this grid. |
+| `float CellSize { get; }` | Pixel size of a single 1x1 grid cell. |
+| `IReadOnlyCollection<UiGridItem> Items { get; }` | Snapshot of all items currently placed in this grid. |
+
+**Events:**
+
+| Event | Summary |
+|---|---|
+| `event Action<UiGridCellEventArgs>? CellClicked` | Raised when a grid cell is left-clicked (without Ctrl). |
+| `event Action<UiGridCellEventArgs>? CellRightClicked` | Raised when a grid cell is right-clicked. |
+| `event Action<UiGridCellEventArgs>? CellCtrlClicked` | Raised when a grid cell is Ctrl+left-clicked. |
+| `event Action<UiGridCellEventArgs>? CellHovered` | Raised when the pointer hovers a grid cell. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `bool CanPlaceItem(int col, int row, int width = 1, int height = 1, string? ignoreItemId = null)` | Returns `true` if an item of size `(width, height)` fits within bounds at `(col, row)` without overlapping any existing item (optionally ignoring `ignoreItemId`). |
+| `bool PlaceItem(UiGridItem item)` | Places `item` into the grid after validating bounds, unique `ItemId`, and non-overlapping cell occupancy. Returns: `true` if placed; `false` if out of bounds, overlapping, or duplicate id. |
+| `bool RemoveItem(string itemId)` | Removes the item with `itemId` and destroys its visual controls. Returns: `true` if the item existed and was removed. |
+| `void Clear()` | Removes all items from the grid and destroys their visual controls. |
+| `UiGridItem? GetItemAt(int col, int row)` | Returns the item occupying `(col, row)` (including multi-cell footprints), or `null` if empty or out of bounds. |
+| `UiGridItem? GetItemById(string itemId)` | Returns the placed item matching `itemId`, or `null` if absent. |
+| `(int Col, int Row)? FindFreeCell(int width = 1, int height = 1)` | Finds the first top-left `(Col, Row)` coordinate in row-major order that can fit `(width, height)`, or `null` if full. |
+| `void TriggerCellClick(int col, int row, MouseButton button = MouseButton.Left, KeyModifiers modifiers = KeyModifiers.None)` | Programmatically dispatches a cell click event (primarily for deterministic testing and automation). |
+| `void TriggerCellHover(int col, int row)` | Programmatically dispatches a cell hover event and updates the hover tooltip if enabled. |
 
 ---
 
@@ -443,6 +572,217 @@ public interface IChatService
 
 ---
 
+### `StashKind`
+
+**Kind:** `enum` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/StashAffinityTypes.cs`
+
+Target stash container kind for Ctrl+Click affinity routing (`StashControl + 0x580`).
+
+```csharp
+public enum StashKind: byte
+```
+
+**Values:**
+
+| Value | Summary |
+|---|---|
+| `Personal = 0` | Personal player stash (`0`). |
+| `Guild = 1` | Guild stash (`1`). |
+
+---
+
+### `StashAffinityItemContext`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/StashAffinityTypes.cs`
+
+Context supplied to `IStashAffinityService` routers and stock affinity rules when evaluating a Ctrl+Click stash transfer (`ui.stash_get_affinity_targets` / `items.compute_affinity_bitset`).
+
+```csharp
+public sealed record StashAffinityItemContext(HoveredItemInfo Item, StashKind StashKind = StashKind.Personal, bool IsMoveAll = false, nint StashControlHandle = 0)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `HoveredItemInfo Item` | Snapshot of the item being transferred. |
+| `StashKind StashKind = StashKind.Personal` | Whether the target stash is personal or guild. |
+| `bool IsMoveAll = false` | `true` for Ctrl+RMB Move-All transfers. |
+| `nint StashControlHandle = 0` | Native `StashControl*` handle, or `Zero` when simulated. |
+
+---
+
+### `StashAffinityRoute`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/StashAffinityTypes.cs`
+
+Target stash tab route injected into `StashControl::GetAffinityTargets` and transmitted in `C→S 0x00E1`. Bypasses the stock 22-affinity cap (`0..21`) by targeting any arbitrary `TabIndex`.
+
+```csharp
+public sealed record StashAffinityRoute(ushort TabIndex, byte AffinityId = 0, bool ReplaceStockTargets = false)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `ushort TabIndex` | Zero-based destination stash tab index sent verbatim in `C→S 0x00E1`. |
+| `byte AffinityId = 0` | Optional `StashTabAffinityId` byte carried alongside the route (defaults to `0`). |
+| `bool ReplaceStockTargets = false` | When `true`, replaces stock affinity targets rather than prepending/appending. |
+
+---
+
+### `IStashAffinityService`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/StashAffinityTypes.cs`
+
+Intercepts Ctrl+Click stash affinity routing (`ui.stash_get_affinity_targets` `0xa83460`) and stock affinity bitset calculation (`items.compute_affinity_bitset` `0x1589b20`) so mods can route custom `ItemClass` or predicate-matched items to arbitrary stash tabs (`game.StashAffinity`).
+
+```csharp
+public interface IStashAffinityService
+```
+
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `const byte MaxStockAffinityId = 21` | Maximum valid stock `StashTabAffinityId` bit index (`0..21`). |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `IDisposable RegisterRoute(string id, Func<StashAffinityItemContext, StashAffinityRoute?> router, int priority = 0)` | Registers a custom Ctrl+Click stash router evaluated in ascending `priority` order. Returning a non-null `StashAffinityRoute` injects that target `TabIndex` into `C→S 0x00E1` (bypassing the stock `0..21` affinity cap). Returns: Disposable handle that unregisters the route. |
+| `IDisposable RegisterStockAffinityRule(string id, Func<StashAffinityItemContext, byte?> affinitySelector, int priority = 0)` | Registers a rule mapping custom items into a stock `StashTabAffinityId` bit (`0..21`) inside `items.compute_affinity_bitset` (`0x1589b20`) so stock stash tab affinity checkboxes apply natively. Returns: Disposable handle that unregisters the rule. |
+| `IReadOnlyList<StashAffinityRoute> EvaluateRoutes(StashAffinityItemContext context)` | Evaluates all registered custom routes for `context` in priority order. |
+| `uint EvaluateStockAffinityMask(StashAffinityItemContext context)` | Evaluates all registered stock affinity rules for `context`, returning the OR-ed 22-bit mask. |
+
+---
+
+### `TooltipLine`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/TooltipTypes.cs`
+
+Single styled line inside a stock item tooltip augmentation or custom mod tooltip.
+
+```csharp
+public sealed record TooltipLine(string Text, string? Color = null, bool Centered = false, uint RgbaColor = 0)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Text` | UTF-8 display text for the line. |
+| `string? Color = null` | Optional `.ui` color expression (for example `Colours.White` or `rgb(136, 136, 255)`). |
+| `bool Centered = false` | Whether the line is horizontally centered. |
+| `uint RgbaColor = 0` | Optional packed `0xRRGGBBAA` color used by native tooltip label injection (`0` = default stock color). |
+
+---
+
+### `TooltipSection`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/TooltipTypes.cs`
+
+Logical section of lines appended to a stock item tooltip or displayed inside a custom tooltip.
+
+```csharp
+public sealed record TooltipSection(IReadOnlyList<TooltipLine> Lines, bool PrependSeparator = true)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `IReadOnlyList<TooltipLine> Lines` | Ordered text lines rendered inside this section. |
+| `bool PrependSeparator = true` | Whether a native item-popup separator line is inserted before this section. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static TooltipSection SingleLine(string text, string? color = null, bool prependSeparator = true, uint rgbaColor = 0)` | Creates a `TooltipSection` from a single line of text. |
+
+---
+
+### `TooltipContent`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/TooltipTypes.cs`
+
+Complete custom tooltip payload displayed by `ShowTooltip` or `AttachTooltip`.
+
+```csharp
+public sealed record TooltipContent(string Title, IReadOnlyList<TooltipSection> Sections, string? TitleColor = null, ItemRarity Rarity = ItemRarity.Normal)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Title` | Header title line displayed at the top of the tooltip. |
+| `IReadOnlyList<TooltipSection> Sections` | Ordered body sections rendered beneath the title. |
+| `string? TitleColor = null` | Optional explicit color expression for the header title. |
+| `ItemRarity Rarity = ItemRarity.Normal` | Item rarity tier controlling default header color when `TitleColor` is omitted. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static TooltipContent FromLines(string title, IEnumerable<TooltipLine> lines, ItemRarity rarity = ItemRarity.Normal, string? titleColor = null)` | Creates a `TooltipContent` with a single body section built from `lines`. |
+
+---
+
+### `ItemTooltipContext`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/TooltipTypes.cs`
+
+Context passed to registered stock item tooltip augmenters when the client builds an `ItemPopup` (`ui.item_popup_build_sections`), including when the player toggles Alt for Advanced Mod Descriptions.
+
+```csharp
+public sealed record ItemTooltipContext(HoveredItemInfo Item, bool IsAltHeld, nint PopupHandle = 0, uint FrameStyle = 0, bool IsCompact = false)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `HoveredItemInfo Item` | Snapshot of the hovered item whose tooltip is being built. |
+| `bool IsAltHeld` | `true` when Alt (Advanced Mod Descriptions) is currently held. |
+| `nint PopupHandle = 0` | Native `ItemPopup*` pointer, or `Zero` when simulated. |
+| `uint FrameStyle = 0` | Native item-popup frame style parameter passed to `BuildSections`. |
+| `bool IsCompact = false` | Whether the popup is building in compact mode. |
+
+---
+
+### `ITooltipService`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/TooltipTypes.cs`
+
+Stock item tooltip augmentation (`ui.item_popup_build_sections`) and NativeMods-owned custom anchored tooltip overlay service (`game.Tooltips`).
+
+```csharp
+public interface ITooltipService
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `bool IsCustomTooltipVisible { get; }` | Whether the NativeMods custom anchored tooltip overlay is currently visible. |
+| `TooltipContent? ActiveCustomTooltip { get; }` | Currently displayed custom tooltip payload, or `null` when hidden. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `(float X, float Y) CustomTooltipPosition` | Current screen anchor coordinates of the custom tooltip overlay. |
+| `IDisposable RegisterItemTooltipAugmenter(Func<ItemTooltipContext, IReadOnlyList<TooltipSection >> augmenter, int priority = 0)` | Registers a stock item tooltip augmenter invoked on the game thread whenever `ItemPopup::BuildSections` builds or rebuilds a hovered item tooltip (including Alt-held Advanced Mod Descriptions rebuilds). Returns: Disposable handle that unregisters the augmenter. |
+| `void ShowTooltip(TooltipContent content, float screenX, float screenY)` | Displays a custom anchored tooltip at screen coordinates `(screenX, screenY)`. |
+| `void HideTooltip()` | Hides the currently visible custom anchored tooltip overlay. |
+| `IDisposable AttachTooltip(IUiControl control, Func<TooltipContent?> contentProvider)` | Binds a dynamic tooltip provider to `control` so hovering it automatically shows the returned `TooltipContent` and leaving hides it. Returns: Disposable handle that detaches the tooltip binding. |
+
+---
+
 ## Namespace `LocalExile.Client.Sdk.Extend`
 
 ### `IGealBuiltinRegistry`
@@ -569,7 +909,8 @@ public interface IRulesetRegistry
 | Member | Summary |
 |---|---|
 | `const byte MaxRulesetId = 0xAE` | Maximum valid ruleset slot id (`0xaf - 1 = 0xae`). |
-| `const byte DefaultHostChannelRulesetId = 0xA0` | Default unoccupied ruleset id reserved for the NativeMods host channel. |
+| `const byte DefaultHostChannelRulesetId = 0xA0` | Default ruleset id reserved for the NativeMods `0x02C9` filter-hook host transport channel (intercepted before `rulesets.creator_table`, preserving backward compatibility with `ServerBridge` / `LocalExile`). Do NOT register native `rulesets.creator_table` entries at `0xA0`; use `FirstFreeNativeRulesetId` (`0xAE`) or another verified free slot instead. |
+| `const byte FirstFreeNativeRulesetId = 0xAE` | Highest verified free slot (`0xAE`) in 3.29.3d `rulesets.creator_table` recommended for native ruleset registration. Other verified free high slots include `0xAA`, `0xA9`, `0xA3`, `0x9C`, and `0x90`. |
 
 **Properties:**
 
@@ -581,8 +922,11 @@ public interface IRulesetRegistry
 
 | Method | Summary |
 |---|---|
+| `static bool IsNativeSlotFree(byte rulesetId)` | Returns `true` if `rulesetId` is a verified unoccupied slot in 3.29.3d `rulesets.creator_table` safe for native ruleset registration (107 free slots out of `0x00..0xAE`; `0xA0` is occupied by a stock ruleset). |
 | `IDisposable Register<TRuleset>() where TRuleset: class, IClientRuleset, new ()` | Registers a custom ruleset class using its `RulesetId`. |
-| `IDisposable Register(byte rulesetId, Func<IClientRuleset> factory)` | Registers a custom ruleset factory for `rulesetId`. |
+| `IDisposable Register(byte rulesetId, Func<IClientRuleset> factory)` | Registers a custom ruleset factory for `rulesetId`. Verified free slots (see `IsNativeSlotFree`) register natively in 3.29 `rulesets.creator_table`; `DefaultHostChannelRulesetId` (`0xA0`) is rejected; legacy pre-1.1.0 occupied non-host slots fall back to `0x02C9` filter-hook dispatch without touching `rulesets.creator_table`. |
+| `IDisposable RegisterNative<TRuleset>() where TRuleset: class, IClientRuleset, new ()` | Strictly registers a custom ruleset class into an unoccupied slot of native 3.29 `rulesets.creator_table`, rejecting all 68 stock-occupied slots (including `0xA0`). |
+| `IDisposable RegisterNative(byte rulesetId, Func<IClientRuleset> factory)` | Strictly registers a custom ruleset factory into an unoccupied slot of native 3.29 `rulesets.creator_table`, rejecting all 68 stock-occupied slots (including `0xA0`) with a clear error pointing to verified free slots (`0xAE`, `0xAA`, `0xA9`, `0xA3`). |
 | `bool IsRegistered(byte rulesetId)` | Returns `true` if a custom ruleset is registered at `rulesetId`. |
 | `bool TryDispatchUpdate(byte rulesetId, ReadOnlySpan<byte> payload)` | Dispatches an incoming S→C `0x2c9` payload to the registered ruleset, returning `false` if absent (dropped silently). |
 

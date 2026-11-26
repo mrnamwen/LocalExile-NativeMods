@@ -59,7 +59,7 @@ To guarantee your `*LocalExileEntry.cs` file compiles cleanly inside LocalExile'
 python3 scripts/generate-address-table.py --check
 python3 scripts/generate-api-docs.py --check
 
-# 2. .NET 10 solution build & all 12 xUnit test suites (40 projects, TreatWarningsAsErrors=true)
+# 2. .NET 10 solution build & all 13 xUnit test suites (44 projects, TreatWarningsAsErrors=true)
 dotnet build NativeMods.slnx -c Release
 dotnet test NativeMods.slnx -c Release --no-build
 
@@ -75,9 +75,9 @@ cmake --build build/native-shim-asan
 ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build/native-shim-asan --output-on-failure
 ```
 
-**Verified Phase 3 (`1.0.0`) Baselines:**
-- **.NET 10 xUnit:** **`381/381`** passing across all `12` test suites (`40` projects, `0` warnings, `0` errors).
-- **C++20 Native Shim:** **`28/28`** passing across Linux Release, Linux Debug ASan/UBSan, and Win64/Wine.
+**Verified Phase 4 (`1.1.0`) Baselines:**
+- **.NET 10 xUnit:** **`404/404`** passing across all `13` test suites (`44` projects, `0` warnings, `0` errors).
+- **C++20 Native Shim:** **`32/32`** passing across Linux Release, Linux Debug ASan/UBSan, and Win64/Wine.
 - **LocalExile Part 2b (`a4c7cafa5`):** `43/43` `GameServer.Data.Tests`, `550/550` `GameServer.Core.Tests`, `953/953` `GameServer.Gateway.Tests` (`0` warnings/errors).
 
 ---
@@ -121,7 +121,7 @@ All headless Proton test runners enforce strict isolation and zero-mutation guar
 ./scripts/run-r1-proton.sh --mode proxy --soak-seconds 45
 ./scripts/run-r1-proton.sh --mode import-patch --soak-seconds 35
 
-# 2. Full Phase 0/1/2 E2E Proton Suite (25/25 live hooks + 16/16 E2E checks + FMOD PCM)
+# 2. Full Phase 0/1/2/4 E2E Proton Suite (33/33 live hooks + 16/16 E2E checks + FMOD PCM)
 ./scripts/run-phase0-proton.sh --mode proxy
 
 # 3. Maxwell Pet MTX Headless Proton Verification (Cosmetics K menu + .ui + looping .ogg)
@@ -133,7 +133,7 @@ All headless Proton test runners enforce strict isolation and zero-mutation guar
 ./scripts/launch-desktop.sh --mod maxwell
 ```
 
-### Expected `nativemods-shim.log` Live Markers (`1.0.0`)
+### Expected `nativemods-shim.log` Live Markers (`1.1.0`)
 
 Verify these lines in `nativemods-shim.log` after a live Proton run:
 
@@ -144,11 +144,12 @@ Verify these lines in `nativemods-shim.log` after a live Proton run:
 [NET] Armed live channel hooks (chat_rx=OK ruleset_0x2c9=OK msg_pump=OK)
 [PHASE1] Armed live hooks (wndmsg=OK ui_init=OK ig_leave=OK league_fill=OK cc_enter=OK cc_leave=OK tab=OK map_grp=OK map_key=OK c2s_0x12=OK s2c_0x13=OK)
 [PHASE2] Armed live hooks (init_area=OK area_load_leave=OK ig_leave=OK filter_loaded=OK)
-[MANAGED] [INFO] [host] NativeMods managed host started (SDK 1.0.0, build 3.29.3d, transport HostRuleset).
+[PHASE4] Armed live hooks (tab=OK combo=OK listbox=OK tooltip=OK aff_bit=OK aff_tgt=OK ui_prop=OK ui_destroy=OK)
+[MANAGED] [INFO] [host] NativeMods managed host started (SDK 1.1.0, build 3.29.3d, transport HostRuleset).
 [AUDIO] FMOD 2.03 initialized (output=default|nosound, sys=0x...)
 [AUDIO] Playing OGG 'Audio/Mods/Maxwell/stock_market.ogg' (bytes=..., loop=1, volume=..., handle=..., output=default|nosound, fmod_rc=0)
 [UI] Captured native UI root 0x...
 [UI] Loaded native window 'Metadata/UI/Mods/Maxwell/MaxwellPanel.ui' (root=0x..., control=0x...)
 ```
 
-Verified `1.0.0` live Proton baseline (`4c31abb`, run `20261126-215228-proxy-81856`): `abi=0x00000400`, `SDK 1.0.0`, `319` symbols / `300` offsets, **`25/25`** live hooks `OK` (`0` `SKIP`), **`16/16`** E2E PASS (`E2E-01 PASS sdk=1.0.0 parsed=1.0.0 isOnGameThread=True`), **`2,400+`** frames, **`0`** `[WARN]`/`[ERROR]`/SEH faults, FMOD PCM `-24.5 dB` mean / `-10.0 dB` max, `0` Hyprland window leaks, exact stock `Game.exe` / `Game.patched.exe` SHA-256 baseline restored.
+Verified `1.1.0` live Proton baseline (`e05029d`, run `20261126-225934-proxy-397097`): `abi=0x00000500`, `SDK 1.1.0`, `426` symbols / `357` offsets, **`33/33`** live hooks `OK` (`0` `SKIP`), `4/4` client mods loaded with live native `GealRegisterBuiltin` (`GardenRipen`, `MaxwellDance`), **`16/16`** E2E PASS (`sdk=1.1.0`), **`0`** `[WARN]`/`[ERROR]`/SEH faults, FMOD PCM `-24.5 dB` mean / `-9.6 dB` max, `0` Hyprland window leaks, exact stock `Game.exe` / `Game.patched.exe` SHA-256 baseline restored.

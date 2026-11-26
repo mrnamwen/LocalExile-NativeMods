@@ -2,7 +2,7 @@
 
 The **Address Library** (`data/addresses/`) decouples the NativeMods script extender, managed host, and client mods from hardcoded binary addresses. Because Path of Exile 3.29 is compiled with `DYNAMIC_BASE` (ASLR), every runtime address is computed from a verified **RVA** (`runtimeAddress = loadedImageBase + rva`) and checked against expected instruction bytes before any detour is installed.
 
-The repository ships **`319` symbols**, **`300` struct offsets**, and **`18` verified constants** across `3.29.3d` and `3.29.3c` (single source of truth in `data/addresses/{3.29.3d,3.29.3c}.json`, code-generated into `src/native-shim/src/address_table.cpp` and verified via `python3 scripts/generate-address-table.py --check`).
+The repository ships **`426` symbols**, **`357` struct offsets**, and **`18` verified constants** across `3.29.3d` and `3.29.3c` (single source of truth in `data/addresses/{3.29.3d,3.29.3c}.json`, code-generated into `src/native-shim/src/address_table.cpp` and verified via `python3 scripts/generate-address-table.py --check`).
 
 ---
 
@@ -12,8 +12,8 @@ Official unpatched SHA-256 digests matching LocalExile's `ClientBuilds.cs`:
 
 | Game Version | Build Number | Executable SHA-256 (Unpatched) | Address File | Notes |
 |---|---|---|---|---|
-| **3.29.3d** | `328228` | `e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d` | `data/addresses/3.29.3d.json` | Primary live- and static-verified build (`79,394,136` bytes, `ImageBase = 0x140000000`, `319/319` verified, `238` non-null `expectedBytes`; all `kind: "vtable"` entries store `expectedBytes: null` for `DYNAMIC_BASE` ASLR safety). |
-| **3.29.3c** | `327984` | `cc8aa38345be2a837575215d2ce142ebecf7b007345843265b335ebb8ac5964c` | `data/addresses/3.29.3c.json` | `87` verified/shared code RVAs (`code_shared_3_29_3c`); `232` unverified entries explicitly carry `rva: null` (`unverified_3_29_3c`); `network.hnc_mask` verified at `0x2feaed0`. |
+| **3.29.3d** | `328228` | `e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d` | `data/addresses/3.29.3d.json` | Primary live- and static-verified build (`79,394,136` bytes, `ImageBase = 0x140000000`, `426/426` verified, `325` non-null `expectedBytes`; all `78` `kind: "vtable"` entries store `expectedBytes: null` for `DYNAMIC_BASE` ASLR safety). |
+| **3.29.3c** | `327984` | `cc8aa38345be2a837575215d2ce142ebecf7b007345843265b335ebb8ac5964c` | `data/addresses/3.29.3c.json` | `87` verified/shared code RVAs (`code_shared_3_29_3c`); `339` unverified entries explicitly carry `rva: null` (`unverified_3_29_3c`, queued for Phase 5 batch port); `network.hnc_mask` verified at `0x2feaed0`. |
 | **3.29.3c** (3.29.3.5 hotfix) | `328126` | `01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf` | `data/addresses/3.29.3c.json` | Same cross-build rule as 327984. |
 
 > **Critical 3.29.3c Rule:** `.text` code addresses match between 3.29.3c and 3.29.3d, **but `.data` / `.rdata` addresses (globals, vtables, IAT slots, static tables) drift between builds**. Never copy a 3.29.3d data RVA into `3.29.3c.json` without verifying it against the 3.29.3c executable.
@@ -56,7 +56,7 @@ Every Address Library file conforms to `schemaVersion: 1` (`$id: https://localex
 
 ## 3. Core Verified Symbol Table (3.29.3d)
 
-*(Run `dotnet run --project src/LocalExile.Client.Patcher -- dump-addresses --build 3.29.3d --addresses data/addresses` to inspect all 319 symbols and their full expected byte signatures.)*
+*(Run `dotnet run --project src/LocalExile.Client.Patcher -- dump-addresses --build 3.29.3d --addresses data/addresses` to inspect all 426 symbols and their full expected byte signatures.)*
 
 | Symbol Name | Category | 3.29.3d VA | RVA | Kind | Status | Notes |
 |---|---|---|---|---|---|---|
@@ -72,7 +72,7 @@ Every Address Library file conforms to `schemaVersion: 1` (`$id: https://localex
 | `files.read_whole_file` | `files` | `0x140e564d0` | `0xe564d0` | `code` | `static_verified` | Consults bundle index at `fs+0xc900` |
 | `files.hot_reload_invalidate_ext` | `files` | `0x141010560` | `0x1010560` | `code` | `static_verified` | Dormant hot-reload per-extension invalidator |
 | `files.variant_tag_wstring` | `files` | `0x1444a6930` | `0x44a6930` | `data` | `static_verified` | 3.29.3d data only (`unverified_3_29_3c` on 3.29.3c) |
-| `rulesets.creator_table` | `rulesets` | `0x14475dc70` | `0x475dc70` | `data` | `static_verified` | Writable array (`0xaf` slots, 68 filled; 3.29.3d data only) |
+| `rulesets.creator_table` | `rulesets` | `0x14475dc70` | `0x475dc70` | `data` | `static_verified` | Writable array (`0xaf` slots: **68 occupied incl. `0xA0`, 107 free incl. `0xAE`**; 3.29.3d data only) |
 | `rulesets.create` | `rulesets` | `0x1415a6800` | `0x15a6800` | `code` | `static_verified` | Instantiates ruleset by ID (`client+0xcfd8`) |
 | `rulesets.s2c_0x2c9_filter` | `rulesets` | `0x1415a6b50` | `0x15a6b50` | `code` | `static_verified` | Routes S→C `0x2c9` to slot 8; silently drops unknown IDs |
 | `rulesets.c2s_0x2ca_writer` / `rulesets.c2s_0x2ca_sender` | `rulesets` | `0x141fa7c10` / `0x1421a1960` | `0x1fa7c10` / `0x21a1960` | `code` | `static_verified` | C→S `0x2ca` writer & sender |
@@ -82,7 +82,9 @@ Every Address Library file conforms to `schemaVersion: 1` (`$id: https://localex
 | `network.app_global_ref` | `network` | `0x1400f3b30` | `0xf3b30` | `global_ref` | `live_verified` | Pattern `488b05????????488907488b05` resolving `network.app_global` |
 | `geal.compiler_statements` / `geal.interpreter` | `geal` | `0x141df8210` / `0x141df0d70` | `0x1df8210` / `0x1df0d70` | `code` | `static_verified` | GEAL VM compiler & interpreter |
 | `geal.run_script` / `geal.run_at_offset` | `geal` | `0x141df8040` / `0x141df8160` | `0x1df8040` / `0x1df8160` | `code` | `static_verified` | External GEAL execution entries |
-| `geal.builtin_factory_table` / `geal.builtin_register_entry` | `geal` | `0x1445c50f8` / `0x141de9780` | `0x45c50f8` / `0x1de9780` | `data` / `code` | `static_verified` | 724 client-callable built-ins (table is 3.29.3d data only) |
+| `geal.builtin_factory_table` / `geal.builtin_register_entry` | `geal` | `0x1445c50f8` / `0x141de9780` | `0x45c50f8` / `0x1de9780` | `data` / `code` | `live_verified` | 724 client-callable built-ins; **`GealBuiltinEntry` MUST be `alignas(16)` for `movaps` at `0x141de9858`** |
+| `ui.control_factory_map_global` / `ui.parser_parse_property` | `ui` | `0x14475e990` / `0x141872270` | `0x475e990` / `0x1872270` | `data` / `code` | `live_verified` | Phase 4 live `IUiControlRegistry` map (47 stock controls) & custom `.ui` property hook |
+| `ui.item_popup_build_sections` / `ui.stash_get_affinity_targets` / `items.compute_affinity_bitset` | `ui`/`items` | `0x1416c5740` / `0x140a83460` / `0x141589b20` | `0x16c5740` / `0xa83460` / `0x1589b20` | `code` | `live_verified` | Phase 4 `ITooltipService` & `IStashAffinityService` live `TargetChain` hooks (`C→S 0x00E1`) |
 | `allocator.alloc` / `allocator.free` | `allocator` | `0x142c8cf60` / `0x142c8ca30` | `0x2c8cf60` / `0x2c8ca30` | `code` | `live_verified` / `static_verified` | Slab allocator with 16-byte prefix header |
 | `runtime.wstring_assign` | `runtime` | `0x140144010` | `0x144010` | `code` | `live_verified` | MSVC `std::wstring::assign` |
 | `runtime.cxx_throw_exception` / `runtime.deadlock_detector` | `runtime` | `0x142ce6a40` / `0x140e3ed10` | `0x2ce6a40` / `0xe3ed10` | `code` | `live_verified` / `static_verified` | `_CxxThrowException` (`0xE06D7363`) & main-thread watchdog |

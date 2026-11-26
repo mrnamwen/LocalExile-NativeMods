@@ -27,6 +27,9 @@
     <Project Path="examples/DualMod.LootTools/Shared/DualMod.LootTools.Shared.csproj" />
     <Project Path="examples/DualMod.LootTools/Server/DualMod.LootTools.Server.csproj" />
     <Project Path="examples/DualMod.LootTools/Client/DualMod.LootTools.Client.csproj" />
+    <Project Path="examples/DualMod.IdolsAndGearVault/Shared/DualMod.IdolsAndGearVault.Shared.csproj" />
+    <Project Path="examples/DualMod.IdolsAndGearVault/Server/DualMod.IdolsAndGearVault.Server.csproj" />
+    <Project Path="examples/DualMod.IdolsAndGearVault/Client/DualMod.IdolsAndGearVault.Client.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LocalExile.Client.Tests/LocalExile.Client.Tests.csproj" />
@@ -40,6 +43,7 @@
     <Project Path="tests/DualMod.SkipCampaign.Tests/DualMod.SkipCampaign.Tests.csproj" />
     <Project Path="tests/DualMod.LootTools.Tests/DualMod.LootTools.Tests.csproj" />
     <Project Path="tests/DualMod.ContentPackDemo.Tests/DualMod.ContentPackDemo.Tests.csproj" />
+    <Project Path="tests/DualMod.IdolsAndGearVault.Tests/DualMod.IdolsAndGearVault.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Shared/DualMod.Phase0E2E.Shared.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Client/DualMod.Phase0E2E.Client.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Server/DualMod.Phase0E2E.Server.csproj" />

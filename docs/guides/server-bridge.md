@@ -270,22 +270,26 @@ context.TrackDisposable(context.Game.Chat.RegisterInterceptor((sender, text) =>
     text.Contains("[SUPPRESS]", StringComparison.Ordinal)));
 ```
 
-### Custom GEAL Built-Ins, Per-Area Rulesets & Custom Opcodes
+### Custom GEAL Built-Ins, Per-Area Rulesets & Custom Opcodes (Live Native `1.1.0`)
 
-All registries live on `context.Game` and return `IDisposable` handles that **must** be passed to `context.TrackDisposable(...)`:
+All registries live on `context.Game` and return `IDisposable` handles that **must** be passed to `context.TrackDisposable(...)`. In **`1.1.0`** (C ABI `0.5.0`), `IGealBuiltinRegistry`, `IRulesetRegistry`, and `IUiControlRegistry` are live-wired directly into PoE `3.29.3d`'s native engine tables:
 
 ```csharp
-// 1. Custom GEAL Built-In (declare in mod.json "gealBuiltins": ["MaxwellDance"])
-context.TrackDisposable(context.Game.GealBuiltins.Register("MaxwellDance", (uint objectId, GealArguments args) =>
+// 1. Live Native GEAL Built-In (registers directly into geal.builtin_factory_table via 0x141de9780;
+//    declare in mod.json "gealBuiltins": ["IdolBoardCount"])
+context.TrackDisposable(context.Game.GealBuiltins.Register("IdolBoardCount", (uint objectId, GealArguments args) =>
 {
     int boost = args.Count > 0 ? Math.Clamp(args.Int(0), 1, 8) : 1;
     context.Game.World.PlayEffect(objectId, "Metadata/Pet/Mods/Maxwell/MaxwellPet.ao");
     return GealValue.FromInt(boost);
 }));
 // Validate .ot GEAL scripts statically: context.Game.Scripts.ValidateScript(source)
+// Invoke entity Functions{} entry live: context.Game.Scripts.InvokeFunction(entityId, "OnPulse", ...)
 
-// 2. Custom Per-Area Ruleset (IDs 0x00..0xAE; 0xA0 reserved for host channel, 0xA1 HarvestGarden, 0xA2 MaxwellPet)
-context.TrackDisposable(context.Game.Rulesets.Register<MyAreaRuleset>());
+// 2. Live Native Per-Area Ruleset (registers into rulesets.creator_table[0x00..0xAE] via RegisterNative;
+//    IMPORTANT: 0xA0 is occupied by a stock ruleset on 3.29.3d and reserved solely for the 0x02C9 filter-hook host transport!
+//    Always pick a verified free slot such as IRulesetRegistry.FirstFreeNativeRulesetId (0xAE) or check IsNativeSlotFree(id))
+context.TrackDisposable(context.Game.Rulesets.RegisterNative<MyAreaRuleset>());
 
 // 3. Custom Opcode Handler (stock 3.29.3d opcodes end at 0x02FB; custom >= FirstReservedOpcode 0x02FC)
 context.TrackDisposable(context.Game.Opcodes.RegisterHandler(

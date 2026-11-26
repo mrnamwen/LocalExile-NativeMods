@@ -3,7 +3,7 @@
 
 # Client SDK — UI, Stock Screens & Toasts
 
-> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `27`
+> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `33`
 >
 > Native `.ui` windows, typed controls (`IUiService`, `IUiWindow`, `IUiControl`, `IButton`, `ILabel`, `ITextBox`, `ICheckBox`, `IClipboardService`), stock panel & slot management (`IScreensService`, `ScreenSlot`, `GamePanel`), and HUD notifications (`IToastService`).
 
@@ -13,6 +13,12 @@
 
 | Type | Kind | Namespace | Summary |
 |---|---|---|---|
+| [`UiControlKind`](#uicontrolkind) | `enum` | `LocalExile.Client.Sdk.Engine` | Built-in 3.29 native UI control kinds supported for programmatic creation via `CreateControl`. All controls are allocated through the engine's slab-pooled factories so `Destroy` releases them safely through `Control::ReleaseOrDestroy`. |
+| [`IPicture`](#ipicture) | `interface` | `LocalExile.Client.Sdk.Engine` | Native image/texture display control (`Picture` in `.ui`). Supports loading any stock or Route-A overlaid `.dds` / `Art/2DArt/UIImages/...` texture path. |
+| [`IScrollableFrame`](#iscrollableframe) | `interface` | `LocalExile.Client.Sdk.Engine` | Scrollable viewport frame (`ScrollableFrame` in `.ui`). |
+| [`ITabContainer`](#itabcontainer) | `interface` | `LocalExile.Client.Sdk.Engine` | Multi-tab container control (`TabContainer` in `.ui`). |
+| [`IComboBox`](#icombobox) | `interface` | `LocalExile.Client.Sdk.Engine` | Dropdown selection combo box control (`ComboBox` in `.ui`). |
+| [`IListBox`](#ilistbox) | `interface` | `LocalExile.Client.Sdk.Engine` | Scrollable selectable list of child controls (`ControlListBox` in `.ui`). |
 | [`PreGameScreen`](#pregamescreen) | `enum` | `LocalExile.Client.Sdk.Engine` | Active top-level screen state derived from PoE 3.29's `StateStack`. |
 | [`GamePanel`](#gamepanel) | `enum` | `LocalExile.Client.Sdk.Engine` | Bit-flag enumeration of stock in-game UI panels tracked by `IScreensService`. |
 | [`StashTabType`](#stashtabtype) | `enum` | `LocalExile.Client.Sdk.Engine` | Stock Path of Exile 3.29 stash tab type codes (`StashTabInfo + 0x34`). |
@@ -42,6 +48,188 @@
 | [`IUiService`](#iuiservice) | `interface` | `LocalExile.Client.Sdk.Engine` | High-level service for loading `.ui` layouts, managing mod windows, and registering custom UI control types. |
 
 ## Namespace `LocalExile.Client.Sdk.Engine`
+
+### `UiControlKind`
+
+**Kind:** `enum` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/RichUiTypes.cs`
+
+Built-in 3.29 native UI control kinds supported for programmatic creation via `CreateControl`. All controls are allocated through the engine's slab-pooled factories so `Destroy` releases them safely through `Control::ReleaseOrDestroy`.
+
+```csharp
+public enum UiControlKind
+```
+
+**Values:**
+
+| Value | Summary |
+|---|---|
+| `Frame = 0` | Generic container frame (`UI::Controls::Frame`). |
+| `Label = 1` | Text display label (`UI::Controls::Label`). |
+| `Button = 2` | Interactive push button (`UI::Controls::Button`). |
+| `TextBox = 3` | Editable text box (`UI::Controls::TextBox`). |
+| `CheckBox = 4` | Toggleable check box (`UI::Controls::CheckBox`). |
+| `Picture = 5` | Texture/image display control (`UI::Controls::Picture`). |
+| `StackLayout = 6` | Linear vertical/horizontal stack layout (`Layout::StackLayout`). |
+| `ScrollableFrame = 7` | Scrollable viewport container (`UI::Controls::ScrollableFrame`). |
+| `TabContainer = 8` | Multi-tab container (`UI::Controls::TabContainer`). |
+| `ComboBox = 9` | Dropdown selection combo box (`UI::Controls::ComboBox`). |
+| `ListBox = 10` | Scrollable selectable control list (`UI::Controls::ControlListBox`). |
+
+---
+
+### `IPicture`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/RichUiTypes.cs`
+
+Native image/texture display control (`Picture` in `.ui`). Supports loading any stock or Route-A overlaid `.dds` / `Art/2DArt/UIImages/...` texture path.
+
+```csharp
+public interface IPicture: IUiControl
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `string? TexturePath { get; }` | Most recently assigned texture path, or `null` if none is set. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `void SetTexture(string texturePath, bool resizeToImage = false)` | Binds a stock or overlaid virtual texture path to this picture control. |
+
+---
+
+### `IScrollableFrame`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/RichUiTypes.cs`
+
+Scrollable viewport frame (`ScrollableFrame` in `.ui`).
+
+```csharp
+public interface IScrollableFrame: IUiControl
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `float ScrollOffset { get; }` | Current vertical scroll offset. |
+| `float MaxScrollOffset { get; }` | Maximum vertical scroll offset. |
+| `IUiControl ContentContainer { get; }` | Container control that holds scrollable child controls. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `void SetScrollOffset(float offset)` | Sets the current vertical scroll offset (clamped to `[0, MaxScrollOffset]`). |
+| `void SetMaxScrollOffset(float maxScrollOffset)` | Updates the scrollable range and refreshes native scrollbar thumb bounds. |
+| `void UpdateContentBounds()` | Recomputes native content bounds and scrollbar layout. |
+
+---
+
+### `ITabContainer`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/RichUiTypes.cs`
+
+Multi-tab container control (`TabContainer` in `.ui`).
+
+```csharp
+public interface ITabContainer: IUiControl
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `int TabCount { get; }` | Total number of tabs currently in this container. |
+| `int ActiveTabIndex { get; }` | Zero-based index of the currently active tab, or `-1` if no tab is active. |
+
+**Events:**
+
+| Event | Summary |
+|---|---|
+| `event Action<int>? ActiveTabChanged` | Raised on the game thread when the active tab index changes. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `void SelectTab(int index)` | Selects the tab at `index` and raises `ActiveTabChanged` if changed. |
+| `IUiControl AddTab(string title, string? iconPath = null, bool hidden = false)` | Appends a new tab with the given caption and optional icon, returning the tab's content container control. Returns: The content container `IUiControl` for the new tab. |
+| `void ClearTabs()` | Removes all tabs from this container. |
+
+---
+
+### `IComboBox`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/RichUiTypes.cs`
+
+Dropdown selection combo box control (`ComboBox` in `.ui`).
+
+```csharp
+public interface IComboBox: IUiControl
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `int ItemCount { get; }` | Number of items currently in the dropdown. |
+| `int SelectedIndex { get; set; }` | Gets or sets the zero-based selected item index, or `-1` when nothing is selected. |
+| `string? SelectedText { get; }` | Gets the text of the currently selected item, or `null` if none is selected. |
+| `IReadOnlyList<string> Items { get; }` | Ordered item display strings currently populated in the combo box. |
+
+**Events:**
+
+| Event | Summary |
+|---|---|
+| `event Action<int>? SelectionChanged` | Raised on the game thread when `SelectedIndex` changes. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `int AddItem(string text, bool enabled = true, uint tag = 0)` | Appends a selectable item to the dropdown and returns its zero-based index. Returns: Zero-based index of the added item. |
+| `void ClearItems()` | Removes all items and resets `SelectedIndex` to `-1`. |
+
+---
+
+### `IListBox`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/RichUiTypes.cs`
+
+Scrollable selectable list of child controls (`ControlListBox` in `.ui`).
+
+```csharp
+public interface IListBox: IUiControl
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `int ItemCount { get; }` | Number of items currently in the list box. |
+| `int SelectedIndex { get; set; }` | Gets or sets the zero-based selected item index, or `-1` when no item is selected. |
+| `IReadOnlyList<IUiControl> Items { get; }` | Ordered child item controls currently in the list box. |
+
+**Events:**
+
+| Event | Summary |
+|---|---|
+| `event Action<int>? SelectionChanged` | Raised on the game thread when `SelectedIndex` changes. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `bool InsertItem(int index, IUiControl child, ulong userData = 0)` | Inserts `child` at `index` (clamped to `ItemCount` for append). Returns: `true` if the item was inserted. |
+| `bool AddItem(IUiControl child, ulong userData = 0)` | Appends `child` to the end of the list box. |
+| `void ClearItems()` | Removes all items and clears the selection. |
+| `void ClearSelection()` | Clears the current selection, setting `SelectedIndex` to `-1`. |
+
+---
 
 ### `PreGameScreen`
 
@@ -760,5 +948,16 @@ public interface IUiService
 | `void ReloadWindow(string windowId)` | Reloads an open window from disk/overlay by its identifier. |
 | `IDisposable RegisterControl<TControl>(string controlTypeName) where TControl: class, ICustomUiControl, new ()` | Registers a custom UI control type usable in `.ui` layouts. |
 | `IDisposable RegisterControl(string controlTypeName, Func<ICustomUiControl> factory)` | Registers a custom UI control factory usable in `.ui` layouts. |
+| `IUiControl CreateControl(IUiControl parent, UiControlKind kind, string? id = null)` | Dynamically creates a slab-pooled native UI control of `kind` and attaches it under `parent`. |
+| `IUiControl CreateFrame(IUiControl parent, string? id = null)` | Dynamically creates a `Frame` container under `parent`. |
+| `ILabel CreateLabel(IUiControl parent, string text = "", string? id = null)` | Dynamically creates a `Label` under `parent` with optional initial `text`. |
+| `IButton CreateButton(IUiControl parent, string text = "", string? id = null)` | Dynamically creates a `Button` under `parent` with optional initial `text`. |
+| `IPicture CreatePicture(IUiControl parent, string? texturePath = null, string? id = null)` | Dynamically creates a `Picture` under `parent` with an optional virtual texture path. |
+| `IScrollableFrame CreateScrollableFrame(IUiControl parent, string? id = null)` | Dynamically creates a `ScrollableFrame` under `parent`. |
+| `ITabContainer CreateTabContainer(IUiControl parent, string? id = null)` | Dynamically creates a `TabContainer` under `parent`. |
+| `IComboBox CreateComboBox(IUiControl parent, string? id = null)` | Dynamically creates a `ComboBox` under `parent`. |
+| `IListBox CreateListBox(IUiControl parent, string? id = null)` | Dynamically creates a `ControlListBox` under `parent`. |
+| `IUiItemGrid CreateItemGrid(IUiControl parent, UiItemGridOptions options, string? id = null)` | Creates a slab-safe composite `IUiItemGrid` attached under `parent`. |
+| `IUiItemGrid CreateItemGrid(IUiControl parent, int columns, int rows, float cellSize = 48f, string? id = null)` | Creates a slab-safe composite `IUiItemGrid` with the specified dimensions and cell size. |
 
 ---

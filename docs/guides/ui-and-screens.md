@@ -154,9 +154,9 @@ if (searchBox is not null)
 }
 ```
 
-### Registering a Custom UI Control (`ICustomUiControl`)
+### Registering a Custom UI Control (`ICustomUiControl` — Live Native `1.1.0`)
 
-Declare the control name in `mod.json` (`"customControls": ["GrowthGauge"]`), then register it before calling `Ui.Load(...)`:
+Declare the control name in `mod.json` (`"customControls": ["GrowthGauge"]`), then register it before calling `Ui.Load(...)`. In **`1.1.0`** (C ABI `0.5.0`), `IUiControlRegistry` registers natively into PoE's 47-control `g_uiControlFactoryMap` (`0x14475e990`), intercepts custom `key = value;` properties via `ui.parser_parse_property` (`0x1872270`), drives `OnFrame` on the game thread, and cleans up via `ui.control_release_or_destroy` (`0x18b6810`) before slab teardown (using an exact 7-slot MSVC `std::_Func_base` vtable `[3]=_Type/[4]=_Delete_this/[5]=_Get/[6]=dtor`):
 
 ```csharp
 using LocalExile.Client.Sdk.Engine;
@@ -190,7 +190,84 @@ public sealed class GrowthGauge : ICustomUiControl
 context.TrackDisposable(context.Game.Ui.RegisterControl<GrowthGauge>("GrowthGauge"));
 ```
 
-> **Live Proton Note:** For windows parsed directly by PoE's native `ui.control_load`, compose layouts from the **47 verified stock 3.29.3d controls**.
+---
+
+## 3.5 Dynamic Rich Controls, `IUiItemGrid`, `ITooltipService` & `IStashAffinityService` (`1.1.0`)
+
+Phase 4 (`SdkVersion 1.1.0`, C ABI `0.5.0`) adds programmatic slab-pooled control construction, composite item grids, stock & custom tooltips, and custom Ctrl+Click stash affinity routing (demonstrated end-to-end in `examples/DualMod.IdolsAndGearVault/`):
+
+### Programmatic Rich Controls (`IUiService.Create*`)
+
+All controls created via `CreateControl` / `CreateFrame` / `CreateLabel` / `CreateButton` / `CreatePicture` / `CreateScrollableFrame` / `CreateTabContainer` / `CreateComboBox` / `CreateListBox` are allocated from PoE's slab pool so `Destroy()` releases them safely through `Control::ReleaseOrDestroy` (`0x18b6810`):
+
+```csharp
+ITabContainer tabs = context.Game.Ui.CreateTabContainer(body, "vault_tabs");
+IUiControl boardTab = tabs.AddTab("Idol Board (32 Cells)");
+IUiControl gearTab  = tabs.AddTab("Gear Vault Affinity");
+tabs.ActiveTabChanged += idx => context.Logger.Info($"Active tab: {idx}");
+
+IComboBox classPicker = context.Game.Ui.CreateComboBox(gearTab, "gear_class");
+classPicker.AddItem("Helmets");
+classPicker.AddItem("Body Armours");
+classPicker.SelectionChanged += idx => context.Logger.Info($"Selected class: {classPicker.SelectedText}");
+
+IScrollableFrame scroll = context.Game.Ui.CreateScrollableFrame(gearTab, "rules_scroll");
+IListBox list = context.Game.Ui.CreateListBox(scroll.ContentContainer, "rules_list");
+ILabel row = context.Game.Ui.CreateLabel(list, "Helmets -> Stash Tab 12", "rule_row_0");
+list.AddItem(row, userData: 12);
+```
+
+### Composite Item Grids (`IUiItemGrid`) — Wishlist #13
+
+`IUiItemGrid` composes native `Frame`/`Picture`/`Label`/`Button` controls with zero server `InventorySet` coupling, multi-cell `(Width, Height)` footprints (`1×1`, `1×2`, `2×1`, `2×2`, `1×3`, `3×1`), occupancy validation, click/right-click/Ctrl+click/hover events, and automatic hover tooltips:
+
+```csharp
+IUiItemGrid grid = context.Game.Ui.CreateItemGrid(
+    boardTab,
+    new UiItemGridOptions(Columns: 6, Rows: 6, CellSize: 48f, CellPadding: 2f, ShowTooltipsOnHover: true),
+    id: "idol_board");
+context.TrackDisposable(grid);
+
+// Place a 2x2 Idol at (1, 1) with hover tooltip lines:
+grid.PlaceItem(new UiGridItem(
+    ItemId: "idol-01",
+    Col: 1, Row: 1, Width: 2, Height: 2,
+    Rarity: ItemRarity.Rare,
+    Title: "Major Idol of Harvesting",
+    TooltipLines: [new TooltipLine("+12% chance for Sacred Grove", Color: "rgb(136,136,255)")]));
+
+grid.CellClicked += e => context.Logger.Info($"Clicked ({e.Col},{e.Row}): {e.Item?.Title ?? "empty"}");
+```
+
+### Stock Item Tooltip Augmentation & Anchored Tooltips (`ITooltipService`)
+
+`context.Game.Tooltips` hooks `ui.item_popup_build_sections` (`0x16c5740`) to append styled lines/separators to stock hovered item tooltips (including Alt-held Advanced Mod Descriptions) and renders NativeMods-owned custom anchored tooltips (`ShowTooltip` / `HideTooltip` / `AttachTooltip`):
+
+```csharp
+context.TrackDisposable(context.Game.Tooltips.RegisterItemTooltipAugmenter(ctx =>
+{
+    if (!ctx.IsAltHeld)
+        return [];
+
+    return [TooltipSection.SingleLine("[Affix Tags: Life, Resistance] · Tier Summary", rgbaColor: 0x88CCFFFFu)];
+}));
+
+context.TrackDisposable(context.Game.Tooltips.AttachTooltip(row, () =>
+    TooltipContent.FromLines("Gear Vault Route", [new TooltipLine("Ctrl+Click routes Helmets to Tab 12")])));
+```
+
+### Custom Ctrl+Click Stash Affinity Routing (`IStashAffinityService`) — Wishlist #14
+
+`context.Game.StashAffinity` hooks `ui.stash_get_affinity_targets` (`0xa83460`) and `items.compute_affinity_bitset` (`0x1589b20`), letting mods route Ctrl+Clicked items directly to **any arbitrary stash tab index** in `C→S 0x00E1` (bypassing the stock `0..21` `StashTabAffinityId` cap) or map custom items into stock affinity bits:
+
+```csharp
+context.TrackDisposable(context.Game.StashAffinity.RegisterRoute(
+    id: "idolsvault.helmets",
+    router: ctx => string.Equals(ctx.Item.ItemClass, "Helmets", StringComparison.OrdinalIgnoreCase)
+        ? new StashAffinityRoute(TabIndex: 12, ReplaceStockTargets: true)
+        : null,
+    priority: 10));
+```
 
 ---
 
@@ -261,6 +338,7 @@ Tier 1 server-only mods can also emit client HUD toasts with zero client DLL via
 
 ## Related API Reference
 
-- [`IUiService`, `IUiWindow`, `IUiControl`, `IButton`, `ILabel`, `ITextBox`, `ICheckBox`, `IClipboardService`](../api/sdk-ui-screens.md)
+- [`IUiService`, `IUiWindow`, `IUiControl`, `IButton`, `ILabel`, `ITextBox`, `ICheckBox`, `IPicture`, `IScrollableFrame`, `ITabContainer`, `IComboBox`, `IListBox`, `IClipboardService`](../api/sdk-ui-screens.md)
 - [`IScreensService`, `ScreenSlot`, `GamePanel`, `StashTabInfo`, `IToastService`](../api/sdk-ui-screens.md)
+- [`IUiItemGrid`, `ITooltipService`, `IStashAffinityService`, `IUiControlRegistry`](../api/sdk-net-files-raw-extend.md)
 - [`UiLayoutLinter`](../api/waypoint.md#uilayoutlinter)

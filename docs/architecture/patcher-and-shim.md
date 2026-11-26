@@ -60,18 +60,22 @@ dump-addresses [--build <3.29.3d|3.29.3c>] [--category <cat>] [--addresses <dir>
 
 ### Public C ABI (`include/nativemods_abi.h`)
 
-- **ABI Version:** `0.4.0` (`NM_ABI_VERSION = 0x00000400u`), Win64 / `__cdecl` (`NM_CALL`).
+- **ABI Version:** `0.5.0` (`NM_ABI_VERSION = 0x00000500u`), Win64 / `__cdecl` (`NM_CALL`).
 - **Import Anchor:** `NM_API void NM_CALL LocalExileClientHost_ImportAnchor(void)` — anchor export referenced by the `.nmimp` import descriptor so the Windows/Wine loader eagerly maps `LocalExile.ClientHost.dll`.
-- **Managed Entry Point:** `[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])] public static int LocalExile.Client.Host.NativeEntryPoint.Initialize(nint abiTablePtr)` receives a `const nm_abi_table_t*` (`struct_size = 864`, `abi_version = 0x00000400u`, and **`107` function-pointer slots `0..106`**; **`122` DLL exports** in `src/native-shim/src/LocalExile.ClientHost.def`).
+- **Managed Entry Point:** `[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])] public static int LocalExile.Client.Host.NativeEntryPoint.Initialize(nint abiTablePtr)` receives a `const nm_abi_table_t*` (`struct_size = 1120`, `abi_version = 0x00000500u`, and **`139` function-pointer slots `0..138`**; **`156` DLL exports** in `src/native-shim/src/LocalExile.ClientHost.def`).
 - **Verified C ABI Struct Sizes (64-bit C++ `static_assert` & C# `LayoutKind.Sequential` parity):**
-  - `nm_abi_table_t` / `NmAbiTable`: **864 bytes** (`107` function pointers, strictly backward-appended across `0.2.0` `0..68`, `0.3.0` `69..88`, `0.4.0` `89..106`)
+  - `nm_abi_table_t` / `NmAbiTable`: **1120 bytes** (`139` function pointers, strictly backward-appended across `0.2.0` `0..68`, `0.3.0` `69..88`, `0.4.0` `89..106`, and `0.5.0` `107..138`)
   - `nm_host_info_t` / `NmHostInfo`: **120 bytes** · `nm_symbol_info_t`: **48 bytes** · `nm_game_alloc_header_t`: **16 bytes** · `nm_exception_info_t`: **528 bytes**
   - Phase 1 (`0.3.0`) structs: `nm_screens_state_t` (**280 B**), `nm_input_event_t` (**40 B**), `nm_item_snapshot_t` (**448 B**), `nm_hover_state_t` (**952 B**)
   - Phase 2 (`0.4.0`) structs: `nm_world_entity_query_t` (**160 B**), `nm_world_entity_snapshot_t` (**760 B**), `nm_stat_entry_t` (**8 B**), `nm_area_info_t` (**352 B**), `nm_item_filter_state_t` (**784 B**), `nm_item_filter_result_t` (**72 B**), `nm_camera_state_t` (**120 B**)
-- **`HookEngine` Safety Rules (`28/28` C++20 shim tests):**
+  - Phase 4 (`0.5.0`) structs & constants: `nm_affinity_target_t` (**4 B**), `nm_affinity_route_result_t` (**32 B**), `nm_native_ruleset_callbacks_t` (**64 B**), `nm_custom_ui_control_callbacks_t` (**32 B**), `NM_RULESET_FIRST_FREE_NATIVE_ID = 0xAEu`, `NM_AFFINITY_MAX_TARGETS = 4u`
+- **`HookEngine` & Phase 4 Win64 ABI Safety Rules (`32/32` C++20 shim tests):**
   - Shared Pre/Post hook chains (`install_inline_chain`) register DWARF `.eh_frame` / Win64 `RUNTIME_FUNCTION`+`UNWIND_INFO` unwind tables and verify multi-chain `expectedBytes` tails beyond `stolen_len` directly against live unpatched memory.
   - **`> 8`-arg Win64 limit:** `install_inline_chain` forwards at most `8` arguments (`args[0..7]`). Any native target taking `> 8` Win64 arguments — such as 10-arg `world.client_world_init_area` (`0x141653ee0`) — MUST use a typed raw `hooks.install_inline` detour forwarding all parameters (`a0..a9`).
   - **Slab-pool control teardown:** `ui_destroy_control` calls `Control::ReleaseOrDestroy` (`0x18b6810`) for slab-pooled controls (`[control + 0x08] != 0`) instead of `vtbl[8]`.
+  - **16-Byte Alignment for `movaps` (`GealBuiltinEntry` & Game-Bound Structs):** `geal.builtin_register_entry` (`0x141de9780`) loads entries via `movaps xmm0, XMMWORD PTR [rdi]`. `GealBuiltinEntry`, `GealRegisterCtx`, `ImageHandle16`, `GealCompiledArgSlot`, and stack `MsvcWString`/`MsvcStdString`/`MsvcStdFunc64` structs passed to game functions MUST carry `alignas(16)`.
+  - **Exact 7-Slot MSVC `std::_Func_base` Vtable Layout:** All shim functors (`g_geal_void_impl_vtable[7]`, `g_geal_value_impl_vtable[7]`, `g_custom_ui_impl_vtable[7]`) match VS2019 `0x143031688` (`[0]=_Copy`, `[1]=_Move`, `[2]=_Do_call`, `[3]=_Type`, `[4]=_Delete_this`, `[5]=_Get`, `[6]=~_Func_base(flags)`).
+  - **Live Hooks (`33/33` OK on `3.29.3d`):** `[OVERLAY]` 6/6, `[UI]` 1/1, `[NET]` 3/3, `[PHASE1]` 11/11, `[PHASE2]` 4/4, **`[PHASE4]` 8/8** (`tab`, `combo`, `listbox`, `tooltip`, `aff_bit`, `aff_tgt`, `ui_prop`, `ui_destroy`), plus Frame hook.
 
 #### Exported C API Surface
 
@@ -89,7 +93,7 @@ dump-addresses [--build <3.29.3d|3.29.3c>] [--category <cat>] [--addresses <dir>
 #### Core ABI Enums
 
 - **`nm_build_id_t`**: `NM_BUILD_UNKNOWN = 0`, `NM_BUILD_3_29_3C_327984 = 1`, `NM_BUILD_3_29_3C_328126 = 2`, `NM_BUILD_3_29_3D_328228 = 3`, `NM_BUILD_SYNTHETIC = 0x7FFF`.
-- **`nm_status_t`**: `NM_OK = 0`, `NM_ERR_INVALID_ARG = -1`, `NM_ERR_NOT_INITIALIZED = -2`, `NM_ERR_UNSUPPORTED_BUILD = -3`, `NM_ERR_SYMBOL_NOT_FOUND = -4`, `NM_ERR_SYMBOL_UNVERIFIED = -5`, `NM_ERR_BYTE_MISMATCH = -6`, `NM_ERR_HOOK_ALREADY_INSTALLED = -7`, `NM_ERR_HOOK_NOT_FOUND = -8`, `NM_ERR_ALLOC_FAILED = -9`, `NM_ERR_GAME_EXCEPTION = -10`, `NM_ERR_BUFFER_TOO_SMALL = -11`, `NM_ERR_QUEUE_FULL = -12`, `NM_ERR_RUNTIME_BOOT_FAILED = -13`, `NM_ERR_NOT_SUPPORTED_ON_PLATFORM = -14`, `NM_ERR_PAYLOAD_TOO_LARGE = -15`.
+- **`nm_status_t`**: `NM_OK = 0`, `NM_ERR_INVALID_ARG = -1`, `NM_ERR_NOT_INITIALIZED = -2`, `NM_ERR_UNSUPPORTED_BUILD = -3`, `NM_ERR_SYMBOL_NOT_FOUND = -4`, `NM_ERR_SYMBOL_UNVERIFIED = -5`, `NM_ERR_BYTE_MISMATCH = -6`, `NM_ERR_HOOK_ALREADY_INSTALLED = -7`, `NM_ERR_HOOK_NOT_FOUND = -8`, `NM_ERR_ALLOC_FAILED = -9`, `NM_ERR_GAME_EXCEPTION = -10`, `NM_ERR_BUFFER_TOO_SMALL = -11`, `NM_ERR_QUEUE_FULL = -12`, `NM_ERR_RUNTIME_BOOT_FAILED = -13`, `NM_ERR_NOT_SUPPORTED_ON_PLATFORM = -14`, `NM_ERR_PAYLOAD_TOO_LARGE = -15`, `NM_ERR_ALREADY_EXISTS = -16`, `NM_ERR_NOT_FOUND = -17`.
 - **`nm_host_flags_t`**: `NM_HOST_FLAG_NONE`, `NM_HOST_FLAG_INITIALIZED`, `NM_HOST_FLAG_FRAME_HOOK_ARMED`, `NM_HOST_FLAG_CORECLR_BOOTING`, `NM_HOST_FLAG_CORECLR_BOOTED`, `NM_HOST_FLAG_PROXY_MODE`, `NM_HOST_FLAG_SIMULATED`.
 - **`nm_symbol_kind_t`**: `NM_SYM_CODE = 0`, `NM_SYM_DATA = 1`, `NM_SYM_VTABLE = 2`, `NM_SYM_IMPORT_SLOT = 3`, `NM_SYM_GLOBAL_REF = 4`.
 - **`nm_symbol_status_t`**: `NM_SYM_STATUS_UNVERIFIED = 0`, `NM_SYM_STATUS_STATIC_VERIFIED = 1`, `NM_SYM_STATUS_LIVE_VERIFIED = 2`, `NM_SYM_STATUS_DOC_VERIFIED = 3`, `NM_SYM_STATUS_CODE_SHARED = 4`.
