@@ -20,6 +20,91 @@
       "default": true,
       "label": "Preserve Exact Rolled Values",
       "description": "Keep the exact integer stat values stolen from the source item when imbuing the target item."
+    },
+    "enableNaturalDrops": {
+      "type": "bool",
+      "default": true,
+      "label": "Enable Natural World Drops",
+      "description": "When true, Empty Orbs of Siphoning enter LocalExile's natural currency drop pool via DropPoolOverlays."
+    },
+    "dropWeight": {
+      "type": "number",
+      "default": 25,
+      "min": 0.01,
+      "max": 100000,
+      "label": "Natural Drop Weight",
+      "description": "Relative currency pool weight for Empty Orbs of Siphoning (higher drops more frequently).",
+      "when": {
+        "enableNaturalDrops": true
+      }
+    },
+    "minAreaLevel": {
+      "type": "integer",
+      "default": 45,
+      "min": 1,
+      "max": 100,
+      "label": "Minimum Area Level",
+      "description": "Minimum area or monster level required for Empty Orbs of Siphoning to drop naturally.",
+      "when": {
+        "enableNaturalDrops": true
+      }
+    },
+    "maxAreaLevel": {
+      "type": "integer",
+      "default": 0,
+      "min": 0,
+      "max": 100,
+      "label": "Maximum Area Level (0 = Unbounded)",
+      "description": "Optional inclusive maximum area or monster level for natural drops; 0 imposes no upper bound.",
+      "when": {
+        "enableNaturalDrops": true
+      }
+    },
+    "sources": {
+      "type": "choices",
+      "options": [
+        "MonsterKill",
+        "Container",
+        "Strongbox",
+        "BossBonus",
+        "MapCurrency"
+      ],
+      "default": [
+        "MonsterKill",
+        "Container",
+        "Strongbox",
+        "BossBonus",
+        "MapCurrency"
+      ],
+      "minItems": 1,
+      "label": "Natural Drop Sources",
+      "description": "World drop sources eligible to roll Empty Orbs of Siphoning.",
+      "when": {
+        "enableNaturalDrops": true
+      }
+    },
+    "monsterRarity": {
+      "type": "choices",
+      "options": [
+        "Normal",
+        "Magic",
+        "Rare",
+        "Unique",
+        "Boss"
+      ],
+      "default": [
+        "Normal",
+        "Magic",
+        "Rare",
+        "Unique",
+        "Boss"
+      ],
+      "minItems": 1,
+      "label": "Eligible Monster Rarities",
+      "description": "Monster rarities and boss archetypes eligible to drop Empty Orbs of Siphoning.",
+      "when": {
+        "enableNaturalDrops": true
+      }
     }
   }
 }

@@ -383,7 +383,7 @@ public sealed class SiphonOrbEndToEndTests
         foreach (string dir in Directory.GetDirectories(sourceDir))
         {
             string name = Path.GetFileName(dir);
-            if (name is "bin" or "obj" or "Shared" or "Server" or "Client" or "assets-src")
+            if (name is "bin" or "obj" or "Shared" or "Server" or "Client" or "assets-src" or "patches")
                 continue;
             CopyDirectory(dir, Path.Combine(targetDir, name));
         }

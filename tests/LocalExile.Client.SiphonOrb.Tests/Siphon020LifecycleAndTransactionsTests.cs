@@ -19,10 +19,11 @@ namespace LocalExile.Client.SiphonOrb.Tests;
 
 internal static class RoslynEntryCompileHelper
 {
-    public static void CompileAndAssertSuccess(
+    public static byte[] CompileToBytesAndAssertSuccess(
         string gatewayBinDir,
         string assemblyName,
         string source,
+        bool failOnWarnings = false,
         params string[] extraReferencePaths)
     {
         var roslynAlc = new AssemblyLoadContext("RoslynEntryProbe-" + Guid.NewGuid().ToString("N"), isCollectible: true);
@@ -65,6 +66,7 @@ internal static class RoslynEntryCompileHelper
                 typeof(Enumerable).Assembly.Location,
                 Path.Combine(runtimeDir, "System.Runtime.dll"),
                 Path.Combine(runtimeDir, "System.Collections.dll"),
+                Path.Combine(runtimeDir, "System.Collections.Immutable.dll"),
                 Path.Combine(runtimeDir, "netstandard.dll"),
                 Path.Combine(gatewayBinDir, "GameServer.Core.dll"),
                 Path.Combine(gatewayBinDir, "GameServer.Data.dll"),
@@ -112,17 +114,35 @@ internal static class RoslynEntryCompileHelper
             object emitResult = emit.Invoke(compilation, emitArgs)!;
 
             bool success = (bool)emitResult.GetType().GetProperty("Success")!.GetValue(emitResult)!;
-            string[] diags = ((IEnumerable)emitResult.GetType().GetProperty("Diagnostics")!.GetValue(emitResult)!)
+            object[] diagObjs = ((IEnumerable)emitResult.GetType().GetProperty("Diagnostics")!.GetValue(emitResult)!)
                 .Cast<object>()
-                .Select(d => d.ToString() ?? string.Empty)
                 .ToArray();
+            string[] diags = diagObjs.Select(d => d.ToString() ?? string.Empty).ToArray();
             Assert.True(success, $"Roslyn compile ({assemblyName}) failed:\n" + string.Join("\n", diags));
+
+            if (failOnWarnings)
+            {
+                string[] warnings = diagObjs
+                    .Where(d => string.Equals(d.GetType().GetProperty("Severity")?.GetValue(d)?.ToString(), "Warning", StringComparison.Ordinal))
+                    .Select(d => d.ToString() ?? string.Empty)
+                    .ToArray();
+                Assert.Empty(warnings);
+            }
+
+            return peStream.ToArray();
         }
         finally
         {
             roslynAlc.Unload();
         }
     }
+
+    public static void CompileAndAssertSuccess(
+        string gatewayBinDir,
+        string assemblyName,
+        string source,
+        params string[] extraReferencePaths) =>
+        CompileToBytesAndAssertSuccess(gatewayBinDir, assemblyName, source, failOnWarnings: true, extraReferencePaths);
 }
 
 public sealed class Siphon020LifecycleAndTransactionsTests
@@ -296,10 +316,25 @@ public sealed class Siphon020LifecycleAndTransactionsTests
             var registrar = new LocalExileCurrencyRegistrar();
             registrar.Register(SiphonServerMod.EmptyOrbDefinition, _ => Task.FromResult(true));
             registrar.Register(SiphonServerMod.ChargedOrbDefinition, _ => Task.FromResult(true));
-            registrar.ApplyToLiveCatalog(itemCatalog);
+            var overlayDisposables = new List<IDisposable>();
+            if (itemCatalogType.GetMethod("Register", BindingFlags.Public | BindingFlags.Instance) is { } registerOverlay)
+            {
+                Type baseTypeClr = itemCatalogType.GetNestedType("BaseType")!;
+                foreach (var def in new[] { SiphonServerMod.EmptyOrbDefinition, SiphonServerMod.ChargedOrbDefinition })
+                {
+                    object bt = CreateCatalogBaseType(baseTypeClr, def);
+                    overlayDisposables.Add((IDisposable)registerOverlay.Invoke(itemCatalog, ["siphon-tx-probe", bt, null])!);
+                }
+            }
+            else
+            {
+                registrar.ApplyToLiveCatalog(itemCatalog);
+            }
 
-            MethodInfo byHash = itemCatalogType.GetMethod("ByHash", [typeof(uint)])!;
-            object emptyBase = byHash.Invoke(itemCatalog, [SiphonServerMod.EmptyOrbDefinition.TypeHash])!;
+            try
+            {
+                MethodInfo byHash = itemCatalogType.GetMethod("ByHash", [typeof(uint)])!;
+                object emptyBase = byHash.Invoke(itemCatalog, [SiphonServerMod.EmptyOrbDefinition.TypeHash])!;
             object ringBase = itemCatalogType.GetMethod("Find", [typeof(string)])!.Invoke(itemCatalog, ["Iron Greaves"])
                 ?? throw new InvalidOperationException("Iron Greaves not found.");
 
@@ -398,6 +433,12 @@ public sealed class Siphon020LifecycleAndTransactionsTests
 
             GatewayItemLocation updatedDestLoc = LocalExileGatewayTransactions.LocateGatewayItem(inv, null, mainInvId, destId)!;
             Assert.Equal("Imbue Vessel", LocalExileItemAffixService.GetGatewayItemCustomName(updatedDestLoc.Item));
+            }
+            finally
+            {
+                foreach (IDisposable d in overlayDisposables)
+                    d.Dispose();
+            }
         }
         finally
         {
@@ -406,6 +447,37 @@ public sealed class Siphon020LifecycleAndTransactionsTests
             Environment.SetEnvironmentVariable("Game_SQL_DIR", prevSqlDir);
             gatewayAlc.Unload();
         }
+    }
+
+    private static object CreateCatalogBaseType(Type baseTypeClr, CustomCurrencyItemDefinition def)
+    {
+        ConstructorInfo ctor = baseTypeClr.GetConstructors(BindingFlags.Public | BindingFlags.Instance)
+            .OrderByDescending(c => c.GetParameters().Length)
+            .First();
+        ParameterInfo[] ps = ctor.GetParameters();
+        object?[] args = new object?[ps.Length];
+        for (int i = 0; i < ps.Length; i++)
+        {
+            args[i] = i switch
+            {
+                0 => -1,
+                1 => def.BaseItemTypeId,
+                2 => def.DisplayName,
+                3 => def.TypeHash,
+                4 => def.Width,
+                5 => def.Height,
+                6 => def.VisualIdentityHash16,
+                7 => def.Components,
+                8 => 0,
+                9 => def.ItemClassName,
+                10 => (byte)0xFF,
+                11 => def.DropLevel,
+                12 => def.MaxStackSize,
+                13 => -1,
+                _ => ps[i].HasDefaultValue ? ps[i].DefaultValue : null,
+            };
+        }
+        return ctor.Invoke(args);
     }
 
     private sealed class IsolatedGatewayAlc(string gatewayDllPath) : AssemblyLoadContext("SiphonGatewayProbe-" + Guid.NewGuid().ToString("N"), isCollectible: true)

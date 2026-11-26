@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "modId": "siphon",
+  "tables": {
+    "ItemVisualIdentity": {
+      "append": [
+        {
+          "key": "siphon_orb_empty_visual",
+          "cloneFromRow": 0,
+          "fields": {
+            "Id": "SiphonOrbEmpty",
+            "DDSFile": "Art/2DItems/Currency/Mods/Siphon/SiphonOrbEmpty.dds",
+            "AOFile": "Metadata/Items/Currency/CurrencyOrb.ao",
+            "AOFile2": "",
+            "InventorySoundEffect": 33,
+            "HASH16": 54529,
+            "MarauderSMFiles": [],
+            "RangerSMFiles": [],
+            "WitchSMFiles": [],
+            "DuelistDexSMFiles": [],
+            "TemplarSMFiles": [],
+            "ShadowSMFiles": [],
+            "ScionSMFiles": [],
+            "SMFiles": [],
+            "Pickup_AchievementItemsKeys": [],
+            "Identify_AchievementItemsKeys": [],
+            "Corrupt_AchievementItemsKeys": [],
+            "KalandraAchievement": [],
+            "HeistAchievement": []
+          }
+        },
+        {
+          "key": "siphon_orb_charged_visual",
+          "cloneFromRow": 0,
+          "fields": {
+            "Id": "SiphonOrbCharged",
+            "DDSFile": "Art/2DItems/Currency/Mods/Siphon/SiphonOrbCharged.dds",
+            "AOFile": "Metadata/Items/Currency/CurrencyOrb.ao",
+            "AOFile2": "",
+            "InventorySoundEffect": 33,
+            "HASH16": 54530,
+            "MarauderSMFiles": [],
+            "RangerSMFiles": [],
+            "WitchSMFiles": [],
+            "DuelistDexSMFiles": [],
+            "TemplarSMFiles": [],
+            "ShadowSMFiles": [],
+            "ScionSMFiles": [],
+            "SMFiles": [],
+            "Pickup_AchievementItemsKeys": [],
+            "Identify_AchievementItemsKeys": [],
+            "Corrupt_AchievementItemsKeys": [],
+            "KalandraAchievement": [],
+            "HeistAchievement": []
+          }
+        }
+      ]
+    },
+    "BaseItemTypes": {
+      "append": [
+        {
+          "key": "siphon_orb_empty",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "Id": "Metadata/Items/Currency/Mods/Siphon/SiphonOrbEmpty",
+            "ItemClassesKey": 30,
+            "Width": 1,
+            "Height": 1,
+            "Name": "Orb of Siphoning",
+            "InheritsFrom": "Metadata/Items/Currency/StackableCurrency",
+            "DropLevel": 1,
+            "SizeOnGround": 1,
+            "ModDomain": 43,
+            "ItemVisualIdentity": "$ref:ItemVisualIdentity:siphon_orb_empty_visual",
+            "Implicit_ModsKeys": [],
+            "TagsKeys": [],
+            "VendorRecipe_AchievementItems": [],
+            "Identify_AchievementItems": [],
+            "IdentifyMagic_AchievementItems": [],
+            "Achievement1": [],
+            "Achievement2": [],
+            "TalismanEnchants": [],
+            "IsCorrupted": false,
+            "Unmodifiable": false
+          }
+        },
+        {
+          "key": "siphon_orb_charged",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "Id": "Metadata/Items/Currency/Mods/Siphon/SiphonOrbCharged",
+            "ItemClassesKey": 30,
+            "Width": 1,
+            "Height": 1,
+            "Name": "Charged Orb of Siphoning",
+            "InheritsFrom": "Metadata/Items/Currency/StackableCurrency",
+            "DropLevel": 1,
+            "SizeOnGround": 1,
+            "ModDomain": 43,
+            "ItemVisualIdentity": "$ref:ItemVisualIdentity:siphon_orb_charged_visual",
+            "Implicit_ModsKeys": [],
+            "TagsKeys": [],
+            "VendorRecipe_AchievementItems": [],
+            "Identify_AchievementItems": [],
+            "IdentifyMagic_AchievementItems": [],
+            "Achievement1": [],
+            "Achievement2": [],
+            "TalismanEnchants": [],
+            "IsCorrupted": false,
+            "Unmodifiable": false
+          }
+        }
+      ]
+    },
+    "CurrencyItems": {
+      "append": [
+        {
+          "key": "siphon_orb_empty_currency",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "BaseItemTypesKey": "$ref:BaseItemTypes:siphon_orb_empty",
+            "StackSize": 20,
+            "CurrencyTab_StackSize": 10000,
+            "CurrencyUseType": 2,
+            "Action": "remove_random_mod",
+            "Directions": "Right click this item then left click a magic or rare item to siphon one of its modifiers.",
+            "XBoxDirections": "Right click this item then left click a magic or rare item to siphon one of its modifiers.",
+            "Description": "Extracts a chosen explicit modifier from a magic or rare item into a Charged Orb of Siphoning",
+            "Scroll": false,
+            "ChangedForHardmode": false,
+            "DescriptionHardmode": "",
+            "IsGold": false,
+            "Usage_AchievementItemsKeys": [],
+            "ModifyMapsAchievements": [],
+            "ModifyContractsAchievements": [],
+            "CombineAchievements": []
+          }
+        },
+        {
+          "key": "siphon_orb_charged_currency",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "BaseItemTypesKey": "$ref:BaseItemTypes:siphon_orb_charged",
+            "StackSize": 1,
+            "CurrencyTab_StackSize": 0,
+            "CurrencyUseType": 2,
+            "Action": "remove_random_mod",
+            "Directions": "Right click this item then left click a magic or rare item to replace one of its modifiers with the stored modifier.",
+            "XBoxDirections": "Right click this item then left click a magic or rare item to replace one of its modifiers with the stored modifier.",
+            "Description": "Contains a siphoned modifier. Replaces a chosen modifier on a magic or rare item",
+            "Scroll": false,
+            "ChangedForHardmode": false,
+            "DescriptionHardmode": "",
+            "IsGold": false,
+            "Usage_AchievementItemsKeys": [],
+            "ModifyMapsAchievements": [],
+            "ModifyContractsAchievements": [],
+            "CombineAchievements": []
+          }
+        }
+      ]
+    }
+  }
+}

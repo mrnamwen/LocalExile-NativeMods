@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LocalExile.Client.Waypoint\LocalExile.Client.Waypoint.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.AssetPipeline\LocalExile.Client.AssetPipeline.csproj" />
     <ProjectReference Include="..\..\src\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
     <ProjectReference Include="..\..\src\LocalExile.Client.Host\LocalExile.Client.Host.csproj" />
     <ProjectReference Include="..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
