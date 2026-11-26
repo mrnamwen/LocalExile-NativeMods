@@ -37,7 +37,7 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
 
         _statDescriptions = TryLoadStatDescriptions(mod.Log);
         _registrar = new LocalExileCurrencyRegistrar();
-        var affixService = new LocalExileItemAffixService(_statDescriptions);
+        var affixService = new LocalExileItemAffixService(_statDescriptions, Program.Rolls);
         var backend = new LocalExileSiphonWorldBackend(_players, _registrar, affixService, mod.Log);
         _serverMod = new SiphonServerMod(_bridge, backend, _registrar);
         _serverMod.Attach();
@@ -280,7 +280,7 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
                 return Task.FromResult<ItemAffixView?>(null);
 
             var catalog = Game.ItemsFor(player);
-            return Task.FromResult<ItemAffixView?>(affixService.InspectGatewayItem(inventoryId, itemId, located.Item, catalog));
+            return Task.FromResult<ItemAffixView?>(affixService.InspectGatewayItem(inventoryId, itemId, located.Item, catalog, itemRolls: Game.RollsFor(player)));
         }
 
         public bool IsItemEquipped(string connectionId, uint inventoryId, uint itemId)
@@ -335,7 +335,7 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
             if (Game.Worn(targetSpot))
                 return new SiphonStealCommitResult(false, "Unequip the target item before siphoning.");
 
-            ItemAffixView view = affixService.InspectGatewayItem(targetInventoryId, targetItemId, target.Item, catalog);
+            ItemAffixView view = affixService.InspectGatewayItem(targetInventoryId, targetItemId, target.Item, catalog, itemRolls: Game.RollsFor(player));
             if (LocalExileItemAffixService.ValidateStealTarget(view) is { } targetErr)
                 return new SiphonStealCommitResult(false, targetErr);
             if (affixIndex < 0 || affixIndex >= view.Affixes.Count)
@@ -429,7 +429,7 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
                 Error: null,
                 StolenAffix: stolenPayload,
                 CreatedChargedItemId: addedCharged.Id,
-                UpdatedSourceView: affixService.InspectGatewayItem(targetInventoryId, targetItemId, changedTarget.Item, catalog));
+                UpdatedSourceView: affixService.InspectGatewayItem(targetInventoryId, targetItemId, changedTarget.Item, catalog, itemRolls: Game.RollsFor(player)));
         }
 
         public async Task<SiphonImbueCommitResult> CommitImbueAsync(
@@ -462,7 +462,7 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
             if (stored is null)
                 return new SiphonImbueCommitResult(false, "Charged Orb of Siphoning has no stored modifier.");
 
-            ItemAffixView view = affixService.InspectGatewayItem(targetInventoryId, targetItemId, target.Item, catalog);
+            ItemAffixView view = affixService.InspectGatewayItem(targetInventoryId, targetItemId, target.Item, catalog, itemRolls: Game.RollsFor(player));
             (bool allowed, string? reason) = LocalExileItemAffixService.CanReplaceAffix(view, replaceIndex, stored);
             if (!allowed)
                 return new SiphonImbueCommitResult(false, reason ?? "Selected modifier cannot be replaced.");
@@ -506,7 +506,7 @@ public sealed class SiphonLocalExileEntry : IMod, IDisposable
                 Error: null,
                 ReplacedAffix: replacedSnapshot,
                 AppliedAffix: stored,
-                UpdatedTargetView: affixService.InspectGatewayItem(targetInventoryId, targetItemId, changedTarget.Item, catalog));
+                UpdatedTargetView: affixService.InspectGatewayItem(targetInventoryId, targetItemId, changedTarget.Item, catalog, itemRolls: Game.RollsFor(player)));
         }
 
         public async Task TellPlayerAsync(string connectionId, string message, CancellationToken cancellationToken = default)

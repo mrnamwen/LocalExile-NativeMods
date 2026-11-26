@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
 namespace LocalExile.Client.ServerBridge;
@@ -222,15 +223,18 @@ public sealed class LocalExileItemAffixService
 {
     private static readonly Regex PlaceholderRegex = new(@"\{(\d+)(?::([^}]+))?\}", RegexOptions.Compiled);
     private static readonly Regex TierSuffixRegex = new(@"(\d+)$", RegexOptions.Compiled);
+    private static readonly ConditionalWeakTable<object, WordLookup> WordLookupCache = [];
     private readonly object? _defaultStatDescriptions;
+    private readonly object? _defaultItemRolls;
 
     /// <summary>
-    /// Creates an affix service with an optional default LocalExile <c>StatDescriptions</c> table
-    /// used when formatting live Gateway item modifiers.
+    /// Creates an affix service with optional default LocalExile <c>StatDescriptions</c> and <c>ItemRolls</c>
+    /// tables used when formatting live Gateway item modifiers and resolving Rare/Unique <c>NameWords</c>.
     /// </summary>
-    public LocalExileItemAffixService(object? defaultStatDescriptions = null)
+    public LocalExileItemAffixService(object? defaultStatDescriptions = null, object? defaultItemRolls = null)
     {
         _defaultStatDescriptions = defaultStatDescriptions;
+        _defaultItemRolls = defaultItemRolls;
     }
 
     /// <summary>
@@ -600,15 +604,17 @@ public sealed class LocalExileItemAffixService
 
     /// <summary>
     /// Inspects a live LocalExile Gateway <c>GameServer.Core.Protocol.Instance.Item</c> using the live
-    /// <c>ItemCatalog</c> (and optional <c>StatDescriptions</c>) via reflection so <c>ServerBridge</c>
-    /// stays decoupled from Gateway binaries while exposing exact live mod metadata and formatted PoE stat lines.
+    /// <c>ItemCatalog</c> (and optional <c>StatDescriptions</c> / <c>ItemRolls</c>) via reflection so
+    /// <c>ServerBridge</c> stays decoupled from Gateway binaries while exposing exact live mod metadata,
+    /// formatted PoE stat lines, and resolved Rare/Unique item names from <c>Words.dat</c>.
     /// </summary>
     public ItemAffixView InspectGatewayItem(
         uint inventoryId,
         uint itemId,
         object gatewayItem,
         object itemCatalog,
-        object? statDescriptions = null)
+        object? statDescriptions = null,
+        object? itemRolls = null)
     {
         ArgumentNullException.ThrowIfNull(gatewayItem);
         ArgumentNullException.ThrowIfNull(itemCatalog);
@@ -667,9 +673,14 @@ public sealed class LocalExileItemAffixService
             }
         }
 
-        string displayItemName = rarity == ItemRarityKind.Magic && affixes.Count > 0
-            ? BuildMagicDisplayName(baseName, affixes)
-            : baseName;
+        string displayItemName = ResolveGatewayDisplayName(
+            itemType,
+            gatewayItem,
+            rarity,
+            identified,
+            baseName,
+            affixes,
+            itemRolls ?? _defaultItemRolls);
 
         return new ItemAffixView(
             ItemId: itemId,
@@ -1050,6 +1061,127 @@ public sealed class LocalExileItemAffixService
             .Replace('_', ' ');
         string sign = value >= 0 ? "+" : "";
         return $"{sign}{value} {clean}".Trim();
+    }
+
+    private static string ResolveGatewayDisplayName(
+        Type itemType,
+        object gatewayItem,
+        ItemRarityKind rarity,
+        bool identified,
+        string baseName,
+        List<ItemAffixSnapshot> affixes,
+        object? itemRolls)
+    {
+        if (!identified)
+            return baseName;
+
+        if (rarity == ItemRarityKind.Magic && affixes.Count > 0)
+            return BuildMagicDisplayName(baseName, affixes);
+
+        if (rarity is ItemRarityKind.Rare or ItemRarityKind.Unique && itemRolls is not null)
+        {
+            uint[] nameWords = ExtractUIntList(GetProperty<IEnumerable>(itemType, gatewayItem, "NameWords"));
+            if (nameWords.Length > 0)
+            {
+                WordLookup lookup = WordLookupCache.GetValue(itemRolls, BuildWordLookup);
+                if (lookup.TryFormatName(nameWords, rarity == ItemRarityKind.Rare) is { Length: > 0 } resolved)
+                    return resolved;
+            }
+        }
+
+        return baseName;
+    }
+
+    private static WordLookup BuildWordLookup(object itemRolls)
+    {
+        var rarePrefixes = new Dictionary<uint, string>();
+        var rareSuffixes = new Dictionary<uint, string>();
+        var allWords = new Dictionary<uint, string>();
+
+        if (GetProperty<IEnumerable>(itemRolls.GetType(), itemRolls, "Words") is { } wordsSeq)
+        {
+            PropertyInfo? keyProp = null;
+            PropertyInfo? textProp = null;
+            PropertyInfo? listProp = null;
+            Type? cachedWordType = null;
+
+            foreach (object? wordObj in wordsSeq)
+            {
+                if (wordObj is null)
+                    continue;
+
+                Type wordType = wordObj.GetType();
+                if (wordType != cachedWordType)
+                {
+                    cachedWordType = wordType;
+                    keyProp = wordType.GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
+                    textProp = wordType.GetProperty("Text", BindingFlags.Public | BindingFlags.Instance);
+                    listProp = wordType.GetProperty("List", BindingFlags.Public | BindingFlags.Instance);
+                }
+
+                if (keyProp?.GetValue(wordObj) is not { } keyVal || textProp?.GetValue(wordObj) is not string text || string.IsNullOrWhiteSpace(text))
+                    continue;
+
+                uint key = Convert.ToUInt32(keyVal, CultureInfo.InvariantCulture);
+                int listId = listProp?.GetValue(wordObj) is { } listVal ? Convert.ToInt32(listVal, CultureInfo.InvariantCulture) : 0;
+
+                if (listId == 1)
+                    rarePrefixes.TryAdd(key, text);
+                else if (listId == 2)
+                    rareSuffixes.TryAdd(key, text);
+
+                allWords.TryAdd(key, text);
+            }
+        }
+
+        return new WordLookup(rarePrefixes, rareSuffixes, allWords);
+    }
+
+    private static uint[] ExtractUIntList(IEnumerable? seq)
+    {
+        if (seq is null)
+            return [];
+
+        var list = new List<uint>();
+        foreach (object? item in seq)
+        {
+            if (item is not null)
+                list.Add(Convert.ToUInt32(item, CultureInfo.InvariantCulture));
+        }
+
+        return [.. list];
+    }
+
+    private sealed class WordLookup(
+        Dictionary<uint, string> rarePrefixes,
+        Dictionary<uint, string> rareSuffixes,
+        Dictionary<uint, string> allWords)
+    {
+        public string? TryFormatName(uint[] nameWords, bool isRare)
+        {
+            var parts = new List<string>(nameWords.Length);
+            for (int i = 0; i < nameWords.Length; i++)
+            {
+                uint key = nameWords[i];
+                string? word = null;
+
+                if (isRare)
+                {
+                    if (i == 0 && rarePrefixes.TryGetValue(key, out string? p))
+                        word = p;
+                    else if (i == 1 && rareSuffixes.TryGetValue(key, out string? s))
+                        word = s;
+                }
+
+                if (word is null)
+                    allWords.TryGetValue(key, out word);
+
+                if (!string.IsNullOrWhiteSpace(word))
+                    parts.Add(word.Trim());
+            }
+
+            return parts.Count > 0 ? string.Join(' ', parts) : null;
+        }
     }
 
     private static string BuildMagicDisplayName(string baseName, IReadOnlyList<ItemAffixSnapshot> affixes)
