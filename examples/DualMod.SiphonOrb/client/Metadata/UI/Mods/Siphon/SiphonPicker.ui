@@ -1,13 +1,13 @@
 // Orb of Siphoning — Authentic Path of Exile 3.29.3d Recombinator-style Item-Card Modifier Selector.
 // Verified 3.29.3d UI rules:
 // - Leading comment before <DEFINITIONS>
-// - 100% stock registered 3.29.3d control types (Frame, StackLayout, Label, Picture, BasicButton, Button)
-// - Every ancestor container carries an explicit unique id (case-sensitive FindChild)
-// - Spacer Frame after Picture inside StackLayout (never puts margin on Picture inside StackLayout)
+// - 100% stock registered 3.29.3d control types (Frame, StackLayout, Label, BasicButton, Button)
+// - Every container carries an explicit unique id (case-sensitive FindChild)
+// - All stretched UIImages sprites use Frame + background = "...", stretch (Picture ignores size and draws native px)
 // - Full-width clickable modifier rows use BasicButton (+0x2A0 click event) with mouse_enabled = false
-//   on all overlaid Picture/Frame/Label children so clicking anywhere on a modifier line triggers Clicked
+//   on all overlaid Frame/Label children so clicking anywhere on a modifier line triggers Clicked
 // - Real 3.29.3d Kingsmarch Recombinator 9-slice frame, Rare/Magic item card headers & separators,
-//   CraftingBench modifier selection bars, circular close button, and Orb of Siphoning DDS icons
+//   CraftingBench modifier selection bars, circular close button, and stock UIImages1 orb/recombinator icons
 
 <DEFINITIONS>
 
@@ -16,16 +16,16 @@ const $pad = 28;
 const $inner = 904;
 const $card_w = 904;
 const $card_inner = 872;
-const $row_h = 52;
+const $row_h = 60;
 
 begin Frame
 	id = siphon_picker_window;
 	aspect_mode = scaley;
-	size = $w, 760;
+	size = $w, 780;
 	min_size = $w, 420;
 	auto_size = true, true;
 	float = centre;
-	y = 140;
+	y = 120;
 	visible = true;
 	mouse_enabled = true;
 	propagate_properties = false;
@@ -69,16 +69,12 @@ begin Frame
 			end
 		end
 
-		begin Picture
+		begin Frame
 			id = header_divider;
 			float = centre;
-			source = "Art/2DArt/UIImages/InGame/Divider";
+			background = "Art/2DArt/UIImages/InGame/Divider", stretch;
 			size = $inner - 40, 8;
-		end
-
-		begin Frame
-			id = header_spacer;
-			size = 10, 10;
+			margin = 0, 0, 0, 10;
 		end
 
 		begin Frame
@@ -97,11 +93,11 @@ begin Frame
 				background = "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageResourceSlot", stretch;
 				mouse_enabled = false;
 
-				begin Picture
+				begin Frame
 					id = steal_orb_icon;
-					location = 4, 4;
-					size = 62, 62;
-					source = "Art/2DItems/Currency/Mods/Siphon/SiphonOrbEmpty.dds";
+					location = 5, 5;
+					size = 60, 60;
+					background = "Art/2DArt/UIImages/InGame/Sanctum/BoonCurseIcons/BoonEngravedOrbIcon", stretch;
 					mouse_enabled = false;
 				end
 			end
@@ -146,11 +142,11 @@ begin Frame
 				background = "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/ThaumaturgicDustDisplay", stretch;
 				mouse_enabled = false;
 
-				begin Picture
+				begin Frame
 					id = charged_orb_icon;
-					location = 6, 6;
-					size = 64, 64;
-					source = "Art/2DItems/Currency/Mods/Siphon/SiphonOrbCharged.dds";
+					location = 5, 5;
+					size = 66, 66;
+					background = "Art/2DArt/UIImages/InGame/RecombinatorToastDisplay", stretch;
 					mouse_enabled = false;
 				end
 			end
@@ -193,7 +189,7 @@ begin Frame
 
 		begin Frame
 			id = item_card_frame;
-			size = $card_w, 420;
+			size = $card_w, 460;
 			auto_size = false, true;
 			float = centre;
 			margin = 0, 0, 0, 12;
@@ -210,27 +206,27 @@ begin Frame
 					size = $card_w, 88;
 					visible = true;
 
-					begin Picture
+					begin Frame
 						id = rare_hdr_left;
 						location = 0, 0;
 						size = 71, 88;
-						source = "Art/2DArt/UIImages/InGame/ItemsHeaderRareLeft";
+						background = "Art/2DArt/UIImages/InGame/ItemsHeaderRareLeft", stretch;
 						mouse_enabled = false;
 					end
 
-					begin Picture
+					begin Frame
 						id = rare_hdr_mid;
 						location = 71, 0;
 						size = $card_w - 142, 88;
-						source = "Art/2DArt/UIImages/InGame/ItemsHeaderRareMiddle";
+						background = "Art/2DArt/UIImages/InGame/ItemsHeaderRareMiddle", stretch;
 						mouse_enabled = false;
 					end
 
-					begin Picture
+					begin Frame
 						id = rare_hdr_right;
 						location = $card_w - 71, 0;
 						size = 71, 88;
-						source = "Art/2DArt/UIImages/InGame/ItemsHeaderRareRight";
+						background = "Art/2DArt/UIImages/InGame/ItemsHeaderRareRight", stretch;
 						mouse_enabled = false;
 					end
 
@@ -264,27 +260,27 @@ begin Frame
 					size = $card_w, 55;
 					visible = false;
 
-					begin Picture
+					begin Frame
 						id = magic_hdr_left;
 						location = 0, 0;
 						size = 47, 55;
-						source = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicLeft";
+						background = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicLeft", stretch;
 						mouse_enabled = false;
 					end
 
-					begin Picture
+					begin Frame
 						id = magic_hdr_mid;
 						location = 47, 0;
 						size = $card_w - 94, 55;
-						source = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicMiddle";
+						background = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicMiddle", stretch;
 						mouse_enabled = false;
 					end
 
-					begin Picture
+					begin Frame
 						id = magic_hdr_right;
 						location = $card_w - 47, 0;
 						size = 47, 55;
-						source = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicRight";
+						background = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicRight", stretch;
 						mouse_enabled = false;
 					end
 
@@ -303,22 +299,22 @@ begin Frame
 
 				begin Frame
 					id = item_sep_frame;
-					size = $card_w, 22;
+					size = $card_w, 20;
 
-					begin Picture
+					begin Frame
 						id = item_sep_rare_pic;
-						location = 222, 5;
-						size = 460, 12;
-						source = "Art/2DArt/UIImages/InGame/ItemsSeparatorRare";
+						location = 122, 4;
+						size = 660, 12;
+						background = "Art/2DArt/UIImages/InGame/ItemsSeparatorRare", stretch;
 						mouse_enabled = false;
 						visible = true;
 					end
 
-					begin Picture
+					begin Frame
 						id = item_sep_magic_pic;
-						location = 222, 5;
-						size = 460, 12;
-						source = "Art/2DArt/UIImages/InGame/ItemsSeparatorMagic";
+						location = 122, 4;
+						size = 660, 12;
+						background = "Art/2DArt/UIImages/InGame/ItemsSeparatorMagic", stretch;
 						mouse_enabled = false;
 						visible = false;
 					end
@@ -343,11 +339,11 @@ begin Frame
 							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
 							pixel_border_colour = argb( 155, 76, 64, 48 );
 
-							begin Picture
+							begin Frame
 								id = affix_sel_bg_0;
 								location = 0, 0;
 								size = $card_inner, $row_h;
-								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected", stretch;
 								mouse_enabled = false;
 								visible = false;
 							end
@@ -390,7 +386,7 @@ begin Frame
 								size = $card_inner - 290, $row_h;
 								auto_size = false;
 								text_align = MiddleCentre;
-								font = Fonts.Normal;
+								font = Fonts.SmallNormal;
 								foreground_colour = rgb( 136, 136, 255 );
 								outline_colour = rgb( 0, 0, 0 );
 								mouse_enabled = false;
@@ -425,11 +421,11 @@ begin Frame
 							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
 							pixel_border_colour = argb( 155, 76, 64, 48 );
 
-							begin Picture
+							begin Frame
 								id = affix_sel_bg_1;
 								location = 0, 0;
 								size = $card_inner, $row_h;
-								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected", stretch;
 								mouse_enabled = false;
 								visible = false;
 							end
@@ -472,7 +468,7 @@ begin Frame
 								size = $card_inner - 290, $row_h;
 								auto_size = false;
 								text_align = MiddleCentre;
-								font = Fonts.Normal;
+								font = Fonts.SmallNormal;
 								foreground_colour = rgb( 136, 136, 255 );
 								outline_colour = rgb( 0, 0, 0 );
 								mouse_enabled = false;
@@ -507,11 +503,11 @@ begin Frame
 							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
 							pixel_border_colour = argb( 155, 76, 64, 48 );
 
-							begin Picture
+							begin Frame
 								id = affix_sel_bg_2;
 								location = 0, 0;
 								size = $card_inner, $row_h;
-								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected", stretch;
 								mouse_enabled = false;
 								visible = false;
 							end
@@ -554,7 +550,7 @@ begin Frame
 								size = $card_inner - 290, $row_h;
 								auto_size = false;
 								text_align = MiddleCentre;
-								font = Fonts.Normal;
+								font = Fonts.SmallNormal;
 								foreground_colour = rgb( 136, 136, 255 );
 								outline_colour = rgb( 0, 0, 0 );
 								mouse_enabled = false;
@@ -589,11 +585,11 @@ begin Frame
 							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
 							pixel_border_colour = argb( 155, 76, 64, 48 );
 
-							begin Picture
+							begin Frame
 								id = affix_sel_bg_3;
 								location = 0, 0;
 								size = $card_inner, $row_h;
-								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected", stretch;
 								mouse_enabled = false;
 								visible = false;
 							end
@@ -636,7 +632,7 @@ begin Frame
 								size = $card_inner - 290, $row_h;
 								auto_size = false;
 								text_align = MiddleCentre;
-								font = Fonts.Normal;
+								font = Fonts.SmallNormal;
 								foreground_colour = rgb( 136, 136, 255 );
 								outline_colour = rgb( 0, 0, 0 );
 								mouse_enabled = false;
@@ -671,11 +667,11 @@ begin Frame
 							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
 							pixel_border_colour = argb( 155, 76, 64, 48 );
 
-							begin Picture
+							begin Frame
 								id = affix_sel_bg_4;
 								location = 0, 0;
 								size = $card_inner, $row_h;
-								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected", stretch;
 								mouse_enabled = false;
 								visible = false;
 							end
@@ -718,7 +714,7 @@ begin Frame
 								size = $card_inner - 290, $row_h;
 								auto_size = false;
 								text_align = MiddleCentre;
-								font = Fonts.Normal;
+								font = Fonts.SmallNormal;
 								foreground_colour = rgb( 136, 136, 255 );
 								outline_colour = rgb( 0, 0, 0 );
 								mouse_enabled = false;
@@ -753,11 +749,11 @@ begin Frame
 							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
 							pixel_border_colour = argb( 155, 76, 64, 48 );
 
-							begin Picture
+							begin Frame
 								id = affix_sel_bg_5;
 								location = 0, 0;
 								size = $card_inner, $row_h;
-								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected", stretch;
 								mouse_enabled = false;
 								visible = false;
 							end
@@ -800,7 +796,7 @@ begin Frame
 								size = $card_inner - 290, $row_h;
 								auto_size = false;
 								text_align = MiddleCentre;
-								font = Fonts.Normal;
+								font = Fonts.SmallNormal;
 								foreground_colour = rgb( 136, 136, 255 );
 								outline_colour = rgb( 0, 0, 0 );
 								mouse_enabled = false;
@@ -831,23 +827,19 @@ begin Frame
 			auto_size = true;
 			float = centre;
 			text_align = MiddleCentre;
-			font = Fonts.SmallNormal;
+			font = Fonts.Small;
 			foreground_colour = rgb( 235, 225, 200 );
 			outline_colour = rgb( 0, 0, 0 );
 			text = "Click a modifier on the item card, then confirm.";
 			margin = 0, 2, 0, 10;
 		end
 
-		begin Picture
+		begin Frame
 			id = footer_divider;
 			float = centre;
-			source = "Art/2DArt/UIImages/InGame/Divider";
+			background = "Art/2DArt/UIImages/InGame/Divider", stretch;
 			size = $inner - 40, 8;
-		end
-
-		begin Frame
-			id = footer_spacer;
-			size = 10, 12;
+			margin = 0, 0, 0, 12;
 		end
 
 		begin Frame
