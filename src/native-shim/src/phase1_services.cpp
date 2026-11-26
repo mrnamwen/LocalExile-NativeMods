@@ -570,21 +570,17 @@ void populate_item_snapshot_unguarded(
                 copy_utf8_to_fixed(out.base_name, sizeof(out.base_name), bname);
 
                 const size_t row_ref_off = off_or(bid, "items.base_static.row_ref", 0x68u);
-                void* row_ref = nullptr;
-                if (read_val(bs, row_ref_off, row_ref) && row_ref && ptr_readable(row_ref, 0x10)) {
-                    void* row_ptr = nullptr;
-                    if (read_val(row_ref, 0x08u, row_ptr) && row_ptr) {
-                        const wchar_t* meta_w = nullptr;
-                        if (read_val(row_ptr, 0x00u, meta_w) && meta_w) {
-                            const std::string meta = read_c_wstr_utf8(meta_w);
-                            copy_utf8_to_fixed(out.metadata_path, sizeof(out.metadata_path), meta);
-                        }
+                const wchar_t* meta_w = nullptr;
+                const void* item_classes_ref = nullptr;
+                if (Phase1Services::extract_base_item_type_row(bs, row_ref_off, &meta_w, &item_classes_ref)) {
+                    if (meta_w) {
+                        const std::string meta = read_c_wstr_utf8(meta_w);
+                        copy_utf8_to_fixed(out.metadata_path, sizeof(out.metadata_path), meta);
                     }
                     const uint64_t fn_cls = sym_addr(bid, base, "items.base_get_item_class");
-                    if (fn_cls != 0) {
-                        using GetClsFn = uint32_t(NM_CALL*)(void*);
-                        out.item_class_id = reinterpret_cast<GetClsFn>(static_cast<uintptr_t>(fn_cls))(
-                            static_cast<uint8_t*>(bs) + row_ref_off);
+                    if (fn_cls != 0 && item_classes_ref != nullptr) {
+                        using GetClsFn = uint32_t(NM_CALL*)(const void*);
+                        out.item_class_id = reinterpret_cast<GetClsFn>(static_cast<uintptr_t>(fn_cls))(item_classes_ref);
                     }
                 }
             }
@@ -1813,13 +1809,7 @@ nm_status_t Phase1Services::screens_get_state(nm_screens_state_t* out_state) con
                                             out->map_stash_page = page;
                                             out->visible_panels |= NM_PANEL_MAP_STASH;
                                             const size_t sg_off = off_or(bid, "ui.map_stash_page.selected_group", 0x550u);
-                                            uint8_t sg_has = 0;
-                                            if (read_val(page, sg_off + 0x18u, sg_has) && sg_has != 0) {
-                                                int32_t tier = -1;
-                                                if (read_val(page, sg_off, tier)) {
-                                                    out->active_map_tier = tier;
-                                                }
-                                            }
+                                            out->active_map_tier = Phase1Services::read_map_stash_selected_tier(page, sg_off);
                                             void* inner_tc = nullptr;
                                             if (read_val(page, off_or(bid, "ui.map_stash_page.inner_tab_container", 0x530u), inner_tc) && inner_tc) {
                                                 uint8_t i_has = 0;
@@ -2112,6 +2102,104 @@ int32_t Phase1Services::dispatch_pregame_creating(
 
 void Phase1Services::dispatch_pregame_created(const char* name_utf8, const char* league_utf8, uint16_t result_code) {
     fire_pregame_created_guarded(name_utf8, league_utf8, result_code);
+}
+
+int32_t Phase1Services::parse_map_key_tier(const char* metadata_id_utf8) noexcept {
+    if (!metadata_id_utf8) return -1;
+    static constexpr const char kMarker[] = "MapKeyTier";
+    static constexpr size_t kMarkerLen = sizeof(kMarker) - 1;
+    const char* found = std::strstr(metadata_id_utf8, kMarker);
+    if (!found) return -1;
+    const char* p = found + kMarkerLen;
+    if (*p < '0' || *p > '9') return -1;
+    int32_t val = 0;
+    while (*p >= '0' && *p <= '9') {
+        val = val * 10 + (*p - '0');
+        if (val > 99) return -1;
+        ++p;
+    }
+    if (*p != '\0') return -1;
+    return (val > 0) ? val : -1;
+}
+
+bool Phase1Services::extract_base_item_type_row(
+    const void*     base_static,
+    size_t          row_ref_offset,
+    const wchar_t** out_metadata_id_w,
+    const void**    out_item_classes_row_ref) noexcept {
+    if (out_metadata_id_w) *out_metadata_id_w = nullptr;
+    if (out_item_classes_row_ref) *out_item_classes_row_ref = nullptr;
+    if (!base_static) return false;
+
+    // BaseStatic + row_ref_offset (0x68) is an inline RowRef<BaseItemTypes>:
+    //   +0x00: BaseItemTypesRow* base_row
+    //   +0x08: BaseItemTypesDat*
+    // Inside BaseItemTypesRow:
+    //   +0x00: const wchar_t* Id ("Metadata/Items/...")
+    //   +0x08: ItemClassesRow* (inline RowRef<ItemClasses> {ItemClassesRow*, ItemClassesDat*})
+    const void* base_row = nullptr;
+#if defined(_WIN32)
+    if (!read_val(base_static, row_ref_offset, base_row) || !base_row || !ptr_readable(base_row, 0x18u)) {
+        return false;
+    }
+    const wchar_t* meta_w = nullptr;
+    if (read_val(base_row, 0x00u, meta_w) && out_metadata_id_w) {
+        *out_metadata_id_w = meta_w;
+    }
+#else
+    std::memcpy(&base_row, static_cast<const uint8_t*>(base_static) + row_ref_offset, sizeof(base_row));
+    if (!base_row) return false;
+    const wchar_t* meta_w = nullptr;
+    std::memcpy(&meta_w, static_cast<const uint8_t*>(base_row) + 0x00u, sizeof(meta_w));
+    if (out_metadata_id_w) *out_metadata_id_w = meta_w;
+#endif
+    if (out_item_classes_row_ref) {
+        *out_item_classes_row_ref = static_cast<const uint8_t*>(base_row) + 0x08u;
+    }
+    return true;
+}
+
+int32_t Phase1Services::read_map_stash_selected_tier(
+    const void* map_stash_page,
+    size_t      selected_group_offset) noexcept {
+    if (!map_stash_page) return -1;
+
+    // MapStashPage + 0x550 is std::optional<std::variant<RowRef0, RowRef1, RowRef2>>:
+    //   +0x00: void* row_ptr
+    //   +0x08: void* dat_ptr
+    //   +0x10: int8_t variant_index (0 = BaseItemTypesRow* "Metadata/Items/Maps/MapKeyTier1..17")
+    //   +0x18: uint8_t has_value
+    uint8_t has_val = 0;
+    int8_t var_idx = -1;
+    const void* row_ptr = nullptr;
+    const wchar_t* id_w = nullptr;
+
+#if defined(_WIN32)
+    if (!read_val(map_stash_page, selected_group_offset + 0x18u, has_val) || has_val == 0) return -1;
+    if (!read_val(map_stash_page, selected_group_offset + 0x10u, var_idx) || var_idx != 0) return -1;
+    if (!read_val(map_stash_page, selected_group_offset + 0x00u, row_ptr) || !row_ptr) return -1;
+    if (!read_val(row_ptr, 0x00u, id_w) || !id_w) return -1;
+    const std::string id_u8 = read_c_wstr_utf8(id_w);
+    return parse_map_key_tier(id_u8.c_str());
+#else
+    const auto* base = static_cast<const uint8_t*>(map_stash_page) + selected_group_offset;
+    std::memcpy(&has_val, base + 0x18u, sizeof(has_val));
+    if (has_val == 0) return -1;
+    std::memcpy(&var_idx, base + 0x10u, sizeof(var_idx));
+    if (var_idx != 0) return -1;
+    std::memcpy(&row_ptr, base + 0x00u, sizeof(row_ptr));
+    if (!row_ptr) return -1;
+    std::memcpy(&id_w, static_cast<const uint8_t*>(row_ptr) + 0x00u, sizeof(id_w));
+    if (!id_w) return -1;
+    char ascii[256] = {};
+    size_t n = 0;
+    while (n + 1 < sizeof(ascii) && id_w[n] != L'\0') {
+        const wchar_t ch = id_w[n];
+        ascii[n++] = (ch >= 0 && ch < 128) ? static_cast<char>(ch) : '?';
+    }
+    ascii[n] = '\0';
+    return parse_map_key_tier(ascii);
+#endif
 }
 
 } // namespace nativemods

@@ -2127,7 +2127,75 @@ int test_phase1_input_screens_hover_and_pregame_callbacks() {
     }
 #endif
 
-    // 6. Shutdown clears all Phase 1 callbacks cleanly
+    // 6. Verify 3.29.3d BaseStatic+0x68 inline RowRef<BaseItemTypes> & MapStashPage+0x550 selected_group layouts (#23)
+    {
+        struct FakeItemClassRow {
+            const wchar_t* class_id;
+        } item_class_row{L"Currency"};
+
+        struct FakeBaseItemTypesRow {
+            const wchar_t* id;               // +0x00: BaseItemTypes.Id
+            void*          item_classes_row; // +0x08: ItemClassesRow*
+            void*          item_classes_dat; // +0x10: ItemClassesDat*
+        } base_row{
+            L"Metadata/Items/Currency/CurrencyRerollRare",
+            &item_class_row,
+            reinterpret_cast<void*>(0xDEAD0001ull),
+        };
+
+        alignas(16) uint8_t fake_base_static[0x98] = {};
+        void* base_row_ptr = &base_row;
+        void* base_dat_ptr = reinterpret_cast<void*>(0xDEAD0002ull);
+        std::memcpy(fake_base_static + 0x68u, &base_row_ptr, sizeof(base_row_ptr));
+        std::memcpy(fake_base_static + 0x70u, &base_dat_ptr, sizeof(base_dat_ptr));
+
+        const wchar_t* extracted_meta = nullptr;
+        const void* extracted_cls_ref = nullptr;
+        CHECK(nativemods::Phase1Services::extract_base_item_type_row(
+                  fake_base_static, 0x68u, &extracted_meta, &extracted_cls_ref));
+        // Must read BaseItemTypes.Id (NOT ItemClasses.Id) and point to BaseItemTypesRow+0x08!
+        CHECK(extracted_meta == base_row.id);
+        CHECK(std::wcscmp(extracted_meta, L"Metadata/Items/Currency/CurrencyRerollRare") == 0);
+        CHECK(extracted_cls_ref == reinterpret_cast<const uint8_t*>(&base_row) + 0x08u);
+
+        // MapStashPage+0x550 std::optional<std::variant<RowRef0, RowRef1, RowRef2>>
+        alignas(16) uint8_t fake_map_page[0x600] = {};
+        // Empty optional (has_value == 0) -> -1
+        CHECK(nativemods::Phase1Services::read_map_stash_selected_tier(fake_map_page, 0x550u) == -1);
+
+        struct FakeMapKeyRow {
+            const wchar_t* id;
+        } map_t1{L"Metadata/Items/Maps/MapKeyTier1"},
+          map_t16{L"Metadata/Items/Maps/MapKeyTier16"},
+          map_t17{L"Metadata/Items/Maps/MapKeyTier17"},
+          map_special{L"Metadata/Items/Maps/MapKeyUnique"};
+
+        auto set_selected_group = [&](const void* row, int8_t var_idx, uint8_t has_val) {
+            std::memset(fake_map_page + 0x550u, 0, 0x20u);
+            std::memcpy(fake_map_page + 0x550u, &row, sizeof(row));
+            std::memcpy(fake_map_page + 0x560u, &var_idx, sizeof(var_idx));
+            std::memcpy(fake_map_page + 0x568u, &has_val, sizeof(has_val));
+        };
+
+        set_selected_group(&map_t1, 0, 1);
+        CHECK(nativemods::Phase1Services::read_map_stash_selected_tier(fake_map_page, 0x550u) == 1);
+        set_selected_group(&map_t16, 0, 1);
+        CHECK(nativemods::Phase1Services::read_map_stash_selected_tier(fake_map_page, 0x550u) == 16);
+        set_selected_group(&map_t17, 0, 1);
+        CHECK(nativemods::Phase1Services::read_map_stash_selected_tier(fake_map_page, 0x550u) == 17);
+        // Special group (variant_index != 0) or non-tier ID -> -1
+        set_selected_group(&map_t16, 1, 1);
+        CHECK(nativemods::Phase1Services::read_map_stash_selected_tier(fake_map_page, 0x550u) == -1);
+        set_selected_group(&map_special, 0, 1);
+        CHECK(nativemods::Phase1Services::read_map_stash_selected_tier(fake_map_page, 0x550u) == -1);
+
+        CHECK(nativemods::Phase1Services::parse_map_key_tier("Metadata/Items/Maps/MapKeyTier14") == 14);
+        CHECK(nativemods::Phase1Services::parse_map_key_tier("Metadata/Items/Maps/MapKeyTier0") == -1);
+        CHECK(nativemods::Phase1Services::parse_map_key_tier("Metadata/Items/Maps/MapKeyTier16_extra") == -1);
+        CHECK(nativemods::Phase1Services::parse_map_key_tier(nullptr) == -1);
+    }
+
+    // 7. Shutdown clears all Phase 1 callbacks cleanly
     CHECK(nm_shutdown() == NM_OK);
     CHECK(nm_dispatch_input_event(&ev) == 0);
     CHECK(nm_dispatch_pregame_creating("A", "B", "C", out_s78, sizeof(out_s78)) == 0);

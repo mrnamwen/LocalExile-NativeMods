@@ -74,6 +74,17 @@ public:
         const char* league_utf8,
         uint16_t    result_code);
 
+    // Pure layout/parsing helpers exposed for deterministic cross-platform C++20 unit tests.
+    static int32_t parse_map_key_tier(const char* metadata_id_utf8) noexcept;
+    static bool    extract_base_item_type_row(
+        const void*     base_static,
+        size_t          row_ref_offset,
+        const wchar_t** out_metadata_id_w,
+        const void**    out_item_classes_row_ref) noexcept;
+    static int32_t read_map_stash_selected_tier(
+        const void* map_stash_page,
+        size_t      selected_group_offset) noexcept;
+
 private:
     nm_build_id_t                 build_id_ = NM_BUILD_UNKNOWN;
     uint64_t                      image_base_ = 0;

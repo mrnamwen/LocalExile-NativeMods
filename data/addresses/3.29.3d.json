@@ -4454,10 +4454,10 @@
       "name": "items.base_static.row_ref",
       "struct": "BaseStatic",
       "offset": "0x68",
-      "type": "BaseItemTypesRowRef*",
+      "type": "RowRef<BaseItemTypes>",
       "status": "static_verified",
-      "notes": "Row ref (+0x08 -> BaseItemTypesRow*, where +0x00 is wchar_t* Id metadata path).",
-      "source": "Phase 1 RE #10/#12"
+      "notes": "Inline RowRef<BaseItemTypes> (+0x00 BaseItemTypesRow*, +0x08 BaseItemTypesDat*); BaseItemTypesRow+0x00 is wchar_t* Id metadata path, +0x08 is inline RowRef<ItemClasses> passed to items.base_get_item_class.",
+      "source": "Phase 1 RE #10/#12/#23"
     },
     {
       "name": "items.base_static.base_hash32",
