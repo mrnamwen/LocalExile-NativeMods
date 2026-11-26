@@ -36,29 +36,30 @@ extern "C" {
 
 /* Semantic ABI version encoded as (major << 16) | (minor << 8) | patch. */
 #define NM_ABI_VERSION_MAJOR 0u
-#define NM_ABI_VERSION_MINOR 4u
+#define NM_ABI_VERSION_MINOR 5u
 #define NM_ABI_VERSION_PATCH 0u
 #define NM_ABI_VERSION ((NM_ABI_VERSION_MAJOR << 16) | (NM_ABI_VERSION_MINOR << 8) | NM_ABI_VERSION_PATCH)
 
-/* Ground-truth protocol & runtime constants (verified in 08/10-verification.md & Phase 1 RE). */
-#define NM_NOMINAL_IMAGE_BASE        0x140000000ull
-#define NM_MSVC_CXX_EXCEPTION_CODE   0xE06D7363u
-#define NM_OPCODE_PLAY_C2S           0x000Eu
-#define NM_OPCODE_CREATE_CHAR_C2S    0x0012u
-#define NM_OPCODE_CREATE_CHAR_S2C    0x0013u
-#define NM_OPCODE_RULESET_S2C        0x02C9u
-#define NM_OPCODE_RULESET_C2S        0x02CAu
-#define NM_OPCODE_CHAT_S2C           0x0017u
-#define NM_OPCODE_CHAT_C2S           0x0015u
-#define NM_OPCODE_RESERVED_MIN       0x02FCu
-#define NM_RULESET_MAX_PAYLOAD       0xFFFFu
-#define NM_RULESET_SLOT_COUNT        0xAFu
-#define NM_RULESET_VTABLE_SLOTS      9u
-#define NM_RULESET_BASE_SIZE         0x18u
-#define NM_CHAT_FALLBACK_PREFIX      "##NM "
-#define NM_DEFAULT_ALLOC_TAG         0x0500u
-#define NM_TAG_LEAGUE_CARD           0xDC35u
-#define NM_TAG_INV_ITEM_VIEW         0xC004u
+/* Ground-truth protocol & runtime constants (verified in 08/10-verification.md & Phase 1/4 RE). */
+#define NM_NOMINAL_IMAGE_BASE            0x140000000ull
+#define NM_MSVC_CXX_EXCEPTION_CODE       0xE06D7363u
+#define NM_OPCODE_PLAY_C2S               0x000Eu
+#define NM_OPCODE_CREATE_CHAR_C2S        0x0012u
+#define NM_OPCODE_CREATE_CHAR_S2C        0x0013u
+#define NM_OPCODE_RULESET_S2C            0x02C9u
+#define NM_OPCODE_RULESET_C2S            0x02CAu
+#define NM_OPCODE_CHAT_S2C               0x0017u
+#define NM_OPCODE_CHAT_C2S               0x0015u
+#define NM_OPCODE_RESERVED_MIN           0x02FCu
+#define NM_RULESET_MAX_PAYLOAD           0xFFFFu
+#define NM_RULESET_SLOT_COUNT            0xAFu
+#define NM_RULESET_FIRST_FREE_NATIVE_ID  0xAEu
+#define NM_RULESET_VTABLE_SLOTS          9u
+#define NM_RULESET_BASE_SIZE             0x18u
+#define NM_CHAT_FALLBACK_PREFIX          "##NM "
+#define NM_DEFAULT_ALLOC_TAG             0x0500u
+#define NM_TAG_LEAGUE_CARD               0xDC35u
+#define NM_TAG_INV_ITEM_VIEW             0xC004u
 
 /* Build identifiers recognized by SHA-256 of the unpatched client executable. */
 typedef enum nm_build_id_t {
@@ -86,7 +87,9 @@ typedef enum nm_status_t {
     NM_ERR_QUEUE_FULL               = -12,
     NM_ERR_RUNTIME_BOOT_FAILED      = -13,
     NM_ERR_NOT_SUPPORTED_ON_PLATFORM = -14,
-    NM_ERR_PAYLOAD_TOO_LARGE        = -15
+    NM_ERR_PAYLOAD_TOO_LARGE        = -15,
+    NM_ERR_ALREADY_EXISTS           = -16,
+    NM_ERR_NOT_FOUND                = -17
 } nm_status_t;
 
 /* Host runtime feature / state flags. */
@@ -595,6 +598,146 @@ typedef void (NM_CALL *nm_filter_reload_callback_t)(
     const nm_item_filter_state_t* filter_state,
     void*                         user_data);
 
+/* --- ABI 0.5.0: Rich Dynamic UI, Tooltips, Stash Affinity & Native Extend Registries --- */
+
+typedef enum nm_ui_control_kind_t {
+    NM_UI_CTRL_FRAME            = 0,
+    NM_UI_CTRL_LABEL            = 1,
+    NM_UI_CTRL_BUTTON           = 2,
+    NM_UI_CTRL_TEXTBOX          = 3,
+    NM_UI_CTRL_CHECKBOX         = 4,
+    NM_UI_CTRL_PICTURE          = 5,
+    NM_UI_CTRL_STACK_LAYOUT     = 6,
+    NM_UI_CTRL_SCROLLABLE_FRAME = 7,
+    NM_UI_CTRL_TAB_CONTAINER    = 8,
+    NM_UI_CTRL_COMBOBOX         = 9,
+    NM_UI_CTRL_LISTBOX          = 10
+} nm_ui_control_kind_t;
+
+typedef void (NM_CALL *nm_ui_int_event_callback_t)(
+    void*   control,
+    int32_t value,
+    void*   user_data);
+
+typedef void (NM_CALL *nm_tooltip_augment_callback_t)(
+    void*                     popup_control,
+    const nm_item_snapshot_t* item,
+    int32_t                   alt_held,
+    void*                     user_data);
+
+/* Single stash affinity target matching native AffinityTarget (4 bytes). */
+typedef struct nm_affinity_target_t {
+    uint16_t tab_index;
+    uint8_t  affinity_id;
+    uint8_t  reserved;
+} nm_affinity_target_t;
+
+typedef enum nm_affinity_route_action_t {
+    NM_AFFINITY_ACTION_STOCK    = 0, /* keep stock targets untouched */
+    NM_AFFINITY_ACTION_OVERRIDE = 1, /* replace stock targets with targets[0..target_count-1] */
+    NM_AFFINITY_ACTION_APPEND   = 2  /* append targets[0..target_count-1] to stock targets */
+} nm_affinity_route_action_t;
+
+#define NM_AFFINITY_MAX_TARGETS 4u
+
+/* Decision returned by nm_affinity_route_callback_t (32 bytes on x64, zero hidden padding). */
+typedef struct nm_affinity_route_result_t {
+    uint32_t             struct_size;
+    int32_t              action;                 /* nm_affinity_route_action_t */
+    uint32_t             target_count;           /* 0..NM_AFFINITY_MAX_TARGETS */
+    uint32_t             stock_affinity_bitmask; /* bits 0..21 OR'd into items.compute_affinity_bitset */
+    nm_affinity_target_t targets[NM_AFFINITY_MAX_TARGETS];
+} nm_affinity_route_result_t;
+
+/*
+ * Invoked for both items.compute_affinity_bitset (stash_kind == -1) and
+ * ui.stash_get_affinity_targets (stash_kind == 0 personal, 1 guild).
+ * Return non-zero if out_result was populated.
+ */
+typedef int32_t (NM_CALL *nm_affinity_route_callback_t)(
+    const nm_item_snapshot_t*   item,
+    int32_t                     stash_kind,
+    nm_affinity_route_result_t* out_result,
+    void*                       user_data);
+
+/*
+ * Invoked when a .ot GEAL script calls a custom builtin registered via geal_register_builtin.
+ * args_json_utf8 is a JSON array of evaluated argument values.
+ * When has_return != 0, write a JSON-encoded value into out_result_utf8 and set *out_len.
+ */
+typedef nm_status_t (NM_CALL *nm_geal_builtin_callback_t)(
+    uint32_t    entity_id,
+    const char* args_json_utf8,
+    char*       out_result_utf8,
+    size_t      out_capacity,
+    size_t*     out_len,
+    void*       user_data);
+
+typedef void (NM_CALL *nm_ruleset_created_cb_t)(
+    uint32_t ruleset_id,
+    void*    instance_client,
+    void*    user_data);
+typedef void (NM_CALL *nm_ruleset_area_entered_cb_t)(
+    uint32_t ruleset_id,
+    uint32_t local_player_entity_id,
+    void*    user_data);
+typedef void (NM_CALL *nm_ruleset_script_event_cb_t)(
+    uint32_t    ruleset_id,
+    uint32_t    source_entity_id,
+    const char* event_name_utf8,
+    void*       user_data);
+typedef void (NM_CALL *nm_ruleset_frame_cb_t)(
+    uint32_t ruleset_id,
+    float    delta_seconds,
+    void*    user_data);
+typedef void (NM_CALL *nm_ruleset_tick_cb_t)(
+    uint32_t ruleset_id,
+    float    fixed_dt,
+    void*    user_data);
+typedef void (NM_CALL *nm_ruleset_update_cb_t)(
+    uint32_t       ruleset_id,
+    const uint8_t* payload,
+    uint32_t       length,
+    void*          user_data);
+typedef void (NM_CALL *nm_ruleset_area_left_cb_t)(
+    uint32_t ruleset_id,
+    void*    user_data);
+
+/* Native ClientRuleset proxy callbacks installed in rulesets.creator_table[id] (64 bytes on x64). */
+typedef struct nm_native_ruleset_callbacks_t {
+    uint32_t                     struct_size;
+    uint32_t                     reserved;
+    nm_ruleset_created_cb_t      on_created;        /* vtable slot 1 */
+    nm_ruleset_area_entered_cb_t on_area_entered;   /* vtable slot 2 */
+    nm_ruleset_script_event_cb_t on_script_event;   /* vtable slot 3 */
+    nm_ruleset_frame_cb_t        on_frame;          /* vtable slot 4 */
+    nm_ruleset_tick_cb_t         on_tick;           /* vtable slot 5 */
+    nm_ruleset_update_cb_t       on_ruleset_update; /* vtable slot 8 (S->C 0x2c9) */
+    nm_ruleset_area_left_cb_t    on_area_left;      /* vtable slot 0 (~ClientRuleset) */
+} nm_native_ruleset_callbacks_t;
+
+typedef void (NM_CALL *nm_custom_ui_created_cb_t)(
+    const char* kind_name_utf8,
+    void*       control,
+    void*       user_data);
+typedef void (NM_CALL *nm_custom_ui_property_cb_t)(
+    void*       control,
+    const char* key_utf8,
+    const char* value_utf8,
+    void*       user_data);
+typedef void (NM_CALL *nm_custom_ui_destroyed_cb_t)(
+    void* control,
+    void* user_data);
+
+/* Native custom .ui control kind callbacks installed in ui.control_factory_map_global (32 bytes on x64). */
+typedef struct nm_custom_ui_control_callbacks_t {
+    uint32_t                    struct_size;
+    uint32_t                    reserved;
+    nm_custom_ui_created_cb_t   on_created;
+    nm_custom_ui_property_cb_t  on_property;
+    nm_custom_ui_destroyed_cb_t on_destroyed;
+} nm_custom_ui_control_callbacks_t;
+
 /*
  * Versioned function-pointer table passed to the managed host entry point:
  *   int LocalExile.Client.Host.NativeEntryPoint.Initialize(IntPtr abiTablePtr)
@@ -945,6 +1088,132 @@ typedef struct nm_abi_table_t {
         float*   out_sy,
         int32_t* out_in_front);
     nm_status_t (NM_CALL *camera_set_zoom_override)(float zoom_override);
+
+    /* ABI 0.5.0: Programmatic & Rich UI Controls (22; slots 107..128) */
+    nm_status_t (NM_CALL *ui_create_control)(
+        int32_t     kind,
+        void*       parent_control,
+        const char* id_utf8,
+        void**      out_control);
+    nm_status_t (NM_CALL *ui_picture_set_texture)(
+        void*       picture_control,
+        const char* texture_path_utf8);
+    nm_status_t (NM_CALL *ui_scrollable_get_scroll)(
+        void*  ctrl,
+        float* out_offset,
+        float* out_max);
+    nm_status_t (NM_CALL *ui_scrollable_set_scroll)(
+        void* ctrl,
+        float offset);
+    nm_status_t (NM_CALL *ui_scrollable_get_content)(
+        void*  ctrl,
+        void** out_content);
+    nm_status_t (NM_CALL *ui_tab_container_get_count)(
+        void*     ctrl,
+        uint32_t* out_count);
+    nm_status_t (NM_CALL *ui_tab_container_get_active)(
+        void*    ctrl,
+        int32_t* out_index);
+    nm_status_t (NM_CALL *ui_tab_container_select)(
+        void*   ctrl,
+        int32_t index);
+    nm_status_t (NM_CALL *ui_tab_container_add_tab)(
+        void*       ctrl,
+        const char* label_utf8,
+        uint32_t    style,
+        int32_t     hidden,
+        void**      out_page);
+    nm_status_t (NM_CALL *ui_tab_container_subscribe_changed)(
+        void*                      ctrl,
+        nm_ui_int_event_callback_t cb,
+        void*                      user_data,
+        uint64_t*                  out_sub);
+    nm_status_t (NM_CALL *ui_combobox_get_count)(
+        void*     ctrl,
+        uint32_t* out_count);
+    nm_status_t (NM_CALL *ui_combobox_get_selected)(
+        void*    ctrl,
+        int32_t* out_index);
+    nm_status_t (NM_CALL *ui_combobox_set_selected)(
+        void*   ctrl,
+        int32_t index);
+    nm_status_t (NM_CALL *ui_combobox_add_item)(
+        void*       ctrl,
+        const char* text_utf8,
+        int32_t     enabled,
+        uint32_t    tag,
+        uint32_t*   out_index);
+    nm_status_t (NM_CALL *ui_combobox_clear)(void* ctrl);
+    nm_status_t (NM_CALL *ui_combobox_subscribe_changed)(
+        void*                      ctrl,
+        nm_ui_int_event_callback_t cb,
+        void*                      user_data,
+        uint64_t*                  out_sub);
+    nm_status_t (NM_CALL *ui_listbox_get_count)(
+        void*     ctrl,
+        uint32_t* out_count);
+    nm_status_t (NM_CALL *ui_listbox_get_selected)(
+        void*    ctrl,
+        int32_t* out_index);
+    nm_status_t (NM_CALL *ui_listbox_set_selected)(
+        void*   ctrl,
+        int32_t index);
+    nm_status_t (NM_CALL *ui_listbox_insert_item)(
+        void*    ctrl,
+        uint32_t index,
+        void*    child_control,
+        uint64_t item_user_data);
+    nm_status_t (NM_CALL *ui_listbox_clear)(void* ctrl);
+    nm_status_t (NM_CALL *ui_listbox_subscribe_changed)(
+        void*                      ctrl,
+        nm_ui_int_event_callback_t cb,
+        void*                      user_data,
+        uint64_t*                  out_sub);
+
+    /* ABI 0.5.0: Stock Item Tooltip Augmentation (2; slots 129..130) */
+    nm_status_t (NM_CALL *tooltip_set_item_augment_callback)(
+        nm_tooltip_augment_callback_t cb,
+        void*                         user_data);
+    nm_status_t (NM_CALL *tooltip_add_item_section)(
+        void*       popup_control,
+        const char* text_utf8,
+        uint32_t    rgba,
+        int32_t     add_separator);
+
+    /* ABI 0.5.0: Custom Stash Affinity Router (1; slot 131) */
+    nm_status_t (NM_CALL *affinity_set_router_callback)(
+        nm_affinity_route_callback_t cb,
+        void*                        user_data);
+
+    /* ABI 0.5.0: Native Extend Registries (7; slots 132..138) */
+    nm_status_t (NM_CALL *geal_register_builtin)(
+        const char*                name_utf8,
+        uint32_t                   min_args,
+        uint32_t                   max_args,
+        int32_t                    has_return,
+        nm_geal_builtin_callback_t cb,
+        void*                      user_data,
+        uint64_t*                  out_handle);
+    nm_status_t (NM_CALL *geal_unregister_builtin)(uint64_t handle);
+    nm_status_t (NM_CALL *geal_invoke_function)(
+        uint32_t    entity_id,
+        const char* script_or_fn_utf8,
+        const char* args_json_utf8,
+        char*       out_result_utf8,
+        size_t      capacity,
+        size_t*     out_len);
+    nm_status_t (NM_CALL *ruleset_register_native)(
+        uint32_t                             ruleset_id,
+        const nm_native_ruleset_callbacks_t* callbacks,
+        void*                                user_data,
+        uint64_t*                            out_handle);
+    nm_status_t (NM_CALL *ruleset_unregister_native)(uint64_t handle);
+    nm_status_t (NM_CALL *ui_register_custom_control_kind)(
+        const char*                             kind_name_utf8,
+        const nm_custom_ui_control_callbacks_t* callbacks,
+        void*                                   user_data,
+        uint64_t*                               out_handle);
+    nm_status_t (NM_CALL *ui_unregister_custom_control_kind)(uint64_t handle);
 } nm_abi_table_t;
 
 /* Exported C ABI functions. */
@@ -1289,6 +1558,139 @@ NM_API nm_status_t NM_CALL nm_camera_set_zoom_override(float zoom_override);
 /* ABI 0.4.0 deterministic dispatch helpers (used by internal hooks and host-side tests). */
 NM_API void NM_CALL nm_dispatch_area_event(int32_t event_kind, const nm_area_info_t* area_info);
 NM_API void NM_CALL nm_dispatch_filter_reloaded(int32_t succeeded, const nm_item_filter_state_t* filter_state);
+
+/* ABI 0.5.0 exported functions: Rich UI Controls, Tooltips, Stash Affinity & Native Extend Registries. */
+NM_API nm_status_t NM_CALL nm_ui_create_control(
+    int32_t     kind,
+    void*       parent_control,
+    const char* id_utf8,
+    void**      out_control);
+NM_API nm_status_t NM_CALL nm_ui_picture_set_texture(
+    void*       picture_control,
+    const char* texture_path_utf8);
+NM_API nm_status_t NM_CALL nm_ui_scrollable_get_scroll(
+    void*  ctrl,
+    float* out_offset,
+    float* out_max);
+NM_API nm_status_t NM_CALL nm_ui_scrollable_set_scroll(
+    void* ctrl,
+    float offset);
+NM_API nm_status_t NM_CALL nm_ui_scrollable_get_content(
+    void*  ctrl,
+    void** out_content);
+NM_API nm_status_t NM_CALL nm_ui_tab_container_get_count(
+    void*     ctrl,
+    uint32_t* out_count);
+NM_API nm_status_t NM_CALL nm_ui_tab_container_get_active(
+    void*    ctrl,
+    int32_t* out_index);
+NM_API nm_status_t NM_CALL nm_ui_tab_container_select(
+    void*   ctrl,
+    int32_t index);
+NM_API nm_status_t NM_CALL nm_ui_tab_container_add_tab(
+    void*       ctrl,
+    const char* label_utf8,
+    uint32_t    style,
+    int32_t     hidden,
+    void**      out_page);
+NM_API nm_status_t NM_CALL nm_ui_tab_container_subscribe_changed(
+    void*                      ctrl,
+    nm_ui_int_event_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_sub);
+NM_API nm_status_t NM_CALL nm_ui_combobox_get_count(
+    void*     ctrl,
+    uint32_t* out_count);
+NM_API nm_status_t NM_CALL nm_ui_combobox_get_selected(
+    void*    ctrl,
+    int32_t* out_index);
+NM_API nm_status_t NM_CALL nm_ui_combobox_set_selected(
+    void*   ctrl,
+    int32_t index);
+NM_API nm_status_t NM_CALL nm_ui_combobox_add_item(
+    void*       ctrl,
+    const char* text_utf8,
+    int32_t     enabled,
+    uint32_t    tag,
+    uint32_t*   out_index);
+NM_API nm_status_t NM_CALL nm_ui_combobox_clear(void* ctrl);
+NM_API nm_status_t NM_CALL nm_ui_combobox_subscribe_changed(
+    void*                      ctrl,
+    nm_ui_int_event_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_sub);
+NM_API nm_status_t NM_CALL nm_ui_listbox_get_count(
+    void*     ctrl,
+    uint32_t* out_count);
+NM_API nm_status_t NM_CALL nm_ui_listbox_get_selected(
+    void*    ctrl,
+    int32_t* out_index);
+NM_API nm_status_t NM_CALL nm_ui_listbox_set_selected(
+    void*   ctrl,
+    int32_t index);
+NM_API nm_status_t NM_CALL nm_ui_listbox_insert_item(
+    void*    ctrl,
+    uint32_t index,
+    void*    child_control,
+    uint64_t item_user_data);
+NM_API nm_status_t NM_CALL nm_ui_listbox_clear(void* ctrl);
+NM_API nm_status_t NM_CALL nm_ui_listbox_subscribe_changed(
+    void*                      ctrl,
+    nm_ui_int_event_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_sub);
+
+NM_API nm_status_t NM_CALL nm_tooltip_set_item_augment_callback(
+    nm_tooltip_augment_callback_t cb,
+    void*                         user_data);
+NM_API nm_status_t NM_CALL nm_tooltip_add_item_section(
+    void*       popup_control,
+    const char* text_utf8,
+    uint32_t    rgba,
+    int32_t     add_separator);
+
+NM_API nm_status_t NM_CALL nm_affinity_set_router_callback(
+    nm_affinity_route_callback_t cb,
+    void*                        user_data);
+
+NM_API nm_status_t NM_CALL nm_geal_register_builtin(
+    const char*                name_utf8,
+    uint32_t                   min_args,
+    uint32_t                   max_args,
+    int32_t                    has_return,
+    nm_geal_builtin_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_handle);
+NM_API nm_status_t NM_CALL nm_geal_unregister_builtin(uint64_t handle);
+NM_API nm_status_t NM_CALL nm_geal_invoke_function(
+    uint32_t    entity_id,
+    const char* script_or_fn_utf8,
+    const char* args_json_utf8,
+    char*       out_result_utf8,
+    size_t      capacity,
+    size_t*     out_len);
+NM_API nm_status_t NM_CALL nm_ruleset_register_native(
+    uint32_t                             ruleset_id,
+    const nm_native_ruleset_callbacks_t* callbacks,
+    void*                                user_data,
+    uint64_t*                            out_handle);
+NM_API nm_status_t NM_CALL nm_ruleset_unregister_native(uint64_t handle);
+NM_API nm_status_t NM_CALL nm_ui_register_custom_control_kind(
+    const char*                             kind_name_utf8,
+    const nm_custom_ui_control_callbacks_t* callbacks,
+    void*                                   user_data,
+    uint64_t*                               out_handle);
+NM_API nm_status_t NM_CALL nm_ui_unregister_custom_control_kind(uint64_t handle);
+
+/* ABI 0.5.0 deterministic dispatch helpers (used by internal hooks and host-side tests). */
+NM_API void    NM_CALL nm_dispatch_tooltip_augment(
+    void*                     popup_control,
+    const nm_item_snapshot_t* item,
+    int32_t                   alt_held);
+NM_API int32_t NM_CALL nm_dispatch_affinity_route(
+    const nm_item_snapshot_t*   item,
+    int32_t                     stash_kind,
+    nm_affinity_route_result_t* out_result);
 
 /* Deferred CoreCLR (.NET 10) bootstrapper (off game thread to avoid DeadlockDetector). */
 NM_API nm_status_t NM_CALL nm_bootstrap_managed_host(

@@ -7,6 +7,7 @@
 #include "overlay_and_channels.hpp"
 #include "phase1_services.hpp"
 #include "phase2_services.hpp"
+#include "phase4_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -49,7 +50,7 @@ int test_abi_table_and_build_recognition() {
     CHECK(nm_get_abi_table(&table) == NM_OK);
     CHECK(table != nullptr);
     CHECK(table->struct_size == sizeof(nm_abi_table_t));
-    CHECK(sizeof(nm_abi_table_t) == 864u);
+    CHECK(sizeof(nm_abi_table_t) == 1120u);
     CHECK(sizeof(nm_screens_state_t) == 280u);
     CHECK(sizeof(nm_input_event_t) == 40u);
     CHECK(sizeof(nm_item_snapshot_t) == 448u);
@@ -61,8 +62,12 @@ int test_abi_table_and_build_recognition() {
     CHECK(sizeof(nm_item_filter_state_t) == 784u);
     CHECK(sizeof(nm_item_filter_result_t) == 72u);
     CHECK(sizeof(nm_camera_state_t) == 120u);
+    CHECK(sizeof(nm_affinity_target_t) == 4u);
+    CHECK(sizeof(nm_affinity_route_result_t) == 32u);
+    CHECK(sizeof(nm_native_ruleset_callbacks_t) == 64u);
+    CHECK(sizeof(nm_custom_ui_control_callbacks_t) == 32u);
     CHECK(table->abi_version == NM_ABI_VERSION);
-    CHECK(NM_ABI_VERSION == 0x00000400u);
+    CHECK(NM_ABI_VERSION == 0x00000500u);
     CHECK(table->get_host_info != nullptr);
     CHECK(table->lookup_symbol != nullptr);
     CHECK(table->install_inline_hook != nullptr);
@@ -136,6 +141,38 @@ int test_abi_table_and_build_recognition() {
     CHECK(table->camera_get_state == &nm_camera_get_state);
     CHECK(table->camera_world_to_screen == &nm_camera_world_to_screen);
     CHECK(table->camera_set_zoom_override == &nm_camera_set_zoom_override);
+    CHECK(table->ui_create_control == &nm_ui_create_control);
+    CHECK(table->ui_picture_set_texture == &nm_ui_picture_set_texture);
+    CHECK(table->ui_scrollable_get_scroll == &nm_ui_scrollable_get_scroll);
+    CHECK(table->ui_scrollable_set_scroll == &nm_ui_scrollable_set_scroll);
+    CHECK(table->ui_scrollable_get_content == &nm_ui_scrollable_get_content);
+    CHECK(table->ui_tab_container_get_count == &nm_ui_tab_container_get_count);
+    CHECK(table->ui_tab_container_get_active == &nm_ui_tab_container_get_active);
+    CHECK(table->ui_tab_container_select == &nm_ui_tab_container_select);
+    CHECK(table->ui_tab_container_add_tab == &nm_ui_tab_container_add_tab);
+    CHECK(table->ui_tab_container_subscribe_changed == &nm_ui_tab_container_subscribe_changed);
+    CHECK(table->ui_combobox_get_count == &nm_ui_combobox_get_count);
+    CHECK(table->ui_combobox_get_selected == &nm_ui_combobox_get_selected);
+    CHECK(table->ui_combobox_set_selected == &nm_ui_combobox_set_selected);
+    CHECK(table->ui_combobox_add_item == &nm_ui_combobox_add_item);
+    CHECK(table->ui_combobox_clear == &nm_ui_combobox_clear);
+    CHECK(table->ui_combobox_subscribe_changed == &nm_ui_combobox_subscribe_changed);
+    CHECK(table->ui_listbox_get_count == &nm_ui_listbox_get_count);
+    CHECK(table->ui_listbox_get_selected == &nm_ui_listbox_get_selected);
+    CHECK(table->ui_listbox_set_selected == &nm_ui_listbox_set_selected);
+    CHECK(table->ui_listbox_insert_item == &nm_ui_listbox_insert_item);
+    CHECK(table->ui_listbox_clear == &nm_ui_listbox_clear);
+    CHECK(table->ui_listbox_subscribe_changed == &nm_ui_listbox_subscribe_changed);
+    CHECK(table->tooltip_set_item_augment_callback == &nm_tooltip_set_item_augment_callback);
+    CHECK(table->tooltip_add_item_section == &nm_tooltip_add_item_section);
+    CHECK(table->affinity_set_router_callback == &nm_affinity_set_router_callback);
+    CHECK(table->geal_register_builtin == &nm_geal_register_builtin);
+    CHECK(table->geal_unregister_builtin == &nm_geal_unregister_builtin);
+    CHECK(table->geal_invoke_function == &nm_geal_invoke_function);
+    CHECK(table->ruleset_register_native == &nm_ruleset_register_native);
+    CHECK(table->ruleset_unregister_native == &nm_ruleset_unregister_native);
+    CHECK(table->ui_register_custom_control_kind == &nm_ui_register_custom_control_kind);
+    CHECK(table->ui_unregister_custom_control_kind == &nm_ui_unregister_custom_control_kind);
 
     // SHA-256 build recognition matches LocalExile ClientBuilds.cs verbatim
     CHECK(nativemods::identify_build_by_sha256("e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d")
@@ -168,7 +205,7 @@ int test_address_table_3293d_and_3293c() {
     CHECK(host.build_id == NM_BUILD_3_29_3D_328228);
     CHECK(std::strcmp(host.build_version, "3.29.3d") == 0);
     CHECK(host.image_base == kRebased);
-    CHECK(host.symbol_count == 319u);
+    CHECK(host.symbol_count == 426u);
 
     nm_symbol_info_t sym{};
     CHECK(nm_lookup_symbol("frame.state_stack_pass_a_hook", &sym) == NM_OK);
@@ -270,6 +307,30 @@ int test_address_table_3293d_and_3293c() {
     CHECK(nm_lookup_symbol("world.vtable_camera_follow", &sym) == NM_OK);
     CHECK(sym.rva == 0x3221068ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
 
+    // Phase 4 verified symbols on 3.29.3d (Rich UI, Tooltips, Stash Affinity, GEAL, Rulesets, Custom UI)
+    CHECK(nm_lookup_symbol("ui.tab_container_add_tab", &sym) == NM_OK);
+    CHECK(sym.rva == 0x18de750ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.control_listbox_insert_item", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1904470ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.item_popup_build_sections", &sym) == NM_OK);
+    CHECK(sym.rva == 0x16c5740ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.stash_get_affinity_targets", &sym) == NM_OK);
+    CHECK(sym.rva == 0x0a83460ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("items.compute_affinity_bitset", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1589b20ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("network.vtable_packet_move_affinity_0xe1", &sym) == NM_OK);
+    CHECK(sym.rva == 0x35caa80ull && sym.kind == NM_SYM_VTABLE && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("geal.arg_name_hash_table", &sym) == NM_OK);
+    CHECK(sym.rva == 0x2fca088ull && sym.kind == NM_SYM_DATA && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("rulesets.default_slot6_sentinel", &sym) == NM_OK);
+    CHECK(sym.rva == 0x135d510ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.control_factory_map_global", &sym) == NM_OK);
+    CHECK(sym.rva == 0x475e990ull && sym.kind == NM_SYM_DATA && sym.expected_bytes_hex == nullptr);
+    CHECK(nm_lookup_symbol("ui.parser_parse_property", &sym) == NM_OK);
+    CHECK(sym.rva == 0x1872270ull && sym.kind == NM_SYM_CODE);
+    CHECK(nm_lookup_symbol("ui.control_release_or_destroy", &sym) == NM_OK);
+    CHECK(sym.rva == 0x18b6810ull && sym.kind == NM_SYM_CODE);
+
     // Every vtable symbol in 3.29.3d MUST have expected_bytes_hex == nullptr (ASLR safety).
     for (uint32_t i = 0; i < host.symbol_count; ++i) {
         nm_symbol_info_t s{};
@@ -307,7 +368,11 @@ int test_address_table_3293d_and_3293c() {
               "01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf") == NM_OK);
 
     CHECK(nm_get_host_info(&host) == NM_OK);
-    CHECK(host.symbol_count == 319u);
+    CHECK(host.symbol_count == 426u);
+    CHECK(nm_lookup_symbol("ui.item_popup_build_sections", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
+    CHECK(nm_lookup_symbol("ui.control_factory_map_global", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
+    CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
     CHECK(nm_lookup_symbol("items.filter_notify_loaded", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
     CHECK(sym.rva == 0ull && sym.status == NM_SYM_STATUS_UNVERIFIED);
     CHECK(nm_lookup_symbol("ui.vtable_world_label_mgr", &sym) == NM_ERR_SYMBOL_UNVERIFIED);
@@ -2913,6 +2978,390 @@ int test_ten_arg_raw_inline_detour() {
     return 0;
 }
 
+int test_phase4_prologues_hookengine_safety() {
+    using nativemods::EmbeddedSymbol;
+    using nativemods::HookEngine;
+    using nativemods::find_symbol;
+
+    const char* hooked_syms[] = {
+        "ui.tab_container_select",
+        "ui.combobox_on_selection_changed",
+        "ui.control_listbox_set_selected_index",
+        "ui.item_popup_build_sections",
+        "items.compute_affinity_bitset",
+        "ui.stash_get_affinity_targets",
+        "ui.parser_parse_property",
+        "ui.control_release_or_destroy",
+    };
+
+    for (const char* name : hooked_syms) {
+        const EmbeddedSymbol* sym = find_symbol(NM_BUILD_3_29_3D_328228, name);
+        CHECK(sym != nullptr);
+        CHECK(sym->rva != 0);
+        CHECK(sym->expected_bytes_hex != nullptr);
+        const size_t hex_len = std::strlen(sym->expected_bytes_hex);
+        CHECK(hex_len == 32u); // 16B verified prologue
+        uint8_t buf[64] = {};
+        std::memset(buf, 0x90, sizeof(buf)); // pad tail with NOPs for kMaxScan=64 safety under ASan
+        for (size_t i = 0; i < 16u; ++i) {
+            auto nib = [](char c) -> uint8_t {
+                if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+                if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+                return static_cast<uint8_t>(c - 'A' + 10);
+            };
+            buf[i] = static_cast<uint8_t>((nib(sym->expected_bytes_hex[i * 2]) << 4) |
+                                          nib(sym->expected_bytes_hex[i * 2 + 1]));
+        }
+        const size_t stolen = HookEngine::compute_stolen_length(buf, 14u);
+        CHECK(stolen >= 14u && stolen <= 16u);
+    }
+
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_phase4_rich_ui_tooltips_and_stash_affinity() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // 1. Rich UI argument validation & synthetic platform checks
+    void* ctrl = nullptr;
+    CHECK(nm_ui_create_control(-1, nullptr, "bad", &ctrl) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_create_control(99, nullptr, "bad", &ctrl) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_create_control(NM_UI_CTRL_FRAME, nullptr, "f", nullptr) == NM_ERR_INVALID_ARG);
+    CHECK(nm_ui_create_control(NM_UI_CTRL_TAB_CONTAINER, nullptr, "tabs", &ctrl) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+    uint8_t fake_scroll[64] = {};
+    void* scroll_content = nullptr;
+    CHECK(nm_ui_scrollable_get_content(fake_scroll, &scroll_content) == NM_OK);
+    CHECK(scroll_content == fake_scroll);
+
+    // TabContainer / ComboBox / ListBox subscriptions + nm_ui_unsubscribe
+    uint8_t fake_tab[32] = {};
+    uint8_t fake_combo[32] = {};
+    uint8_t fake_lb[32] = {};
+    struct UiEvtState {
+        void*   last_ctrl = nullptr;
+        int32_t last_val = -999;
+        int     count = 0;
+    } ui_st{};
+    auto on_ui_int = [](void* c, int32_t val, void* ud) {
+        auto* s = static_cast<UiEvtState*>(ud);
+        s->last_ctrl = c;
+        s->last_val = val;
+        ++s->count;
+    };
+    uint64_t tab_sub = 0, combo_sub = 0, lb_sub = 0;
+    CHECK(nm_ui_tab_container_subscribe_changed(fake_tab, on_ui_int, &ui_st, &tab_sub) == NM_OK);
+    CHECK(nm_ui_combobox_subscribe_changed(fake_combo, on_ui_int, &ui_st, &combo_sub) == NM_OK);
+    CHECK(nm_ui_listbox_subscribe_changed(fake_lb, on_ui_int, &ui_st, &lb_sub) == NM_OK);
+    CHECK(tab_sub != 0 && combo_sub != 0 && lb_sub != 0);
+
+    nativemods::Phase4Services helper;
+    helper.dispatch_ui_int_event(NM_UI_CTRL_TAB_CONTAINER, fake_tab, 2);
+    CHECK(ui_st.count == 1 && ui_st.last_ctrl == fake_tab && ui_st.last_val == 2);
+    helper.dispatch_ui_int_event(NM_UI_CTRL_COMBOBOX, fake_combo, 5);
+    CHECK(ui_st.count == 2 && ui_st.last_ctrl == fake_combo && ui_st.last_val == 5);
+    helper.dispatch_ui_int_event(NM_UI_CTRL_LISTBOX, fake_lb, 7);
+    CHECK(ui_st.count == 3 && ui_st.last_ctrl == fake_lb && ui_st.last_val == 7);
+
+    // Unified nm_ui_unsubscribe removes Phase 4 rich UI subscriptions cleanly
+    CHECK(nm_ui_unsubscribe(tab_sub) == NM_OK);
+    CHECK(nm_ui_unsubscribe(combo_sub) == NM_OK);
+    CHECK(nm_ui_unsubscribe(lb_sub) == NM_OK);
+    helper.dispatch_ui_int_event(NM_UI_CTRL_TAB_CONTAINER, fake_tab, 3);
+    CHECK(ui_st.count == 3);
+
+    // 2. Tooltip augmentation plumbing (normal hover & Alt-held rebuild)
+    struct TipState {
+        void*       popup = nullptr;
+        std::string item_path;
+        int32_t     alt_held = -1;
+        int         calls = 0;
+    } tip_st{};
+    auto on_tip = [](void* popup, const nm_item_snapshot_t* item, int32_t alt_held, void* ud) {
+        auto* s = static_cast<TipState*>(ud);
+        s->popup = popup;
+        s->item_path = item ? item->metadata_path : "";
+        s->alt_held = alt_held;
+        ++s->calls;
+    };
+    CHECK(nm_tooltip_set_item_augment_callback(on_tip, &tip_st) == NM_OK);
+    nm_item_snapshot_t snap{};
+    snap.present = 1;
+    std::snprintf(snap.metadata_path, sizeof(snap.metadata_path), "%s", "Metadata/Items/Currency/CurrencyRerollRare");
+    uint8_t fake_popup[32] = {};
+    nm_dispatch_tooltip_augment(fake_popup, &snap, 0);
+    CHECK(tip_st.calls == 1 && tip_st.popup == fake_popup && tip_st.alt_held == 0);
+    CHECK(tip_st.item_path == "Metadata/Items/Currency/CurrencyRerollRare");
+    nm_dispatch_tooltip_augment(fake_popup, &snap, 1);
+    CHECK(tip_st.calls == 2 && tip_st.alt_held == 1);
+    CHECK(nm_tooltip_set_item_augment_callback(nullptr, nullptr) == NM_OK);
+    nm_dispatch_tooltip_augment(fake_popup, &snap, 1);
+    CHECK(tip_st.calls == 2);
+
+    // 3. Stash affinity router (bitset bits 0..21 clamping + OVERRIDE / APPEND targets)
+    auto on_aff = [](const nm_item_snapshot_t* /*item*/, int32_t stash_kind, nm_affinity_route_result_t* out, void* /*ud*/) -> int32_t {
+        if (stash_kind == -1) {
+            out->stock_affinity_bitmask = (1u << 4) | (1u << 21) | (1u << 28); // bit 28 must be masked out!
+            return 1;
+        }
+        out->action = (stash_kind == 0) ? NM_AFFINITY_ACTION_OVERRIDE : NM_AFFINITY_ACTION_APPEND;
+        out->target_count = 2;
+        out->targets[0] = nm_affinity_target_t{42u, 0xFEu, 0u};
+        out->targets[1] = nm_affinity_target_t{99u, 0xFFu, 0u};
+        return 1;
+    };
+    CHECK(nm_affinity_set_router_callback(on_aff, nullptr) == NM_OK);
+
+    nm_affinity_route_result_t bit_res{};
+    CHECK(nm_dispatch_affinity_route(&snap, -1, &bit_res) == 1);
+    uint8_t bitset7[7] = {0x01u, 0x00u, 0xC0u, 0x55u, 0xAAu, 0x11u, 0x22u};
+    nativemods::Phase4Services::apply_affinity_bitset_mask(bitset7, bit_res.stock_affinity_bitmask);
+    CHECK(bitset7[0] == (0x01u | 0x10u)); // bit 0 preserved + bit 4 set
+    CHECK(bitset7[1] == 0x00u);
+    CHECK(bitset7[2] == (0xC0u | 0x20u)); // upper 2 bits preserved + bit 21 set
+    CHECK(bitset7[3] == 0x55u && bitset7[6] == 0x22u); // locker bytes untouched!
+
+    nm_affinity_route_result_t over_res{};
+    CHECK(nm_dispatch_affinity_route(&snap, 0, &over_res) == 1);
+    std::vector<nm_affinity_target_t> targets = {{1u, 3u, 0u}};
+    nativemods::Phase4Services::apply_affinity_targets(targets, over_res);
+    CHECK(targets.size() == 2u && targets[0].tab_index == 42u && targets[1].tab_index == 99u);
+
+    nm_affinity_route_result_t app_res{};
+    CHECK(nm_dispatch_affinity_route(&snap, 1, &app_res) == 1);
+    nativemods::Phase4Services::apply_affinity_targets(targets, app_res);
+    CHECK(targets.size() == 4u && targets[2].tab_index == 42u && targets[3].tab_index == 99u);
+
+    CHECK(nm_affinity_set_router_callback(nullptr, nullptr) == NM_OK);
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_phase4_geal_rulesets_and_custom_ui_registries() {
+    using nativemods::Phase4Services;
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // 1. GEAL Builtin registration, invocation, duplicate rejection, and safe post-unload indirection no-op
+    struct GealState {
+        int         calls = 0;
+        uint32_t    last_eid = 0;
+        std::string last_args;
+    } geal_st{};
+    auto geal_cb = [](uint32_t eid, const char* args_json, char* out, size_t cap, size_t* out_len, void* ud) -> nm_status_t {
+        auto* s = static_cast<GealState*>(ud);
+        ++s->calls;
+        s->last_eid = eid;
+        s->last_args = args_json ? args_json : "";
+        const char* reply = "42";
+        const size_t n = std::strlen(reply);
+        if (out_len) *out_len = n;
+        if (out && cap > n) {
+            std::memcpy(out, reply, n + 1);
+        }
+        return NM_OK;
+    };
+
+    uint64_t g_handle = 0;
+    CHECK(nm_geal_register_builtin("MyCustomFn", 0, 4, 1, geal_cb, &geal_st, &g_handle) == NM_OK);
+    CHECK(g_handle != 0);
+    uint64_t g_dup = 0;
+    CHECK(nm_geal_register_builtin("mycustomfn", 0, 4, 1, geal_cb, &geal_st, &g_dup) == NM_ERR_ALREADY_EXISTS);
+
+    size_t g_slot = 0;
+    uint64_t g_gen = 0;
+    CHECK(Phase4Services::get_geal_builtin_slot_for_handle(g_handle, g_slot, g_gen));
+
+    char res_buf[64] = {};
+    size_t res_len = 0;
+    CHECK(nm_geal_invoke_function(777u, "MyCustomFn", "[10, \"hi\"]", res_buf, sizeof(res_buf), &res_len) == NM_OK);
+    CHECK(res_len == 2u && std::strcmp(res_buf, "42") == 0);
+    CHECK(geal_st.calls == 1 && geal_st.last_eid == 777u && geal_st.last_args == "[10, \"hi\"]");
+    // Buffer-too-small check
+    char tiny[2] = {};
+    CHECK(nm_geal_invoke_function(777u, "MyCustomFn", "[]", tiny, sizeof(tiny), &res_len) == NM_ERR_BUFFER_TOO_SMALL);
+    CHECK(res_len == 2u);
+
+    // Unregister and verify retained FuncWrapper indirection slot safely no-ops without calling managed cb!
+    CHECK(nm_geal_unregister_builtin(g_handle) == NM_OK);
+    CHECK(nm_geal_unregister_builtin(g_handle) == NM_ERR_NOT_FOUND);
+    const int calls_before_stale = geal_st.calls;
+    std::string stale_out = "untouched";
+    CHECK(Phase4Services::invoke_geal_indirection_slot(g_slot, g_gen, 999u, "[]", stale_out) == NM_OK);
+    CHECK(geal_st.calls == calls_before_stale);
+    CHECK(stale_out.empty());
+
+    // 2. Native Ruleset free-slot census (68 occupied, 107 free; 0xA0 OCCUPIED, 0xAE FREE) & 9-slot proxy dispatch
+    uint32_t free_count = 0;
+    uint32_t occupied_count = 0;
+    for (uint32_t id = 0; id < NM_RULESET_SLOT_COUNT; ++id) {
+        if (Phase4Services::is_stock_ruleset_slot_occupied(id)) ++occupied_count;
+        else ++free_count;
+    }
+    CHECK(occupied_count == 68u && free_count == 107u);
+    CHECK(Phase4Services::is_stock_ruleset_slot_occupied(0xA0u));
+    CHECK(!Phase4Services::is_stock_ruleset_slot_occupied(NM_RULESET_FIRST_FREE_NATIVE_ID));
+
+    struct RsState {
+        int      created = 0;
+        uint32_t entered_eid = 0;
+        std::string script_ev;
+        float    frame_dt = 0.0f;
+        float    tick_dt = 0.0f;
+        std::vector<uint8_t> last_payload;
+        int      left = 0;
+    } rs_st{};
+    nm_native_ruleset_callbacks_t rs_cbs{};
+    rs_cbs.struct_size = sizeof(rs_cbs);
+    rs_cbs.on_created = [](uint32_t, void*, void* ud) { ++static_cast<RsState*>(ud)->created; };
+    rs_cbs.on_area_entered = [](uint32_t, uint32_t eid, void* ud) { static_cast<RsState*>(ud)->entered_eid = eid; };
+    rs_cbs.on_script_event = [](uint32_t, uint32_t, const char* name, void* ud) { static_cast<RsState*>(ud)->script_ev = name ? name : ""; };
+    rs_cbs.on_frame = [](uint32_t, float dt, void* ud) { static_cast<RsState*>(ud)->frame_dt = dt; };
+    rs_cbs.on_tick = [](uint32_t, float dt, void* ud) { static_cast<RsState*>(ud)->tick_dt = dt; };
+    rs_cbs.on_ruleset_update = [](uint32_t, const uint8_t* p, uint32_t len, void* ud) {
+        auto* s = static_cast<RsState*>(ud);
+        s->last_payload.assign(p, p + len);
+    };
+    rs_cbs.on_area_left = [](uint32_t, void* ud) { ++static_cast<RsState*>(ud)->left; };
+
+    uint64_t rs_bad = 0;
+    // CRITICAL #128/#132: 0xA0 is occupied on 3.29.3d and MUST be rejected with NM_ERR_ALREADY_EXISTS!
+    CHECK(nm_ruleset_register_native(0xA0u, &rs_cbs, &rs_st, &rs_bad) == NM_ERR_ALREADY_EXISTS);
+    CHECK(nm_ruleset_register_native(NM_RULESET_SLOT_COUNT, &rs_cbs, &rs_st, &rs_bad) == NM_ERR_INVALID_ARG);
+
+    uint64_t rs_handle = 0;
+    CHECK(nm_ruleset_register_native(NM_RULESET_FIRST_FREE_NATIVE_ID, &rs_cbs, &rs_st, &rs_handle) == NM_OK);
+    CHECK(rs_handle != 0);
+    CHECK(nm_ruleset_register_native(NM_RULESET_FIRST_FREE_NATIVE_ID, &rs_cbs, &rs_st, &rs_bad) == NM_ERR_ALREADY_EXISTS);
+
+    // Exercise ALL 9 ClientRuleset vtable slots on a proxy instance
+    uint8_t fake_ic[16] = {};
+    void* proxy = Phase4Services::create_ruleset_proxy_for_slot(NM_RULESET_FIRST_FREE_NATIVE_ID, fake_ic);
+    CHECK(proxy != nullptr);
+    void** vtbl = *reinterpret_cast<void***>(proxy);
+    CHECK(vtbl != nullptr);
+
+    using Slot0DtorFn = void*(NM_CALL*)(void*, uint32_t);
+    using Slot1Fn     = void(NM_CALL*)(void*);
+    using Slot2Fn     = void(NM_CALL*)(void*, void*);
+    using Slot3Fn     = void(NM_CALL*)(void*, void*, const void*);
+    using Slot4Fn     = void(NM_CALL*)(void*, float);
+    using Slot5Fn     = void(NM_CALL*)(void*, float);
+    using Slot6Fn     = uint32_t(NM_CALL*)(void*);
+    using Slot7Fn     = void(NM_CALL*)(void*);
+    using Slot8Fn     = void(NM_CALL*)(void*, const Phase4Services::NativeRulesetBufferView*);
+
+    reinterpret_cast<Slot1Fn>(vtbl[1])(proxy);
+    CHECK(rs_st.created == 1);
+
+    uint8_t fake_player[0x90] = {};
+    const uint32_t player_id = 0x1234u;
+    std::memcpy(fake_player + 0x88u, &player_id, sizeof(player_id));
+    reinterpret_cast<Slot2Fn>(vtbl[2])(proxy, fake_player);
+    CHECK(rs_st.entered_eid == 0x1234u);
+
+    struct FakeMsvcStr { char buf[16]; uint64_t sz; uint64_t cap; } ev_str{};
+    std::memcpy(ev_str.buf, "HarvestReady", 12);
+    ev_str.sz = 12;
+    ev_str.cap = 15;
+    reinterpret_cast<Slot3Fn>(vtbl[3])(proxy, fake_player, &ev_str);
+    CHECK(rs_st.script_ev == "HarvestReady");
+
+    reinterpret_cast<Slot4Fn>(vtbl[4])(proxy, 0.016f);
+    CHECK(std::fabs(rs_st.frame_dt - 0.016f) < 1e-6f);
+    reinterpret_cast<Slot5Fn>(vtbl[5])(proxy, 0.033f);
+    CHECK(std::fabs(rs_st.tick_dt - 0.033f) < 1e-6f);
+    CHECK(reinterpret_cast<Slot6Fn>(vtbl[6])(proxy) == 0x50u); // MUST return 0x50!
+    reinterpret_cast<Slot7Fn>(vtbl[7])(proxy);
+
+    const uint8_t pkt_bytes[5] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    Phase4Services::NativeRulesetBufferView bv{pkt_bytes, sizeof(pkt_bytes), 1u};
+    reinterpret_cast<Slot8Fn>(vtbl[8])(proxy, &bv);
+    CHECK(rs_st.last_payload.size() == 4u && rs_st.last_payload[0] == 0xBB && rs_st.last_payload[3] == 0xEE);
+
+    // Unregister while proxy is still alive: subsequent OnFrame & dtor MUST safely no-op without calling mod!
+    CHECK(nm_ruleset_unregister_native(rs_handle) == NM_OK);
+    rs_st.frame_dt = 0.0f;
+    reinterpret_cast<Slot4Fn>(vtbl[4])(proxy, 0.5f);
+    CHECK(rs_st.frame_dt == 0.0f);
+    reinterpret_cast<Slot0DtorFn>(vtbl[0])(proxy, 1u); // deletes proxy cleanly (ASan verified!)
+    CHECK(rs_st.left == 0);
+
+    // 3. Custom UI Control Kind lifecycle & MSVC RB-tree unlink invariants
+    struct CustomUiState {
+        std::string created_kind;
+        std::string prop_k;
+        std::string prop_v;
+        int         destroyed = 0;
+    } cui_st{};
+    nm_custom_ui_control_callbacks_t cui_cbs{};
+    cui_cbs.struct_size = sizeof(cui_cbs);
+    cui_cbs.on_created = [](const char* kind, void*, void* ud) { static_cast<CustomUiState*>(ud)->created_kind = kind ? kind : ""; };
+    cui_cbs.on_property = [](void*, const char* k, const char* v, void* ud) {
+        auto* s = static_cast<CustomUiState*>(ud);
+        s->prop_k = k ? k : "";
+        s->prop_v = v ? v : "";
+    };
+    cui_cbs.on_destroyed = [](void*, void* ud) { ++static_cast<CustomUiState*>(ud)->destroyed; };
+
+    uint64_t cui_handle = 0;
+    CHECK(nm_ui_register_custom_control_kind("GrowthGauge", &cui_cbs, &cui_st, &cui_handle) == NM_OK);
+    uint64_t cui_dup = 0;
+    CHECK(nm_ui_register_custom_control_kind("growthgauge", &cui_cbs, &cui_st, &cui_dup) == NM_ERR_ALREADY_EXISTS);
+
+    uint8_t fake_frame[32] = {};
+    Phase4Services::simulate_custom_ui_created("GrowthGauge", fake_frame);
+    CHECK(cui_st.created_kind == "GrowthGauge");
+    CHECK(Phase4Services::simulate_custom_ui_property(fake_frame, "fill_ratio", "0.75"));
+    CHECK(cui_st.prop_k == "fill_ratio" && cui_st.prop_v == "0.75");
+    CHECK(Phase4Services::simulate_custom_ui_destroyed(fake_frame));
+    CHECK(cui_st.destroyed == 1);
+    CHECK(!Phase4Services::simulate_custom_ui_property(fake_frame, "fill_ratio", "0.99"));
+    CHECK(nm_ui_unregister_custom_control_kind(cui_handle) == NM_OK);
+    CHECK(nm_ui_unregister_custom_control_kind(cui_handle) == NM_ERR_NOT_FOUND);
+
+    // MSVC RB-tree unlink test (5-node valid RB tree -> unlink root, leaf, interior -> size==0)
+    Phase4Services::MsvcRbNodeHeader head{};
+    head.color = 1u;
+    head.isnil = 1u;
+    Phase4Services::MsvcRbNodeHeader n1{}, n2{}, n3{}, n4{}, n5{};
+    /*        n3 (B)
+     *       /      \
+     *     n2 (B)   n4 (B)
+     *     /          \
+     *   n1 (R)       n5 (R)
+     */
+    auto init_node = [&](Phase4Services::MsvcRbNodeHeader& n, Phase4Services::MsvcRbNodeHeader* p,
+                         Phase4Services::MsvcRbNodeHeader* l, Phase4Services::MsvcRbNodeHeader* r, uint8_t color) {
+        n.parent = p; n.left = l; n.right = r; n.color = color; n.isnil = 0;
+    };
+    init_node(n3, &head, &n2, &n4, 1u);
+    init_node(n2, &n3, &n1, &head, 1u);
+    init_node(n1, &n2, &head, &head, 0u);
+    init_node(n4, &n3, &head, &n5, 1u);
+    init_node(n5, &n4, &head, &head, 0u);
+    head.parent = &n3;
+    head.left = &n1;
+    head.right = &n5;
+    Phase4Services::MsvcRbTreeHeader tree{&head, 5u};
+
+    CHECK(Phase4Services::rb_tree_unlink_node(&tree, &n3));
+    CHECK(tree.size == 4u && head.left == &n1 && head.right == &n5 && head.parent->color == 1u);
+    CHECK(Phase4Services::rb_tree_unlink_node(&tree, &n1));
+    CHECK(tree.size == 3u && head.left == &n2);
+    CHECK(Phase4Services::rb_tree_unlink_node(&tree, &n5));
+    CHECK(tree.size == 2u && head.right == &n4);
+    CHECK(Phase4Services::rb_tree_unlink_node(&tree, &n2));
+    CHECK(tree.size == 1u && head.parent == &n4 && head.left == &n4 && head.right == &n4);
+    CHECK(Phase4Services::rb_tree_unlink_node(&tree, &n4));
+    CHECK(tree.size == 0u && head.parent == &head && head.left == &head && head.right == &head);
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -2944,6 +3393,9 @@ int main() {
     if (test_phase2_world_rbtree_stats_area_filter_camera() != 0) return 1;
     if (test_multichain_expected_bytes_longer_than_stolen() != 0) return 1;
     if (test_ten_arg_raw_inline_detour() != 0) return 1;
+    if (test_phase4_prologues_hookengine_safety() != 0) return 1;
+    if (test_phase4_rich_ui_tooltips_and_stash_affinity() != 0) return 1;
+    if (test_phase4_geal_rulesets_and_custom_ui_registries() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

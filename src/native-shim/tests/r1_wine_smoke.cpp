@@ -176,6 +176,18 @@ int main() {
     SMOKE_CHECK(abi->camera_get_state != nullptr);
     SMOKE_CHECK(abi->camera_world_to_screen != nullptr);
     SMOKE_CHECK(abi->camera_set_zoom_override != nullptr);
+    SMOKE_CHECK(abi->ui_create_control != nullptr);
+    SMOKE_CHECK(abi->ui_picture_set_texture != nullptr);
+    SMOKE_CHECK(abi->ui_tab_container_add_tab != nullptr);
+    SMOKE_CHECK(abi->ui_combobox_add_item != nullptr);
+    SMOKE_CHECK(abi->ui_listbox_insert_item != nullptr);
+    SMOKE_CHECK(abi->tooltip_set_item_augment_callback != nullptr);
+    SMOKE_CHECK(abi->tooltip_add_item_section != nullptr);
+    SMOKE_CHECK(abi->affinity_set_router_callback != nullptr);
+    SMOKE_CHECK(abi->geal_register_builtin != nullptr);
+    SMOKE_CHECK(abi->geal_invoke_function != nullptr);
+    SMOKE_CHECK(abi->ruleset_register_native != nullptr);
+    SMOKE_CHECK(abi->ui_register_custom_control_kind != nullptr);
 
     constexpr const char* kSha3293d = "e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d";
     SMOKE_CHECK(p_init(NM_BUILD_3_29_3D_328228, NM_NOMINAL_IMAGE_BASE, 0x4d9a000u, kSha3293d) == NM_OK);
@@ -364,7 +376,7 @@ int main() {
     }
     SMOKE_CHECK(log_contents.find("NativeEntryPoint.Initialize(nm_abi_table_t*) returned 0") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded JsonAddressLibrary") != std::string::npos);
-    SMOKE_CHECK(log_contents.find("symbols=319") != std::string::npos);
+    SMOKE_CHECK(log_contents.find("symbols=426") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded client mod 'harvest-garden'") != std::string::npos);
     SMOKE_CHECK(log_contents.find("collectibleAlc=True") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Managed frame tick #1") != std::string::npos);

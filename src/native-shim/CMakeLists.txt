@@ -58,6 +58,7 @@ set(SHIM_SOURCES
     src/live_engine_hooks.cpp
     src/phase1_services.cpp
     src/phase2_services.cpp
+    src/phase4_services.cpp
     src/coreclr_bootstrap.cpp
     src/shim_logger.cpp
     src/client_host_shim.cpp
@@ -128,6 +129,7 @@ if(BUILD_TESTING)
             src/live_engine_hooks.cpp
             src/phase1_services.cpp
             src/phase2_services.cpp
+            src/phase4_services.cpp
             src/coreclr_bootstrap.cpp
             src/shim_logger.cpp
             src/client_host_shim.cpp

@@ -27,9 +27,9 @@
 
 namespace nativemods {
 
-// --- ABI 0.4.0 layout static_asserts (zero hidden padding, exact C# LayoutKind.Sequential parity) ---
-static_assert(NM_ABI_VERSION == 0x00000400u, "NM_ABI_VERSION must be 0.4.0");
-static_assert(sizeof(nm_abi_table_t) == 864u, "nm_abi_table_t must be 864 bytes (8 + 107*8)");
+// --- ABI 0.4.0 prefix layout static_asserts (zero hidden padding, exact C# LayoutKind.Sequential parity) ---
+static_assert(NM_ABI_VERSION >= 0x00000400u, "NM_ABI_VERSION must be >= 0.4.0");
+static_assert(sizeof(nm_abi_table_t) >= 864u, "nm_abi_table_t must preserve 0.4.0 prefix (8 + 107*8)");
 static_assert(offsetof(nm_abi_table_t, pregame_set_callbacks) == 8u + 88u * 8u, "ABI 0.3.0 prefix preserved");
 static_assert(offsetof(nm_abi_table_t, world_get_local_player) == 8u + 89u * 8u, "ABI 0.4.0 starts at slot 89");
 static_assert(offsetof(nm_abi_table_t, camera_set_zoom_override) == 8u + 106u * 8u, "ABI 0.4.0 ends at slot 106");

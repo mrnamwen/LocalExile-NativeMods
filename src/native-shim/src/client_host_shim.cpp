@@ -11,6 +11,7 @@
 #include "overlay_and_channels.hpp"
 #include "phase1_services.hpp"
 #include "phase2_services.hpp"
+#include "phase4_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -45,6 +46,7 @@ struct ShimState {
     LiveEngineHooks     live_hooks;
     Phase1Services      phase1;
     Phase2Services      phase2;
+    Phase4Services      phase4;
     CoreClrBootstrapper clr;
 
     nm_hook_handle_t    frame_hook_handle = NM_HOOK_INVALID;
@@ -166,6 +168,38 @@ const nm_abi_table_t kAbiTable = {
     &nm_camera_get_state,
     &nm_camera_world_to_screen,
     &nm_camera_set_zoom_override,
+    &nm_ui_create_control,
+    &nm_ui_picture_set_texture,
+    &nm_ui_scrollable_get_scroll,
+    &nm_ui_scrollable_set_scroll,
+    &nm_ui_scrollable_get_content,
+    &nm_ui_tab_container_get_count,
+    &nm_ui_tab_container_get_active,
+    &nm_ui_tab_container_select,
+    &nm_ui_tab_container_add_tab,
+    &nm_ui_tab_container_subscribe_changed,
+    &nm_ui_combobox_get_count,
+    &nm_ui_combobox_get_selected,
+    &nm_ui_combobox_set_selected,
+    &nm_ui_combobox_add_item,
+    &nm_ui_combobox_clear,
+    &nm_ui_combobox_subscribe_changed,
+    &nm_ui_listbox_get_count,
+    &nm_ui_listbox_get_selected,
+    &nm_ui_listbox_set_selected,
+    &nm_ui_listbox_insert_item,
+    &nm_ui_listbox_clear,
+    &nm_ui_listbox_subscribe_changed,
+    &nm_tooltip_set_item_augment_callback,
+    &nm_tooltip_add_item_section,
+    &nm_affinity_set_router_callback,
+    &nm_geal_register_builtin,
+    &nm_geal_unregister_builtin,
+    &nm_geal_invoke_function,
+    &nm_ruleset_register_native,
+    &nm_ruleset_unregister_native,
+    &nm_ui_register_custom_control_kind,
+    &nm_ui_unregister_custom_control_kind,
 };
 
 #if defined(_WIN32)
@@ -376,6 +410,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
 
+    s.phase4.reset(&s.hooks);
     s.phase2.reset(&s.hooks);
     s.phase1.reset(&s.hooks);
     s.live_hooks.reset(&s.hooks);
@@ -456,6 +491,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
 NM_API nm_status_t NM_CALL nm_shutdown(void) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
+    s.phase4.reset(&s.hooks);
     s.phase2.reset(&s.hooks);
     s.phase1.reset(&s.hooks);
     s.live_hooks.reset(&s.hooks);
@@ -912,6 +948,7 @@ NM_API nm_status_t NM_CALL nm_ui_checkbox_subscribe_changed(
 
 NM_API nm_status_t NM_CALL nm_ui_unsubscribe(uint64_t token) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    if (state().phase4.try_ui_unsubscribe(token)) return NM_OK;
     return state().live_hooks.ui_unsubscribe(token);
 }
 
@@ -1288,6 +1325,243 @@ NM_API void NM_CALL nm_dispatch_filter_reloaded(int32_t succeeded, const nm_item
     state().phase2.dispatch_filter_reloaded(succeeded, filter_state);
 }
 
+/* --- ABI 0.5.0 exports --- */
+
+NM_API nm_status_t NM_CALL nm_ui_create_control(
+    int32_t     kind,
+    void*       parent_control,
+    const char* id_utf8,
+    void**      out_control) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_create_control(kind, parent_control, id_utf8, out_control);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_picture_set_texture(void* picture_control, const char* texture_path_utf8) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_picture_set_texture(picture_control, texture_path_utf8);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_scrollable_get_scroll(void* ctrl, float* out_offset, float* out_max) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_scrollable_get_scroll(ctrl, out_offset, out_max);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_scrollable_set_scroll(void* ctrl, float offset) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_scrollable_set_scroll(ctrl, offset);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_scrollable_get_content(void* ctrl, void** out_content) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_scrollable_get_content(ctrl, out_content);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_tab_container_get_count(void* ctrl, uint32_t* out_count) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_tab_container_get_count(ctrl, out_count);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_tab_container_get_active(void* ctrl, int32_t* out_index) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_tab_container_get_active(ctrl, out_index);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_tab_container_select(void* ctrl, int32_t index) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_tab_container_select(ctrl, index);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_tab_container_add_tab(
+    void*       ctrl,
+    const char* label_utf8,
+    uint32_t    style,
+    int32_t     hidden,
+    void**      out_page) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_tab_container_add_tab(ctrl, label_utf8, style, hidden, out_page);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_tab_container_subscribe_changed(
+    void*                      ctrl,
+    nm_ui_int_event_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_sub) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_tab_container_subscribe_changed(ctrl, cb, user_data, out_sub);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_combobox_get_count(void* ctrl, uint32_t* out_count) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_combobox_get_count(ctrl, out_count);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_combobox_get_selected(void* ctrl, int32_t* out_index) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_combobox_get_selected(ctrl, out_index);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_combobox_set_selected(void* ctrl, int32_t index) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_combobox_set_selected(ctrl, index);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_combobox_add_item(
+    void*       ctrl,
+    const char* text_utf8,
+    int32_t     enabled,
+    uint32_t    tag,
+    uint32_t*   out_index) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_combobox_add_item(ctrl, text_utf8, enabled, tag, out_index);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_combobox_clear(void* ctrl) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_combobox_clear(ctrl);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_combobox_subscribe_changed(
+    void*                      ctrl,
+    nm_ui_int_event_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_sub) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_combobox_subscribe_changed(ctrl, cb, user_data, out_sub);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_listbox_get_count(void* ctrl, uint32_t* out_count) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_listbox_get_count(ctrl, out_count);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_listbox_get_selected(void* ctrl, int32_t* out_index) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_listbox_get_selected(ctrl, out_index);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_listbox_set_selected(void* ctrl, int32_t index) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_listbox_set_selected(ctrl, index);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_listbox_insert_item(
+    void*    ctrl,
+    uint32_t index,
+    void*    child_control,
+    uint64_t item_user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_listbox_insert_item(ctrl, index, child_control, item_user_data);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_listbox_clear(void* ctrl) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_listbox_clear(ctrl);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_listbox_subscribe_changed(
+    void*                      ctrl,
+    nm_ui_int_event_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_sub) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_listbox_subscribe_changed(ctrl, cb, user_data, out_sub);
+}
+
+NM_API nm_status_t NM_CALL nm_tooltip_set_item_augment_callback(
+    nm_tooltip_augment_callback_t cb,
+    void*                         user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.tooltip_set_item_augment_callback(cb, user_data);
+}
+
+NM_API nm_status_t NM_CALL nm_tooltip_add_item_section(
+    void*       popup_control,
+    const char* text_utf8,
+    uint32_t    rgba,
+    int32_t     add_separator) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.tooltip_add_item_section(popup_control, text_utf8, rgba, add_separator);
+}
+
+NM_API nm_status_t NM_CALL nm_affinity_set_router_callback(
+    nm_affinity_route_callback_t cb,
+    void*                        user_data) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.affinity_set_router_callback(cb, user_data);
+}
+
+NM_API nm_status_t NM_CALL nm_geal_register_builtin(
+    const char*                name_utf8,
+    uint32_t                   min_args,
+    uint32_t                   max_args,
+    int32_t                    has_return,
+    nm_geal_builtin_callback_t cb,
+    void*                      user_data,
+    uint64_t*                  out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.geal_register_builtin(name_utf8, min_args, max_args, has_return, cb, user_data, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_geal_unregister_builtin(uint64_t handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.geal_unregister_builtin(handle);
+}
+
+NM_API nm_status_t NM_CALL nm_geal_invoke_function(
+    uint32_t    entity_id,
+    const char* script_or_fn_utf8,
+    const char* args_json_utf8,
+    char*       out_result_utf8,
+    size_t      capacity,
+    size_t*     out_len) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.geal_invoke_function(entity_id, script_or_fn_utf8, args_json_utf8, out_result_utf8, capacity, out_len);
+}
+
+NM_API nm_status_t NM_CALL nm_ruleset_register_native(
+    uint32_t                             ruleset_id,
+    const nm_native_ruleset_callbacks_t* callbacks,
+    void*                                user_data,
+    uint64_t*                            out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ruleset_register_native(ruleset_id, callbacks, user_data, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_ruleset_unregister_native(uint64_t handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ruleset_unregister_native(handle);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_register_custom_control_kind(
+    const char*                             kind_name_utf8,
+    const nm_custom_ui_control_callbacks_t* callbacks,
+    void*                                   user_data,
+    uint64_t*                               out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_register_custom_control_kind(kind_name_utf8, callbacks, user_data, out_handle);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_unregister_custom_control_kind(uint64_t handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase4.ui_unregister_custom_control_kind(handle);
+}
+
+NM_API void NM_CALL nm_dispatch_tooltip_augment(
+    void*                     popup_control,
+    const nm_item_snapshot_t* item,
+    int32_t                   alt_held) {
+    if (!state().initialized) return;
+    state().phase4.dispatch_tooltip_augment(popup_control, item, alt_held);
+}
+
+NM_API int32_t NM_CALL nm_dispatch_affinity_route(
+    const nm_item_snapshot_t*   item,
+    int32_t                     stash_kind,
+    nm_affinity_route_result_t* out_result) {
+    if (!state().initialized) return 0;
+    return state().phase4.dispatch_affinity_route(item, stash_kind, out_result);
+}
+
 NM_API nm_status_t NM_CALL nm_bootstrap_managed_host(
     const char* hostfxr_path_utf8,
     const char* runtimeconfig_path_utf8,
@@ -1425,6 +1699,7 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
         s.live_hooks.install_live_hooks(detected_build, base, s.hooks, s.allocator, s.channels);
         s.phase1.install_live_hooks(detected_build, base, s.hooks);
         s.phase2.install_live_hooks(detected_build, base, s.hooks, s.allocator);
+        s.phase4.install_live_hooks(detected_build, base, s.hooks, s.allocator);
     }
 
     // Install register-preserving prologue hook at frame.state_stack_pass_a

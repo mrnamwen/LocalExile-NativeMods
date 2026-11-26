@@ -119,6 +119,40 @@ EXPORTS
     nm_camera_set_zoom_override
     nm_dispatch_area_event
     nm_dispatch_filter_reloaded
+    nm_ui_create_control
+    nm_ui_picture_set_texture
+    nm_ui_scrollable_get_scroll
+    nm_ui_scrollable_set_scroll
+    nm_ui_scrollable_get_content
+    nm_ui_tab_container_get_count
+    nm_ui_tab_container_get_active
+    nm_ui_tab_container_select
+    nm_ui_tab_container_add_tab
+    nm_ui_tab_container_subscribe_changed
+    nm_ui_combobox_get_count
+    nm_ui_combobox_get_selected
+    nm_ui_combobox_set_selected
+    nm_ui_combobox_add_item
+    nm_ui_combobox_clear
+    nm_ui_combobox_subscribe_changed
+    nm_ui_listbox_get_count
+    nm_ui_listbox_get_selected
+    nm_ui_listbox_set_selected
+    nm_ui_listbox_insert_item
+    nm_ui_listbox_clear
+    nm_ui_listbox_subscribe_changed
+    nm_tooltip_set_item_augment_callback
+    nm_tooltip_add_item_section
+    nm_affinity_set_router_callback
+    nm_geal_register_builtin
+    nm_geal_unregister_builtin
+    nm_geal_invoke_function
+    nm_ruleset_register_native
+    nm_ruleset_unregister_native
+    nm_ui_register_custom_control_kind
+    nm_ui_unregister_custom_control_kind
+    nm_dispatch_tooltip_augment
+    nm_dispatch_affinity_route
     nm_bootstrap_managed_host
     nm_initialize_for_build
     nm_shutdown
