@@ -376,7 +376,7 @@ int main() {
     }
     SMOKE_CHECK(log_contents.find("NativeEntryPoint.Initialize(nm_abi_table_t*) returned 0") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded JsonAddressLibrary") != std::string::npos);
-    SMOKE_CHECK(log_contents.find("symbols=426") != std::string::npos);
+    SMOKE_CHECK(log_contents.find("symbols=447") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Loaded client mod 'harvest-garden'") != std::string::npos);
     SMOKE_CHECK(log_contents.find("collectibleAlc=True") != std::string::npos);
     SMOKE_CHECK(log_contents.find("Managed frame tick #1") != std::string::npos);

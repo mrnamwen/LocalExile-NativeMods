@@ -36,7 +36,7 @@ extern "C" {
 
 /* Semantic ABI version encoded as (major << 16) | (minor << 8) | patch. */
 #define NM_ABI_VERSION_MAJOR 0u
-#define NM_ABI_VERSION_MINOR 5u
+#define NM_ABI_VERSION_MINOR 6u
 #define NM_ABI_VERSION_PATCH 0u
 #define NM_ABI_VERSION ((NM_ABI_VERSION_MAJOR << 16) | (NM_ABI_VERSION_MINOR << 8) | NM_ABI_VERSION_PATCH)
 
@@ -1214,6 +1214,25 @@ typedef struct nm_abi_table_t {
         void*                                   user_data,
         uint64_t*                               out_handle);
     nm_status_t (NM_CALL *ui_unregister_custom_control_kind)(uint64_t handle);
+
+    /* ABI 0.6.0: Phase 5 — U32 Stack Wire/Format/Override, Compact 6-Socket Polish & Live World VFX (6; slots 139..144) */
+    nm_status_t (NM_CALL *stack_set_u32_wire_enabled)(int32_t enabled);
+    nm_status_t (NM_CALL *stack_set_format_millions_enabled)(int32_t enabled);
+    nm_status_t (NM_CALL *stack_set_entity_override)(
+        uint32_t entity_id,
+        uint32_t stack_size);
+    nm_status_t (NM_CALL *ui_set_compact_sockets_enabled)(int32_t enabled);
+    nm_status_t (NM_CALL *world_play_effect)(
+        uint32_t    target_entity_id,
+        const char* effect_path_utf8);
+    nm_status_t (NM_CALL *world_create_client_object_ex)(
+        const char* metadata_utf8,
+        float       x,
+        float       y,
+        float       z,
+        float       rotation_rad,
+        float       scale,
+        uint64_t*   out_handle);
 } nm_abi_table_t;
 
 /* Exported C ABI functions. */
@@ -1691,6 +1710,25 @@ NM_API int32_t NM_CALL nm_dispatch_affinity_route(
     const nm_item_snapshot_t*   item,
     int32_t                     stash_kind,
     nm_affinity_route_result_t* out_result);
+
+/* ABI 0.6.0 exported functions: U32 Stacks, Compact 6-Socket Polish & Live World VFX. */
+NM_API nm_status_t NM_CALL nm_stack_set_u32_wire_enabled(int32_t enabled);
+NM_API nm_status_t NM_CALL nm_stack_set_format_millions_enabled(int32_t enabled);
+NM_API nm_status_t NM_CALL nm_stack_set_entity_override(
+    uint32_t entity_id,
+    uint32_t stack_size);
+NM_API nm_status_t NM_CALL nm_ui_set_compact_sockets_enabled(int32_t enabled);
+NM_API nm_status_t NM_CALL nm_world_play_effect(
+    uint32_t    target_entity_id,
+    const char* effect_path_utf8);
+NM_API nm_status_t NM_CALL nm_world_create_client_object_ex(
+    const char* metadata_utf8,
+    float       x,
+    float       y,
+    float       z,
+    float       rotation_rad,
+    float       scale,
+    uint64_t*   out_handle);
 
 /* Deferred CoreCLR (.NET 10) bootstrapper (off game thread to avoid DeadlockDetector). */
 NM_API nm_status_t NM_CALL nm_bootstrap_managed_host(

@@ -33,9 +33,9 @@
 
 namespace nativemods {
 
-// --- ABI 0.5.0 layout static_asserts (zero hidden padding, exact C# LayoutKind.Sequential parity) ---
-static_assert(NM_ABI_VERSION == 0x00000500u, "NM_ABI_VERSION must be 0.5.0");
-static_assert(sizeof(nm_abi_table_t) == 1120u, "nm_abi_table_t must be 1120 bytes (8 + 139*8)");
+// --- ABI 0.5.0 prefix layout static_asserts (zero hidden padding, exact C# LayoutKind.Sequential parity) ---
+static_assert(NM_ABI_VERSION >= 0x00000500u, "NM_ABI_VERSION must be >= 0.5.0");
+static_assert(sizeof(nm_abi_table_t) >= 1120u, "nm_abi_table_t must preserve 0.5.0 prefix (8 + 139*8)");
 static_assert(offsetof(nm_abi_table_t, camera_set_zoom_override) == 8u + 106u * 8u, "ABI 0.4.0 prefix preserved");
 static_assert(offsetof(nm_abi_table_t, ui_create_control) == 8u + 107u * 8u, "ABI 0.5.0 starts at slot 107");
 static_assert(offsetof(nm_abi_table_t, ui_listbox_subscribe_changed) == 8u + 128u * 8u, "Rich UI ends at slot 128");

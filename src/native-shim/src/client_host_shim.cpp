@@ -12,6 +12,7 @@
 #include "phase1_services.hpp"
 #include "phase2_services.hpp"
 #include "phase4_services.hpp"
+#include "phase5_services.hpp"
 #include "shim_logger.hpp"
 
 #include <atomic>
@@ -47,6 +48,7 @@ struct ShimState {
     Phase1Services      phase1;
     Phase2Services      phase2;
     Phase4Services      phase4;
+    Phase5Services      phase5;
     CoreClrBootstrapper clr;
 
     nm_hook_handle_t    frame_hook_handle = NM_HOOK_INVALID;
@@ -200,6 +202,12 @@ const nm_abi_table_t kAbiTable = {
     &nm_ruleset_unregister_native,
     &nm_ui_register_custom_control_kind,
     &nm_ui_unregister_custom_control_kind,
+    &nm_stack_set_u32_wire_enabled,
+    &nm_stack_set_format_millions_enabled,
+    &nm_stack_set_entity_override,
+    &nm_ui_set_compact_sockets_enabled,
+    &nm_world_play_effect,
+    &nm_world_create_client_object_ex,
 };
 
 #if defined(_WIN32)
@@ -257,13 +265,14 @@ void trigger_auto_coreclr_bootstrap(const char* trigger_reason) {
     const std::string dll_dir = wide_to_utf8(g_dll_dir_w);
     const std::string env_host_dir = get_env_utf8(L"NATIVEMODS_HOST_DIR");
 
-    std::string candidates[3];
+    std::string candidates[4];
     size_t cand_count = 0;
     if (!env_host_dir.empty()) {
         candidates[cand_count++] = env_host_dir;
     }
     if (!dll_dir.empty()) {
         candidates[cand_count++] = dll_dir;
+        candidates[cand_count++] = dll_dir + "\\nativemods-host";
         candidates[cand_count++] = dll_dir + "\\host";
     }
 
@@ -410,6 +419,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
 
+    s.phase5.reset(&s.hooks);
     s.phase4.reset(&s.hooks);
     s.phase2.reset(&s.hooks);
     s.phase1.reset(&s.hooks);
@@ -491,6 +501,7 @@ NM_API nm_status_t NM_CALL nm_initialize_for_build(
 NM_API nm_status_t NM_CALL nm_shutdown(void) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.init_mutex);
+    s.phase5.reset(&s.hooks);
     s.phase4.reset(&s.hooks);
     s.phase2.reset(&s.hooks);
     s.phase1.reset(&s.hooks);
@@ -1562,6 +1573,45 @@ NM_API int32_t NM_CALL nm_dispatch_affinity_route(
     return state().phase4.dispatch_affinity_route(item, stash_kind, out_result);
 }
 
+/* --- ABI 0.6.0 exports --- */
+
+NM_API nm_status_t NM_CALL nm_stack_set_u32_wire_enabled(int32_t enabled) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase5.stack_set_u32_wire_enabled(enabled);
+}
+
+NM_API nm_status_t NM_CALL nm_stack_set_format_millions_enabled(int32_t enabled) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase5.stack_set_format_millions_enabled(enabled);
+}
+
+NM_API nm_status_t NM_CALL nm_stack_set_entity_override(uint32_t entity_id, uint32_t stack_size) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase5.stack_set_entity_override(entity_id, stack_size);
+}
+
+NM_API nm_status_t NM_CALL nm_ui_set_compact_sockets_enabled(int32_t enabled) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase5.ui_set_compact_sockets_enabled(enabled);
+}
+
+NM_API nm_status_t NM_CALL nm_world_play_effect(uint32_t target_entity_id, const char* effect_path_utf8) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase5.world_play_effect(target_entity_id, effect_path_utf8);
+}
+
+NM_API nm_status_t NM_CALL nm_world_create_client_object_ex(
+    const char* metadata_utf8,
+    float       x,
+    float       y,
+    float       z,
+    float       rotation_rad,
+    float       scale,
+    uint64_t*   out_handle) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().phase5.world_create_client_object_ex(metadata_utf8, x, y, z, rotation_rad, scale, out_handle);
+}
+
 NM_API nm_status_t NM_CALL nm_bootstrap_managed_host(
     const char* hostfxr_path_utf8,
     const char* runtimeconfig_path_utf8,
@@ -1700,6 +1750,7 @@ DWORD WINAPI DeferredInitThread(LPVOID) {
         s.phase1.install_live_hooks(detected_build, base, s.hooks);
         s.phase2.install_live_hooks(detected_build, base, s.hooks, s.allocator);
         s.phase4.install_live_hooks(detected_build, base, s.hooks, s.allocator);
+        s.phase5.install_live_hooks(detected_build, base, s.hooks, s.allocator, s.phase4);
     }
 
     // Install register-preserving prologue hook at frame.state_stack_pass_a
