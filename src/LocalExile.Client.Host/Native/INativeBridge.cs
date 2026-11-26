@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using LocalExile.Client.Sdk.Addresses;
 using LocalExile.Client.Sdk.Engine;
 using LocalExile.Client.Sdk.Extend;
@@ -384,6 +386,131 @@ public interface INativeBridge : IDisposable
 
     /// <summary>Sets the camera zoom override (<c>&lt; 0f</c> clears back to stock <c>-1.0f</c>).</summary>
     void SetCameraZoomOverride(float zoomOverride) { }
+
+    // ── Phase 4 (ABI 0.5.0): Rich dynamic UI controls ──────────────────────────────────────────
+
+    /// <summary>Dynamically creates a slab-pooled native UI control of <paramref name="kind"/> under <paramref name="parentControl"/>.</summary>
+    nint CreateNativeUiControl(nint parentControl, UiControlKind kind, string? id = null) => nint.Zero;
+
+    /// <summary>Loads and binds a virtual texture path onto a native <c>Picture</c> control.</summary>
+    void SetNativeUiPictureTexture(nint pictureControl, string texturePath, bool resizeToImage = false) { }
+
+    /// <summary>Reads vertical scroll offset and maximum scroll offset of a native <c>ScrollableFrame</c>.</summary>
+    bool TryGetNativeUiScrollState(nint scrollableControl, out float offset, out float maxOffset)
+    {
+        offset = 0f;
+        maxOffset = 0f;
+        return false;
+    }
+
+    /// <summary>Sets the vertical scroll offset of a native <c>ScrollableFrame</c>.</summary>
+    void SetNativeUiScrollOffset(nint scrollableControl, float offset) { }
+
+    /// <summary>Sets the vertical scroll range of a native <c>ScrollableFrame</c>.</summary>
+    void SetNativeUiScrollRange(nint scrollableControl, float minOffset, float maxOffset) { }
+
+    /// <summary>Recomputes native content bounds of a <c>ScrollableFrame</c>.</summary>
+    void UpdateNativeUiScrollContentBounds(nint scrollableControl) { }
+
+    /// <summary>Appends a tab to a native <c>TabContainer</c>, returning the tab's content container pointer.</summary>
+    nint AddNativeUiTab(nint tabContainerControl, string title, string? iconPath = null, bool hidden = false) => nint.Zero;
+
+    /// <summary>Selects a tab by zero-based index on a native <c>TabContainer</c>.</summary>
+    void SelectNativeUiTab(nint tabContainerControl, int index) { }
+
+    /// <summary>Clears all tabs from a native <c>TabContainer</c>.</summary>
+    void ClearNativeUiTabs(nint tabContainerControl) { }
+
+    /// <summary>Reads tab count and active tab index from a native <c>TabContainer</c>.</summary>
+    bool TryGetNativeUiTabState(nint tabContainerControl, out int count, out int activeIndex)
+    {
+        count = 0;
+        activeIndex = -1;
+        return false;
+    }
+
+    /// <summary>Subscribes to active tab changes on a native <c>TabContainer</c>.</summary>
+    IDisposable SubscribeNativeUiTabChanged(nint tabContainerControl, Action<int> onChanged) => NoopDisposable.Instance;
+
+    /// <summary>Appends an item to a native <c>ComboBox</c>, returning its zero-based index (or <c>-1</c> on failure).</summary>
+    int AddNativeUiComboBoxItem(nint comboBoxControl, string text, bool enabled = true, uint tag = 0) => -1;
+
+    /// <summary>Clears all items from a native <c>ComboBox</c>.</summary>
+    void ClearNativeUiComboBoxItems(nint comboBoxControl) { }
+
+    /// <summary>Sets the selected index of a native <c>ComboBox</c>.</summary>
+    bool SetNativeUiComboBoxSelectedIndex(nint comboBoxControl, int index) => false;
+
+    /// <summary>Reads item count, selected index, and selected text from a native <c>ComboBox</c>.</summary>
+    bool TryGetNativeUiComboBoxState(nint comboBoxControl, out int count, out int selectedIndex, out string? selectedText)
+    {
+        count = 0;
+        selectedIndex = -1;
+        selectedText = null;
+        return false;
+    }
+
+    /// <summary>Subscribes to selection changes on a native <c>ComboBox</c>.</summary>
+    IDisposable SubscribeNativeUiComboBoxSelectionChanged(nint comboBoxControl, Action<int> onChanged) => NoopDisposable.Instance;
+
+    /// <summary>Inserts a child control row into a native <c>ControlListBox</c> at <paramref name="index"/> with optional <paramref name="userData"/>.</summary>
+    bool InsertNativeUiListBoxItem(nint listBoxControl, int index, nint childControl, ulong userData = 0) => false;
+
+    /// <summary>Clears all items from a native <c>ControlListBox</c>.</summary>
+    void ClearNativeUiListBoxItems(nint listBoxControl) { }
+
+    /// <summary>Sets the selected index on a native <c>ControlListBox</c>.</summary>
+    bool SetNativeUiListBoxSelectedIndex(nint listBoxControl, int index) => false;
+
+    /// <summary>Clears the active selection on a native <c>ControlListBox</c>.</summary>
+    void ClearNativeUiListBoxSelection(nint listBoxControl) { }
+
+    /// <summary>Reads item count and selected index from a native <c>ControlListBox</c>.</summary>
+    bool TryGetNativeUiListBoxState(nint listBoxControl, out int count, out int selectedIndex)
+    {
+        count = 0;
+        selectedIndex = -1;
+        return false;
+    }
+
+    /// <summary>Subscribes to selection changes on a native <c>ControlListBox</c>.</summary>
+    IDisposable SubscribeNativeUiListBoxSelectionChanged(nint listBoxControl, Action<int> onChanged) => NoopDisposable.Instance;
+
+    // ── Phase 4 (ABI 0.5.0): Stock item tooltip augmentation ───────────────────────────────────
+
+    /// <summary>Registers the host callback invoked on <c>ui.item_popup_build_sections</c> to augment stock item tooltips.</summary>
+    IDisposable RegisterItemTooltipBuildCallback(Func<ItemTooltipContext, IReadOnlyList<TooltipSection>> callback) => NoopDisposable.Instance;
+
+    // ── Phase 4 (ABI 0.5.0): Custom stash affinity routing & bitset hooks ──────────────────────
+
+    /// <summary>Registers the host callback invoked on <c>ui.stash_get_affinity_targets</c> (<c>0xa83460</c>) for Ctrl+Click routing.</summary>
+    IDisposable RegisterStashAffinityRouteCallback(Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>> callback) => NoopDisposable.Instance;
+
+    /// <summary>Registers the host callback invoked on <c>items.compute_affinity_bitset</c> (<c>0x1589b20</c>) for stock affinity bits.</summary>
+    IDisposable RegisterStashAffinityBitsetCallback(Func<StashAffinityItemContext, uint> callback) => NoopDisposable.Instance;
+
+    // ── Phase 4 (ABI 0.5.0): Live native Extend registries ─────────────────────────────────────
+
+    /// <summary>Registers a custom GEAL built-in directly in <c>geal.builtin_factory_table</c>.</summary>
+    IDisposable RegisterNativeGealBuiltin(string name, bool hasReturnValue, Func<uint, GealArguments, GealValue> handler) => NoopDisposable.Instance;
+
+    /// <summary>Whether the underlying bridge drives native <c>ClientRuleset</c> vtable lifecycle callbacks directly from the engine.</summary>
+    bool DrivesNativeRulesetLifecycle => false;
+
+    /// <summary>Registers a native ruleset proxy into an unoccupied slot of <c>rulesets.creator_table</c>.</summary>
+    IDisposable RegisterNativeRuleset(
+        byte rulesetId,
+        Action<AreaEventArgs> onAreaEntered,
+        Action<ReadOnlyMemory<byte>> onRulesetUpdate,
+        Action<float> onFrame,
+        Action onAreaLeft) => NoopDisposable.Instance;
+
+    /// <summary>Registers a custom UI control kind directly in <c>g_uiControlFactoryMap</c>.</summary>
+    IDisposable RegisterNativeCustomUiControlKind(
+        string controlTypeName,
+        Action<nint> onCreated,
+        Action<nint, string, string> onPropertyChanged,
+        Action<nint> onDestroyed) => NoopDisposable.Instance;
 }
 
 /// <summary>
@@ -404,6 +531,51 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         CheckBoxChanged = 7,
         OpcodeRx = 8,
         HookChain = 9,
+        UiTabChanged = 10,
+        UiComboBoxChanged = 11,
+        UiListBoxChanged = 12,
+        GealBuiltin = 13,
+        NativeRuleset = 14,
+        CustomUiControl = 15,
+    }
+
+    private sealed class UiIntEventWrapper(NativeShimBridge bridge, Action<int> callback)
+    {
+        public readonly NativeShimBridge Bridge = bridge;
+        public readonly Action<int> Callback = callback;
+    }
+
+    private sealed class GealBuiltinWrapper(NativeShimBridge bridge, bool hasReturn, Func<uint, GealArguments, GealValue> handler)
+    {
+        public readonly NativeShimBridge Bridge = bridge;
+        public readonly bool HasReturn = hasReturn;
+        public readonly Func<uint, GealArguments, GealValue> Handler = handler;
+    }
+
+    private sealed class NativeRulesetWrapper(
+        NativeShimBridge bridge,
+        Action<AreaEventArgs> onAreaEntered,
+        Action<ReadOnlyMemory<byte>> onRulesetUpdate,
+        Action<float> onFrame,
+        Action onAreaLeft)
+    {
+        public readonly NativeShimBridge Bridge = bridge;
+        public readonly Action<AreaEventArgs> OnAreaEntered = onAreaEntered;
+        public readonly Action<ReadOnlyMemory<byte>> OnRulesetUpdate = onRulesetUpdate;
+        public readonly Action<float> OnFrame = onFrame;
+        public readonly Action OnAreaLeft = onAreaLeft;
+    }
+
+    private sealed class CustomUiControlWrapper(
+        NativeShimBridge bridge,
+        Action<nint> onCreated,
+        Action<nint, string, string> onPropertyChanged,
+        Action<nint> onDestroyed)
+    {
+        public readonly NativeShimBridge Bridge = bridge;
+        public readonly Action<nint> OnCreated = onCreated;
+        public readonly Action<nint, string, string> OnPropertyChanged = onPropertyChanged;
+        public readonly Action<nint> OnDestroyed = onDestroyed;
     }
 
     private sealed class UiEventSlot(NativeShimBridge bridge, CallbackKind kind)
@@ -526,12 +698,17 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     private readonly List<Action<string, string, ushort>> _charCreatedCallbacks = [];
     private readonly List<(Action<AreaInfo> OnEntered, Action<string> OnLeft)> _areaLifecycleCallbacks = [];
     private readonly List<Action<bool, string, ItemFilterState?>> _filterReloadCallbacks = [];
+    private readonly List<Func<ItemTooltipContext, IReadOnlyList<TooltipSection>>> _tooltipAugmentCallbacks = [];
+    private readonly List<Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>>> _affinityRouteCallbacks = [];
+    private readonly List<Func<StashAffinityItemContext, uint>> _affinityBitsetCallbacks = [];
     private GCHandle _selfCallbackHandle;
     private bool _screensNativeHooked;
     private bool _inputNativeHooked;
     private bool _preGameNativeHooked;
     private bool _areaNativeHooked;
     private bool _filterNativeHooked;
+    private bool _tooltipNativeHooked;
+    private bool _affinityNativeHooked;
     private int _nextAudioChannel = 1;
     private uint _nextClientObjectId = 0x8000_0001u;
     private ulong _managedFileOverlayToken;
@@ -1461,8 +1638,52 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     }
 
     /// <inheritdoc/>
-    public GealInvocationResult InvokeGeal(uint objectId, string entryName, bool isEvent, ReadOnlySpan<GealValue> args) =>
-        new(false, GealValue.Null, "Native GEAL invocation requires live 3.29 client object pointer.");
+    public GealInvocationResult InvokeGeal(uint objectId, string entryName, bool isEvent, ReadOnlySpan<GealValue> args)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entryName);
+        if (_table->GealInvokeFunction is null)
+        {
+            return new(false, GealValue.Null, "Native shim does not expose geal_invoke_function.");
+        }
+
+        byte[] fnUtf8 = ToNullTerminatedUtf8(entryName.Trim());
+        byte[] argsJsonUtf8 = ToNullTerminatedUtf8(SerializeGealArgumentsJson(args));
+        byte[] outBuf = new byte[1024];
+        nuint outLen = 0;
+
+        NmStatus status;
+        fixed (byte* pFn = fnUtf8)
+        fixed (byte* pArgs = argsJsonUtf8)
+        fixed (byte* pOut = outBuf)
+        {
+            status = _table->GealInvokeFunction(objectId, pFn, pArgs, pOut, (nuint)outBuf.Length, &outLen);
+        }
+
+        if (status == NmStatus.ErrBufferTooSmall && outLen > 0 && outLen <= 1024u * 1024u)
+        {
+            outBuf = new byte[(int)outLen + 1];
+            fixed (byte* pFn = fnUtf8)
+            fixed (byte* pArgs = argsJsonUtf8)
+            fixed (byte* pOut = outBuf)
+            {
+                status = _table->GealInvokeFunction(objectId, pFn, pArgs, pOut, (nuint)outBuf.Length, &outLen);
+            }
+        }
+
+        if (status != NmStatus.Ok)
+        {
+            return new GealInvocationResult(false, GealValue.Null, $"geal_invoke_function('{entryName}') failed with status {status}.");
+        }
+
+        if (outLen == 0)
+        {
+            return new GealInvocationResult(true, GealValue.Null);
+        }
+
+        int len = (int)Math.Min(outLen, (nuint)outBuf.Length);
+        string resultJson = Encoding.UTF8.GetString(outBuf, 0, len).TrimEnd('\0');
+        return new GealInvocationResult(true, DeserializeGealValueJson(resultJson));
+    }
 
     /// <inheritdoc/>
     public int PlayAudio(string pathOrEvent, bool isFmodEvent, float volume) =>
@@ -3103,6 +3324,685 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         _table->CameraSetZoomOverride(normalized);
     }
 
+    // ── Phase 4 (ABI 0.5.0): Rich Dynamic UI Controls ──────────────────────────────────────────
+
+    /// <inheritdoc/>
+    public nint CreateNativeUiControl(nint parentControl, UiControlKind kind, string? id = null)
+    {
+        if (parentControl == nint.Zero || _table->UiCreateControl is null)
+        {
+            return nint.Zero;
+        }
+
+        byte[]? idUtf8 = string.IsNullOrWhiteSpace(id) ? null : ToNullTerminatedUtf8(id.Trim());
+        void* outCtrl = null;
+        fixed (byte* pId = idUtf8)
+        {
+            if (_table->UiCreateControl((int)kind, (void*)parentControl, pId, &outCtrl) == NmStatus.Ok)
+            {
+                return (nint)outCtrl;
+            }
+        }
+
+        return nint.Zero;
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiPictureTexture(nint pictureControl, string texturePath, bool resizeToImage = false)
+    {
+        if (pictureControl == nint.Zero || string.IsNullOrWhiteSpace(texturePath) || _table->UiPictureSetTexture is null)
+        {
+            return;
+        }
+
+        byte[] utf8 = ToNullTerminatedUtf8(texturePath.Trim());
+        fixed (byte* pPath = utf8)
+        {
+            _table->UiPictureSetTexture((void*)pictureControl, pPath);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiScrollState(nint scrollableControl, out float offset, out float maxOffset)
+    {
+        offset = 0f;
+        maxOffset = 0f;
+        if (scrollableControl == nint.Zero || _table->UiScrollableGetScroll is null)
+        {
+            return false;
+        }
+
+        float off = 0f;
+        float max = 0f;
+        if (_table->UiScrollableGetScroll((void*)scrollableControl, &off, &max) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        offset = off;
+        maxOffset = max;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiScrollOffset(nint scrollableControl, float offset)
+    {
+        if (scrollableControl == nint.Zero || _table->UiScrollableSetScroll is null)
+        {
+            return;
+        }
+
+        _table->UiScrollableSetScroll((void*)scrollableControl, offset);
+    }
+
+    /// <inheritdoc/>
+    public nint AddNativeUiTab(nint tabContainerControl, string title, string? iconPath = null, bool hidden = false)
+    {
+        if (tabContainerControl == nint.Zero || string.IsNullOrWhiteSpace(title) || _table->UiTabContainerAddTab is null)
+        {
+            return nint.Zero;
+        }
+
+        byte[] utf8 = ToNullTerminatedUtf8(title);
+        void* outPage = null;
+        fixed (byte* pLabel = utf8)
+        {
+            if (_table->UiTabContainerAddTab((void*)tabContainerControl, pLabel, 0u, hidden ? 1 : 0, &outPage) == NmStatus.Ok)
+            {
+                return (nint)outPage;
+            }
+        }
+
+        return nint.Zero;
+    }
+
+    /// <inheritdoc/>
+    public void SelectNativeUiTab(nint tabContainerControl, int index)
+    {
+        if (tabContainerControl == nint.Zero || _table->UiTabContainerSelect is null)
+        {
+            return;
+        }
+
+        _table->UiTabContainerSelect((void*)tabContainerControl, index);
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiTabState(nint tabContainerControl, out int count, out int activeIndex)
+    {
+        count = 0;
+        activeIndex = -1;
+        if (tabContainerControl == nint.Zero || _table->UiTabContainerGetCount is null || _table->UiTabContainerGetActive is null)
+        {
+            return false;
+        }
+
+        uint c = 0;
+        int active = -1;
+        if (_table->UiTabContainerGetCount((void*)tabContainerControl, &c) != NmStatus.Ok ||
+            _table->UiTabContainerGetActive((void*)tabContainerControl, &active) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        count = checked((int)c);
+        activeIndex = active;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiTabChanged(nint tabContainerControl, Action<int> onChanged) =>
+        SubscribeNativeUiIntEvent(CallbackKind.UiTabChanged, tabContainerControl, _table->UiTabContainerSubscribeChanged, onChanged);
+
+    /// <inheritdoc/>
+    public int AddNativeUiComboBoxItem(nint comboBoxControl, string text, bool enabled = true, uint tag = 0)
+    {
+        if (comboBoxControl == nint.Zero || _table->UiComboBoxAddItem is null)
+        {
+            return -1;
+        }
+
+        byte[] utf8 = ToNullTerminatedUtf8(text ?? string.Empty);
+        uint outIdx = 0;
+        fixed (byte* pText = utf8)
+        {
+            if (_table->UiComboBoxAddItem((void*)comboBoxControl, pText, enabled ? 1 : 0, tag, &outIdx) == NmStatus.Ok)
+            {
+                return checked((int)outIdx);
+            }
+        }
+
+        return -1;
+    }
+
+    /// <inheritdoc/>
+    public void ClearNativeUiComboBoxItems(nint comboBoxControl)
+    {
+        if (comboBoxControl != nint.Zero && _table->UiComboBoxClear is not null)
+        {
+            _table->UiComboBoxClear((void*)comboBoxControl);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SetNativeUiComboBoxSelectedIndex(nint comboBoxControl, int index) =>
+        comboBoxControl != nint.Zero && _table->UiComboBoxSetSelected is not null &&
+        _table->UiComboBoxSetSelected((void*)comboBoxControl, index) == NmStatus.Ok;
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiComboBoxState(nint comboBoxControl, out int count, out int selectedIndex, out string? selectedText)
+    {
+        count = 0;
+        selectedIndex = -1;
+        selectedText = null;
+        if (comboBoxControl == nint.Zero || _table->UiComboBoxGetCount is null || _table->UiComboBoxGetSelected is null)
+        {
+            return false;
+        }
+
+        uint c = 0;
+        int sel = -1;
+        if (_table->UiComboBoxGetCount((void*)comboBoxControl, &c) != NmStatus.Ok ||
+            _table->UiComboBoxGetSelected((void*)comboBoxControl, &sel) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        count = checked((int)c);
+        selectedIndex = sel;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiComboBoxSelectionChanged(nint comboBoxControl, Action<int> onChanged) =>
+        SubscribeNativeUiIntEvent(CallbackKind.UiComboBoxChanged, comboBoxControl, _table->UiComboBoxSubscribeChanged, onChanged);
+
+    /// <inheritdoc/>
+    public bool InsertNativeUiListBoxItem(nint listBoxControl, int index, nint childControl, ulong userData = 0)
+    {
+        if (listBoxControl == nint.Zero || childControl == nint.Zero || index < 0 || _table->UiListBoxInsertItem is null)
+        {
+            return false;
+        }
+
+        return _table->UiListBoxInsertItem((void*)listBoxControl, (uint)index, (void*)childControl, userData) == NmStatus.Ok;
+    }
+
+    /// <inheritdoc/>
+    public void ClearNativeUiListBoxItems(nint listBoxControl)
+    {
+        if (listBoxControl != nint.Zero && _table->UiListBoxClear is not null)
+        {
+            _table->UiListBoxClear((void*)listBoxControl);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SetNativeUiListBoxSelectedIndex(nint listBoxControl, int index) =>
+        listBoxControl != nint.Zero && _table->UiListBoxSetSelected is not null &&
+        _table->UiListBoxSetSelected((void*)listBoxControl, index) == NmStatus.Ok;
+
+    /// <inheritdoc/>
+    public void ClearNativeUiListBoxSelection(nint listBoxControl)
+    {
+        if (listBoxControl != nint.Zero && _table->UiListBoxSetSelected is not null)
+        {
+            _table->UiListBoxSetSelected((void*)listBoxControl, -1);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiListBoxState(nint listBoxControl, out int count, out int selectedIndex)
+    {
+        count = 0;
+        selectedIndex = -1;
+        if (listBoxControl == nint.Zero || _table->UiListBoxGetCount is null || _table->UiListBoxGetSelected is null)
+        {
+            return false;
+        }
+
+        uint c = 0;
+        int sel = -1;
+        if (_table->UiListBoxGetCount((void*)listBoxControl, &c) != NmStatus.Ok ||
+            _table->UiListBoxGetSelected((void*)listBoxControl, &sel) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        count = checked((int)c);
+        selectedIndex = sel;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiListBoxSelectionChanged(nint listBoxControl, Action<int> onChanged) =>
+        SubscribeNativeUiIntEvent(CallbackKind.UiListBoxChanged, listBoxControl, _table->UiListBoxSubscribeChanged, onChanged);
+
+    private IDisposable SubscribeNativeUiIntEvent(
+        CallbackKind kind,
+        nint control,
+        delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, int, void*, void>, void*, ulong*, NmStatus> subscribeFn,
+        Action<int> onChanged)
+    {
+        ArgumentNullException.ThrowIfNull(onChanged);
+        if (control == nint.Zero || subscribeFn is null)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        GCHandle handle = GCHandle.Alloc(new UiIntEventWrapper(this, onChanged));
+        ulong token = 0;
+        NmStatus status = subscribeFn((void*)control, &OnNativeUiIntEvent, (void*)GCHandle.ToIntPtr(handle), &token);
+        if (status != NmStatus.Ok)
+        {
+            handle.Free();
+            return NoopDisposable.Instance;
+        }
+
+        var key = (kind, token);
+        _pinnedCallbacks[key] = handle;
+        ulong capturedToken = token;
+        return new ActionDisposable(() =>
+        {
+            if (_table->UiUnsubscribe is not null)
+            {
+                _table->UiUnsubscribe(capturedToken);
+            }
+
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
+            {
+                h.Free();
+            }
+        });
+    }
+
+    // ── Phase 4 (ABI 0.5.0): Stock Item Tooltip Augmentation ───────────────────────────────────
+
+    /// <inheritdoc/>
+    public IDisposable RegisterItemTooltipBuildCallback(Func<ItemTooltipContext, IReadOnlyList<TooltipSection>> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_phase1Gate)
+        {
+            _tooltipAugmentCallbacks.Add(callback);
+            if (!_tooltipNativeHooked && _table->TooltipSetItemAugmentCallback is not null)
+            {
+                void* ud = EnsureSelfCallbackUserDataLocked();
+                if (_table->TooltipSetItemAugmentCallback(&OnNativeTooltipAugment, ud) == NmStatus.Ok)
+                {
+                    _tooltipNativeHooked = true;
+                }
+            }
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _tooltipAugmentCallbacks.Remove(callback);
+                if (_tooltipAugmentCallbacks.Count == 0 && _tooltipNativeHooked && _table->TooltipSetItemAugmentCallback is not null)
+                {
+                    _table->TooltipSetItemAugmentCallback(null, null);
+                    _tooltipNativeHooked = false;
+                }
+            }
+        });
+    }
+
+    // ── Phase 4 (ABI 0.5.0): Stash Affinity Routing & Bitset ───────────────────────────────────
+
+    /// <inheritdoc/>
+    public IDisposable RegisterStashAffinityRouteCallback(Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_phase1Gate)
+        {
+            _affinityRouteCallbacks.Add(callback);
+            EnsureAffinityCallbackHookedLocked();
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _affinityRouteCallbacks.Remove(callback);
+                ReleaseAffinityCallbackIfUnusedLocked();
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterStashAffinityBitsetCallback(Func<StashAffinityItemContext, uint> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_phase1Gate)
+        {
+            _affinityBitsetCallbacks.Add(callback);
+            EnsureAffinityCallbackHookedLocked();
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _affinityBitsetCallbacks.Remove(callback);
+                ReleaseAffinityCallbackIfUnusedLocked();
+            }
+        });
+    }
+
+    private void EnsureAffinityCallbackHookedLocked()
+    {
+        if (!_affinityNativeHooked && _table->AffinitySetRouterCallback is not null)
+        {
+            void* ud = EnsureSelfCallbackUserDataLocked();
+            if (_table->AffinitySetRouterCallback(&OnNativeAffinityRoute, ud) == NmStatus.Ok)
+            {
+                _affinityNativeHooked = true;
+            }
+        }
+    }
+
+    private void ReleaseAffinityCallbackIfUnusedLocked()
+    {
+        if (_affinityRouteCallbacks.Count == 0 && _affinityBitsetCallbacks.Count == 0 &&
+            _affinityNativeHooked && _table->AffinitySetRouterCallback is not null)
+        {
+            _table->AffinitySetRouterCallback(null, null);
+            _affinityNativeHooked = false;
+        }
+    }
+
+    // ── Phase 4 (ABI 0.5.0): Live Native Extend Registries ─────────────────────────────────────
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNativeGealBuiltin(string name, bool hasReturnValue, Func<uint, GealArguments, GealValue> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (_table->GealRegisterBuiltin is null)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        GCHandle gcHandle = GCHandle.Alloc(new GealBuiltinWrapper(this, hasReturnValue, handler));
+        byte[] nameUtf8 = ToNullTerminatedUtf8(name.Trim());
+        ulong nativeHandle = 0;
+        NmStatus status;
+        fixed (byte* pName = nameUtf8)
+        {
+            status = _table->GealRegisterBuiltin(
+                pName,
+                0u,
+                8u,
+                hasReturnValue ? 1 : 0,
+                &OnNativeGealBuiltin,
+                (void*)GCHandle.ToIntPtr(gcHandle),
+                &nativeHandle);
+        }
+
+        if (status != NmStatus.Ok)
+        {
+            gcHandle.Free();
+            EnsureOk(status, $"GealRegisterBuiltin({name})");
+        }
+
+        var key = (CallbackKind.GealBuiltin, nativeHandle);
+        _pinnedCallbacks[key] = gcHandle;
+        ulong capturedHandle = nativeHandle;
+        return new ActionDisposable(() =>
+        {
+            if (_table->GealUnregisterBuiltin is not null)
+            {
+                _table->GealUnregisterBuiltin(capturedHandle);
+            }
+
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
+            {
+                h.Free();
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public bool DrivesNativeRulesetLifecycle => _table->RulesetRegisterNative is not null;
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNativeRuleset(
+        byte rulesetId,
+        Action<AreaEventArgs> onAreaEntered,
+        Action<ReadOnlyMemory<byte>> onRulesetUpdate,
+        Action<float> onFrame,
+        Action onAreaLeft)
+    {
+        ArgumentNullException.ThrowIfNull(onAreaEntered);
+        ArgumentNullException.ThrowIfNull(onRulesetUpdate);
+        ArgumentNullException.ThrowIfNull(onFrame);
+        ArgumentNullException.ThrowIfNull(onAreaLeft);
+
+        if (_table->RulesetRegisterNative is null)
+        {
+            return RegisterRulesetReceiver(rulesetId, onRulesetUpdate);
+        }
+
+        GCHandle gcHandle = GCHandle.Alloc(new NativeRulesetWrapper(this, onAreaEntered, onRulesetUpdate, onFrame, onAreaLeft));
+        NmNativeRulesetCallbacks cbs = default;
+        cbs.StructSize = (uint)sizeof(NmNativeRulesetCallbacks);
+        cbs.OnAreaEntered = &OnNativeRulesetAreaEntered;
+        cbs.OnFrame = &OnNativeRulesetFrame;
+        cbs.OnRulesetUpdate = &OnNativeRulesetUpdate;
+        cbs.OnAreaLeft = &OnNativeRulesetAreaLeft;
+
+        ulong nativeHandle = 0;
+        NmStatus status = _table->RulesetRegisterNative(rulesetId, &cbs, (void*)GCHandle.ToIntPtr(gcHandle), &nativeHandle);
+        if (status != NmStatus.Ok)
+        {
+            gcHandle.Free();
+            EnsureOk(status, $"RulesetRegisterNative(0x{rulesetId:X2})");
+        }
+
+        var key = (CallbackKind.NativeRuleset, nativeHandle);
+        _pinnedCallbacks[key] = gcHandle;
+        ulong capturedHandle = nativeHandle;
+        return new ActionDisposable(() =>
+        {
+            if (_table->RulesetUnregisterNative is not null)
+            {
+                _table->RulesetUnregisterNative(capturedHandle);
+            }
+
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
+            {
+                h.Free();
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNativeCustomUiControlKind(
+        string controlTypeName,
+        Action<nint> onCreated,
+        Action<nint, string, string> onPropertyChanged,
+        Action<nint> onDestroyed)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlTypeName);
+        ArgumentNullException.ThrowIfNull(onCreated);
+        ArgumentNullException.ThrowIfNull(onPropertyChanged);
+        ArgumentNullException.ThrowIfNull(onDestroyed);
+
+        if (_table->UiRegisterCustomControlKind is null)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        GCHandle gcHandle = GCHandle.Alloc(new CustomUiControlWrapper(this, onCreated, onPropertyChanged, onDestroyed));
+        NmCustomUiControlCallbacks cbs = default;
+        cbs.StructSize = (uint)sizeof(NmCustomUiControlCallbacks);
+        cbs.OnCreated = &OnNativeCustomUiCreated;
+        cbs.OnProperty = &OnNativeCustomUiProperty;
+        cbs.OnDestroyed = &OnNativeCustomUiDestroyed;
+
+        byte[] kindUtf8 = ToNullTerminatedUtf8(controlTypeName.Trim());
+        ulong nativeHandle = 0;
+        NmStatus status;
+        fixed (byte* pKind = kindUtf8)
+        {
+            status = _table->UiRegisterCustomControlKind(pKind, &cbs, (void*)GCHandle.ToIntPtr(gcHandle), &nativeHandle);
+        }
+
+        if (status != NmStatus.Ok)
+        {
+            gcHandle.Free();
+            EnsureOk(status, $"UiRegisterCustomControlKind({controlTypeName})");
+        }
+
+        var key = (CallbackKind.CustomUiControl, nativeHandle);
+        _pinnedCallbacks[key] = gcHandle;
+        ulong capturedHandle = nativeHandle;
+        return new ActionDisposable(() =>
+        {
+            if (_table->UiUnregisterCustomControlKind is not null)
+            {
+                _table->UiUnregisterCustomControlKind(capturedHandle);
+            }
+
+            if (_pinnedCallbacks.TryRemove(key, out GCHandle h) && h.IsAllocated)
+            {
+                h.Free();
+            }
+        });
+    }
+
+    private static HoveredItemInfo MapItemSnapshotToHoveredItem(in NmItemSnapshot item) =>
+        new(
+            EntityHandle: (nint)item.ItemEntity,
+            ControlHandle: (nint)item.ItemView,
+            ItemId: item.ItemId,
+            InventoryId: item.InventoryId,
+            GridX: item.GridX,
+            GridY: item.GridY,
+            Width: item.GridW,
+            Height: item.GridH,
+            MetadataPath: item.GetMetadataPath(),
+            BaseName: item.GetBaseName(),
+            StackSize: item.StackSize > 0 ? item.StackSize : 1u,
+            MaxStackSize: item.MaxStackSize > 0 ? item.MaxStackSize : 1u,
+            Rarity: MapItemRarity(item.Rarity),
+            IsIdentified: item.Identified != 0,
+            IsCorrupted: item.Corrupted != 0,
+            ItemLevel: item.ItemLevel,
+            ItemClassId: item.ItemClassId);
+
+    private static string SerializeGealArgumentsJson(ReadOnlySpan<GealValue> args)
+    {
+        using var ms = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(ms))
+        {
+            writer.WriteStartArray();
+            foreach (GealValue val in args)
+            {
+                WriteGealValueJson(writer, val);
+            }
+
+            writer.WriteEndArray();
+        }
+
+        return Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static string SerializeGealValueJson(GealValue val)
+    {
+        using var ms = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(ms))
+        {
+            WriteGealValueJson(writer, val);
+        }
+
+        return Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static void WriteGealValueJson(Utf8JsonWriter writer, GealValue val)
+    {
+        switch (val.Kind)
+        {
+            case GealValueKind.Integer:
+                writer.WriteNumberValue(val.IntValue);
+                break;
+            case GealValueKind.Float:
+                writer.WriteNumberValue(val.FloatValue);
+                break;
+            case GealValueKind.Bool:
+                writer.WriteBooleanValue(val.BoolValue);
+                break;
+            case GealValueKind.String:
+                writer.WriteStringValue(val.StringValue ?? string.Empty);
+                break;
+            case GealValueKind.ObjectId:
+                writer.WriteNumberValue(val.ObjectIdValue);
+                break;
+            default:
+                writer.WriteNullValue();
+                break;
+        }
+    }
+
+    private static GealValue[] DeserializeGealArgumentsJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return [];
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return [ParseJsonElementToGealValue(doc.RootElement)];
+            }
+
+            var list = new List<GealValue>(doc.RootElement.GetArrayLength());
+            foreach (JsonElement elem in doc.RootElement.EnumerateArray())
+            {
+                list.Add(ParseJsonElementToGealValue(elem));
+            }
+
+            return [.. list];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static GealValue DeserializeGealValueJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return GealValue.Null;
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            return ParseJsonElementToGealValue(doc.RootElement);
+        }
+        catch
+        {
+            return GealValue.FromString(json);
+        }
+    }
+
+    private static GealValue ParseJsonElementToGealValue(JsonElement elem) => elem.ValueKind switch
+    {
+        JsonValueKind.Number when elem.TryGetInt64(out long l) => GealValue.FromInt(l),
+        JsonValueKind.Number => GealValue.FromFloat(elem.GetSingle()),
+        JsonValueKind.True => GealValue.FromBool(true),
+        JsonValueKind.False => GealValue.FromBool(false),
+        JsonValueKind.String => GealValue.FromString(elem.GetString() ?? string.Empty),
+        _ => GealValue.Null,
+    };
+
     private static NmWorldEntityQuery BuildNativeWorldQuery(WorldEntityQuery query)
     {
         NmWorldEntityQuery q = default;
@@ -3286,6 +4186,18 @@ public sealed unsafe class NativeShimBridge : INativeBridge
                 _filterNativeHooked = false;
             }
 
+            if (_tooltipNativeHooked && _table->TooltipSetItemAugmentCallback is not null)
+            {
+                _table->TooltipSetItemAugmentCallback(null, null);
+                _tooltipNativeHooked = false;
+            }
+
+            if (_affinityNativeHooked && _table->AffinitySetRouterCallback is not null)
+            {
+                _table->AffinitySetRouterCallback(null, null);
+                _affinityNativeHooked = false;
+            }
+
             _leagueFillCallbacks.Clear();
             _keyCallbacks.Clear();
             _mouseCallbacks.Clear();
@@ -3293,6 +4205,9 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             _charCreatedCallbacks.Clear();
             _areaLifecycleCallbacks.Clear();
             _filterReloadCallbacks.Clear();
+            _tooltipAugmentCallbacks.Clear();
+            _affinityRouteCallbacks.Clear();
+            _affinityBitsetCallbacks.Clear();
 
             if (_selfCallbackHandle.IsAllocated)
             {
@@ -4052,6 +4967,408 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         {
             // Never let managed exceptions unwind across ItemFilterManager::NotifyLoaded.
         }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeUiIntEvent(void* control, int value, void* userData)
+    {
+        try
+        {
+            if (userData is null)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is UiIntEventWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                wrapper.Callback(value);
+            }
+        }
+        catch
+        {
+            // Exception wall across native UI rich control events.
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeTooltipAugment(void* popupControl, NmItemSnapshot* item, int altHeld, void* userData)
+    {
+        try
+        {
+            if (userData is null || item is null || item->Present == 0)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return;
+            }
+
+            Func<ItemTooltipContext, IReadOnlyList<TooltipSection>>[] callbacks;
+            lock (bridge._phase1Gate)
+            {
+                callbacks = [.. bridge._tooltipAugmentCallbacks];
+            }
+
+            if (callbacks.Length == 0 || bridge._table->TooltipAddItemSection is null)
+            {
+                return;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            HoveredItemInfo hovered = MapItemSnapshotToHoveredItem(in *item);
+            var ctx = new ItemTooltipContext(hovered, altHeld != 0, (nint)popupControl);
+
+            foreach (Func<ItemTooltipContext, IReadOnlyList<TooltipSection>> cb in callbacks)
+            {
+                IReadOnlyList<TooltipSection>? sections;
+                try
+                {
+                    sections = cb(ctx);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (sections is null)
+                {
+                    continue;
+                }
+
+                foreach (TooltipSection section in sections)
+                {
+                    if (section?.Lines is null || section.Lines.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < section.Lines.Count; i++)
+                    {
+                        TooltipLine line = section.Lines[i];
+                        if (string.IsNullOrEmpty(line.Text))
+                        {
+                            continue;
+                        }
+
+                        byte[] lineUtf8 = ToNullTerminatedUtf8(line.Text);
+                        int addSep = (i == 0 && section.PrependSeparator) ? 1 : 0;
+                        fixed (byte* pLine = lineUtf8)
+                        {
+                            bridge._table->TooltipAddItemSection(popupControl, pLine, line.RgbaColor, addSep);
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Never let managed exceptions unwind across ItemPopup::BuildSections.
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static int OnNativeAffinityRoute(NmItemSnapshot* item, int stashKind, NmAffinityRouteResult* outResult, void* userData)
+    {
+        try
+        {
+            if (userData is null || item is null || item->Present == 0 || outResult is null)
+            {
+                return 0;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return 0;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            HoveredItemInfo hovered = MapItemSnapshotToHoveredItem(in *item);
+            StashKind kind = stashKind == 1 ? StashKind.Guild : StashKind.Personal;
+            var ctx = new StashAffinityItemContext(hovered, kind);
+
+            if (stashKind < 0)
+            {
+                Func<StashAffinityItemContext, uint>[] bitsetCallbacks;
+                lock (bridge._phase1Gate)
+                {
+                    bitsetCallbacks = [.. bridge._affinityBitsetCallbacks];
+                }
+
+                uint mask = 0u;
+                foreach (Func<StashAffinityItemContext, uint> cb in bitsetCallbacks)
+                {
+                    try { mask |= cb(ctx); }
+                    catch { }
+                }
+
+                if (mask == 0u)
+                {
+                    return 0;
+                }
+
+                outResult->StructSize = (uint)sizeof(NmAffinityRouteResult);
+                outResult->Action = (int)NmAffinityRouteAction.Stock;
+                outResult->TargetCount = 0;
+                outResult->StockAffinityBitmask = mask & 0x003FFFFFu;
+                return 1;
+            }
+
+            Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>>[] routeCallbacks;
+            lock (bridge._phase1Gate)
+            {
+                routeCallbacks = [.. bridge._affinityRouteCallbacks];
+            }
+
+            if (routeCallbacks.Length == 0)
+            {
+                return 0;
+            }
+
+            var routes = new List<StashAffinityRoute>();
+            bool replaceStock = false;
+            foreach (Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>> cb in routeCallbacks)
+            {
+                try
+                {
+                    IReadOnlyList<StashAffinityRoute>? matched = cb(ctx);
+                    if (matched is not null)
+                    {
+                        foreach (StashAffinityRoute r in matched)
+                        {
+                            if (r is not null)
+                            {
+                                routes.Add(r);
+                                if (r.ReplaceStockTargets)
+                                {
+                                    replaceStock = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (routes.Count == 0)
+            {
+                return 0;
+            }
+
+            int count = Math.Min(routes.Count, NativeShimConstants.AffinityMaxTargets);
+            outResult->StructSize = (uint)sizeof(NmAffinityRouteResult);
+            outResult->Action = (int)(replaceStock ? NmAffinityRouteAction.Override : NmAffinityRouteAction.Append);
+            outResult->TargetCount = (uint)count;
+            outResult->StockAffinityBitmask = 0u;
+            for (int i = 0; i < count; i++)
+            {
+                outResult->SetTarget(i, new NmAffinityTarget
+                {
+                    TabIndex = routes[i].TabIndex,
+                    AffinityId = routes[i].AffinityId,
+                    Reserved = 0,
+                });
+            }
+
+            return 1;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static NmStatus OnNativeGealBuiltin(
+        uint entityId,
+        byte* argsJsonUtf8,
+        byte* outResultUtf8,
+        nuint outCapacity,
+        nuint* outLen,
+        void* userData)
+    {
+        try
+        {
+            if (userData is null)
+            {
+                return NmStatus.ErrInvalidArg;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not GealBuiltinWrapper wrapper || Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                return NmStatus.ErrNotFound;
+            }
+
+            using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            string? argsJson = argsJsonUtf8 is not null ? Marshal.PtrToStringUTF8((nint)argsJsonUtf8) : null;
+            GealValue[] parsedArgs = DeserializeGealArgumentsJson(argsJson);
+            GealValue result = wrapper.Handler(entityId, new GealArguments(parsedArgs));
+
+            if (!wrapper.HasReturn)
+            {
+                if (outLen is not null)
+                {
+                    *outLen = 0;
+                }
+
+                return NmStatus.Ok;
+            }
+
+            byte[] encoded = Encoding.UTF8.GetBytes(SerializeGealValueJson(result));
+            if (outLen is not null)
+            {
+                *outLen = (nuint)encoded.Length;
+            }
+
+            if (outResultUtf8 is null || outCapacity < (nuint)(encoded.Length + 1))
+            {
+                return NmStatus.ErrBufferTooSmall;
+            }
+
+            if (encoded.Length > 0)
+            {
+                encoded.CopyTo(new Span<byte>(outResultUtf8, encoded.Length));
+            }
+
+            outResultUtf8[encoded.Length] = 0;
+            return NmStatus.Ok;
+        }
+        catch
+        {
+            return NmStatus.ErrGameException;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeRulesetAreaEntered(uint rulesetId, uint localPlayerEntityId, void* userData)
+    {
+        try
+        {
+            if (userData is null) return;
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is NativeRulesetWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                AreaInfo? area = wrapper.Bridge.GetAreaInfo();
+                string areaId = area?.AreaId ?? string.Empty;
+                uint seed = area?.AreaSeed ?? 0u;
+                byte[] active = area is not null
+                    ? [.. area.ActiveRulesetIds.Where(id => id <= byte.MaxValue).Select(id => (byte)id)]
+                    : [(byte)rulesetId];
+                wrapper.OnAreaEntered(new AreaEventArgs(areaId, seed, active) { Area = area });
+            }
+        }
+        catch { }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeRulesetFrame(uint rulesetId, float deltaSeconds, void* userData)
+    {
+        try
+        {
+            if (userData is null) return;
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is NativeRulesetWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                wrapper.OnFrame(deltaSeconds);
+            }
+        }
+        catch { }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeRulesetUpdate(uint rulesetId, byte* payload, uint length, void* userData)
+    {
+        try
+        {
+            if (userData is null) return;
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is NativeRulesetWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                byte[] copy = new byte[length];
+                if (length > 0 && payload is not null)
+                {
+                    Marshal.Copy((nint)payload, copy, 0, (int)length);
+                }
+
+                wrapper.OnRulesetUpdate(copy);
+            }
+        }
+        catch { }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeRulesetAreaLeft(uint rulesetId, void* userData)
+    {
+        try
+        {
+            if (userData is null) return;
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is NativeRulesetWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                wrapper.OnAreaLeft();
+            }
+        }
+        catch { }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeCustomUiCreated(byte* kindNameUtf8, void* control, void* userData)
+    {
+        try
+        {
+            if (userData is null || control is null) return;
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is CustomUiControlWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                wrapper.OnCreated((nint)control);
+            }
+        }
+        catch { }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeCustomUiProperty(void* control, byte* keyUtf8, byte* valueUtf8, void* userData)
+    {
+        try
+        {
+            if (userData is null || control is null) return;
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is CustomUiControlWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                string key = keyUtf8 is not null ? Marshal.PtrToStringUTF8((nint)keyUtf8) ?? string.Empty : string.Empty;
+                string value = valueUtf8 is not null ? Marshal.PtrToStringUTF8((nint)valueUtf8) ?? string.Empty : string.Empty;
+                wrapper.OnPropertyChanged((nint)control, key, value);
+            }
+        }
+        catch { }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeCustomUiDestroyed(void* control, void* userData)
+    {
+        try
+        {
+            if (userData is null || control is null) return;
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is CustomUiControlWrapper wrapper && !Volatile.Read(ref wrapper.Bridge._disposed))
+            {
+                using var _ = wrapper.Bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+                wrapper.OnDestroyed((nint)control);
+            }
+        }
+        catch { }
     }
 
     internal static string NormalizeAndValidateVirtualPath(string virtualPath)

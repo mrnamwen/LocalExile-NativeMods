@@ -1243,8 +1243,12 @@ internal sealed class ScopedGameServices : IGameServices
         var camera = new TrackedCameraService(runtime.Camera, mod.Manifest.Id);
         track(camera);
         Camera = camera;
-        GealBuiltins = new TrackedGealBuiltinRegistry(runtime.GealBuiltins, track);
-        UiControls = new TrackedUiControlRegistry(runtime.UiControls, track);
+        var tooltips = new TrackedTooltipService(runtime.Tooltips, loader, mod.Manifest.Id, track);
+        track(tooltips);
+        Tooltips = tooltips;
+        StashAffinity = new TrackedStashAffinityService(runtime.StashAffinity, loader, mod.Manifest.Id, track);
+        GealBuiltins = new TrackedGealBuiltinRegistry(runtime.GealBuiltins, loader, mod.Manifest.Id, track);
+        UiControls = new TrackedUiControlRegistry(runtime.UiControls, loader, mod.Manifest.Id, track);
         Rulesets = new TrackedRulesetRegistry(runtime.Rulesets, loader, mod.Manifest.Id, track);
         Opcodes = new TrackedOpcodeRegistry(runtime.Opcodes, loader, mod.Manifest.Id, track);
         Content = new TrackedContentRegistry(runtime.Content, track);
@@ -1266,6 +1270,8 @@ internal sealed class ScopedGameServices : IGameServices
     public IPreGameService PreGame { get; }
     public IItemFilterService ItemFilter { get; }
     public ICameraService Camera { get; }
+    public ITooltipService Tooltips { get; }
+    public IStashAffinityService StashAffinity { get; }
     public IGealBuiltinRegistry GealBuiltins { get; }
     public IUiControlRegistry UiControls { get; }
     public IRulesetRegistry Rulesets { get; }
@@ -1302,6 +1308,76 @@ internal sealed class ScopedGameServices : IGameServices
         public void ReloadWindow(string windowId) => inner.ReloadWindow(windowId);
         public IDisposable RegisterControl<TControl>(string controlTypeName) where TControl : class, ICustomUiControl, new() { IDisposable d = inner.RegisterControl<TControl>(controlTypeName); track(d); return d; }
         public IDisposable RegisterControl(string controlTypeName, Func<ICustomUiControl> factory) { IDisposable d = inner.RegisterControl(controlTypeName, factory); track(d); return d; }
+
+        public IUiControl CreateControl(IUiControl parent, UiControlKind kind, string? id = null)
+        {
+            IUiControl ctrl = inner.CreateControl(parent, kind, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public IUiControl CreateFrame(IUiControl parent, string? id = null)
+        {
+            IUiControl ctrl = inner.CreateFrame(parent, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public ILabel CreateLabel(IUiControl parent, string text = "", string? id = null)
+        {
+            ILabel ctrl = inner.CreateLabel(parent, text, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public IButton CreateButton(IUiControl parent, string text = "", string? id = null)
+        {
+            IButton ctrl = inner.CreateButton(parent, text, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public IPicture CreatePicture(IUiControl parent, string? texturePath = null, string? id = null)
+        {
+            IPicture ctrl = inner.CreatePicture(parent, texturePath, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public IScrollableFrame CreateScrollableFrame(IUiControl parent, string? id = null)
+        {
+            IScrollableFrame ctrl = inner.CreateScrollableFrame(parent, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public ITabContainer CreateTabContainer(IUiControl parent, string? id = null)
+        {
+            ITabContainer ctrl = inner.CreateTabContainer(parent, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public IComboBox CreateComboBox(IUiControl parent, string? id = null)
+        {
+            IComboBox ctrl = inner.CreateComboBox(parent, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public IListBox CreateListBox(IUiControl parent, string? id = null)
+        {
+            IListBox ctrl = inner.CreateListBox(parent, id);
+            track(new ActionDisposable(ctrl.Destroy));
+            return ctrl;
+        }
+
+        public IUiItemGrid CreateItemGrid(IUiControl parent, UiItemGridOptions options, string? id = null)
+        {
+            IUiItemGrid grid = inner.CreateItemGrid(parent, options, id);
+            track(grid);
+            return grid;
+        }
     }
 
     private sealed class TrackedFileOverlayService(FileOverlayService inner, string modId, Action<IDisposable> track) : IFileOverlayService, IStockFileProvider
@@ -1703,20 +1779,68 @@ internal sealed class ScopedGameServices : IGameServices
         public IReadOnlyDictionary<int, int> GetLocalPlayerStats() => inner.GetLocalPlayerStats();
     }
 
-    private sealed class TrackedGealBuiltinRegistry(IGealBuiltinRegistry inner, Action<IDisposable> track) : IGealBuiltinRegistry
+    private sealed class FaultIsolatedCustomUiControlProxy(ICustomUiControl inner, ClientModLoader loader, string modId) : ICustomUiControl
+    {
+        public string ControlTypeName => inner.ControlTypeName;
+
+        public void OnInitialize(IUiControl hostControl) =>
+            loader.ExecuteFaultIsolated(modId, () => inner.OnInitialize(hostControl));
+
+        public void OnPropertyChanged(string propertyName, string value) =>
+            loader.ExecuteFaultIsolated(modId, () => inner.OnPropertyChanged(propertyName, value));
+
+        public void OnFrame(float deltaSeconds) =>
+            loader.ExecuteFaultIsolated(modId, () => inner.OnFrame(deltaSeconds));
+
+        public void OnDestroy() =>
+            loader.ExecuteFaultIsolated(modId, inner.OnDestroy);
+    }
+
+    private sealed class TrackedGealBuiltinRegistry(IGealBuiltinRegistry inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IGealBuiltinRegistry
     {
         public IReadOnlyCollection<string> RegisteredNames => inner.RegisteredNames;
-        public IDisposable Register(string name, Func<uint, GealArguments, GealValue> handler) { IDisposable d = inner.Register(name, handler); track(d); return d; }
-        public IDisposable Register(string name, Action<uint, GealArguments> handler) { IDisposable d = inner.Register(name, handler); track(d); return d; }
+
+        public IDisposable Register(string name, Func<uint, GealArguments, GealValue> handler)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            IDisposable d = inner.Register(name, (objId, args) =>
+            {
+                GealValue result = GealValue.Null;
+                loader.ExecuteFaultIsolated(modId, () => result = handler(objId, args));
+                return result;
+            });
+            track(d);
+            return d;
+        }
+
+        public IDisposable Register(string name, Action<uint, GealArguments> handler)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            IDisposable d = inner.Register(name, (objId, args) =>
+                loader.ExecuteFaultIsolated(modId, () => handler(objId, args)));
+            track(d);
+            return d;
+        }
+
         public bool IsRegistered(string name) => inner.IsRegistered(name);
         public GealInvocationResult Invoke(string name, uint objectId, params GealValue[] arguments) => inner.Invoke(name, objectId, arguments);
     }
 
-    private sealed class TrackedUiControlRegistry(IUiControlRegistry inner, Action<IDisposable> track) : IUiControlRegistry
+    private sealed class TrackedUiControlRegistry(IUiControlRegistry inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IUiControlRegistry
     {
         public IReadOnlyCollection<string> RegisteredControlTypes => inner.RegisteredControlTypes;
-        public IDisposable Register<TControl>(string controlTypeName) where TControl : class, ICustomUiControl, new() { IDisposable d = inner.Register<TControl>(controlTypeName); track(d); return d; }
-        public IDisposable Register(string controlTypeName, Func<ICustomUiControl> factory) { IDisposable d = inner.Register(controlTypeName, factory); track(d); return d; }
+
+        public IDisposable Register<TControl>(string controlTypeName) where TControl : class, ICustomUiControl, new() =>
+            Register(controlTypeName, static () => new TControl());
+
+        public IDisposable Register(string controlTypeName, Func<ICustomUiControl> factory)
+        {
+            ArgumentNullException.ThrowIfNull(factory);
+            IDisposable d = inner.Register(controlTypeName, () => new FaultIsolatedCustomUiControlProxy(factory(), loader, modId));
+            track(d);
+            return d;
+        }
+
         public bool IsRegistered(string controlTypeName) => inner.IsRegistered(controlTypeName);
         public ICustomUiControl? CreateInstance(string controlTypeName) => inner.CreateInstance(controlTypeName);
     }
@@ -1735,6 +1859,20 @@ internal sealed class ScopedGameServices : IGameServices
         {
             ArgumentNullException.ThrowIfNull(factory);
             IDisposable d = inner.Register(rulesetId, () => new FaultIsolatedRulesetProxy(factory(), loader, modId));
+            track(d);
+            return d;
+        }
+
+        public IDisposable RegisterNative<TRuleset>() where TRuleset : class, IClientRuleset, new()
+        {
+            var probe = new TRuleset();
+            return RegisterNative(probe.RulesetId, static () => new TRuleset());
+        }
+
+        public IDisposable RegisterNative(byte rulesetId, Func<IClientRuleset> factory)
+        {
+            ArgumentNullException.ThrowIfNull(factory);
+            IDisposable d = inner.RegisterNative(rulesetId, () => new FaultIsolatedRulesetProxy(factory(), loader, modId));
             track(d);
             return d;
         }
@@ -2417,5 +2555,95 @@ internal sealed class ScopedGameServices : IGameServices
 
             inner.ClearZoomOverrideForOwner(modId);
         }
+    }
+
+    private sealed class TrackedTooltipService(TooltipService inner, ClientModLoader loader, string modId, Action<IDisposable> track) : ITooltipService, IDisposable
+    {
+        private bool _disposed;
+
+        public bool IsCustomTooltipVisible => inner.IsCustomTooltipVisible;
+        public TooltipContent? ActiveCustomTooltip => inner.ActiveCustomTooltip;
+        public (float X, float Y) CustomTooltipPosition => inner.CustomTooltipPosition;
+
+        public IDisposable RegisterItemTooltipAugmenter(Func<ItemTooltipContext, IReadOnlyList<TooltipSection>> augmenter, int priority = 0)
+        {
+            ArgumentNullException.ThrowIfNull(augmenter);
+            IDisposable sub = inner.RegisterItemTooltipAugmenter(ctx =>
+            {
+                IReadOnlyList<TooltipSection> sections = [];
+                loader.ExecuteFaultIsolated(modId, () => sections = augmenter(ctx) ?? []);
+                return sections;
+            }, priority);
+            track(sub);
+            return sub;
+        }
+
+        public void ShowTooltip(TooltipContent content, float screenX, float screenY)
+        {
+            if (Volatile.Read(ref _disposed))
+            {
+                return;
+            }
+
+            inner.ShowTooltipForMod(modId, content, screenX, screenY);
+        }
+
+        public void HideTooltip() => inner.HideTooltipForMod(modId);
+
+        public IDisposable AttachTooltip(IUiControl control, Func<TooltipContent?> contentProvider)
+        {
+            ArgumentNullException.ThrowIfNull(control);
+            ArgumentNullException.ThrowIfNull(contentProvider);
+            IDisposable sub = inner.AttachTooltipForMod(modId, control, () =>
+            {
+                TooltipContent? content = null;
+                loader.ExecuteFaultIsolated(modId, () => content = contentProvider());
+                return content;
+            });
+            track(sub);
+            return sub;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, true))
+            {
+                return;
+            }
+
+            inner.HideTooltipForMod(modId);
+        }
+    }
+
+    private sealed class TrackedStashAffinityService(StashAffinityService inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IStashAffinityService
+    {
+        public IDisposable RegisterRoute(string id, Func<StashAffinityItemContext, StashAffinityRoute?> router, int priority = 0)
+        {
+            ArgumentNullException.ThrowIfNull(router);
+            IDisposable sub = inner.RegisterRoute(id, ctx =>
+            {
+                StashAffinityRoute? route = null;
+                loader.ExecuteFaultIsolated(modId, () => route = router(ctx));
+                return route;
+            }, priority);
+            track(sub);
+            return sub;
+        }
+
+        public IDisposable RegisterStockAffinityRule(string id, Func<StashAffinityItemContext, byte?> affinitySelector, int priority = 0)
+        {
+            ArgumentNullException.ThrowIfNull(affinitySelector);
+            IDisposable sub = inner.RegisterStockAffinityRule(id, ctx =>
+            {
+                byte? bit = null;
+                loader.ExecuteFaultIsolated(modId, () => bit = affinitySelector(ctx));
+                return bit;
+            }, priority);
+            track(sub);
+            return sub;
+        }
+
+        public IReadOnlyList<StashAffinityRoute> EvaluateRoutes(StashAffinityItemContext context) => inner.EvaluateRoutes(context);
+        public uint EvaluateStockAffinityMask(StashAffinityItemContext context) => inner.EvaluateStockAffinityMask(context);
     }
 }

@@ -253,4 +253,44 @@ public interface IUiService
     /// <param name="controlTypeName">Type name referenced by <c>begin &lt;TypeName&gt;</c> in <c>.ui</c> files.</param>
     /// <param name="factory">Factory producing a new control instance.</param>
     IDisposable RegisterControl(string controlTypeName, Func<ICustomUiControl> factory);
+
+    /// <summary>Dynamically creates a slab-pooled native UI control of <paramref name="kind"/> and attaches it under <paramref name="parent"/>.</summary>
+    /// <param name="parent">Parent control receiving the newly created child.</param>
+    /// <param name="kind">Built-in 3.29 control kind to instantiate.</param>
+    /// <param name="id">Optional control identifier.</param>
+    IUiControl CreateControl(IUiControl parent, UiControlKind kind, string? id = null);
+
+    /// <summary>Dynamically creates a <c>Frame</c> container under <paramref name="parent"/>.</summary>
+    IUiControl CreateFrame(IUiControl parent, string? id = null);
+
+    /// <summary>Dynamically creates a <c>Label</c> under <paramref name="parent"/> with optional initial <paramref name="text"/>.</summary>
+    ILabel CreateLabel(IUiControl parent, string text = "", string? id = null);
+
+    /// <summary>Dynamically creates a <c>Button</c> under <paramref name="parent"/> with optional initial <paramref name="text"/>.</summary>
+    IButton CreateButton(IUiControl parent, string text = "", string? id = null);
+
+    /// <summary>Dynamically creates a <c>Picture</c> under <paramref name="parent"/> with an optional virtual texture path.</summary>
+    IPicture CreatePicture(IUiControl parent, string? texturePath = null, string? id = null);
+
+    /// <summary>Dynamically creates a <c>ScrollableFrame</c> under <paramref name="parent"/>.</summary>
+    IScrollableFrame CreateScrollableFrame(IUiControl parent, string? id = null);
+
+    /// <summary>Dynamically creates a <c>TabContainer</c> under <paramref name="parent"/>.</summary>
+    ITabContainer CreateTabContainer(IUiControl parent, string? id = null);
+
+    /// <summary>Dynamically creates a <c>ComboBox</c> under <paramref name="parent"/>.</summary>
+    IComboBox CreateComboBox(IUiControl parent, string? id = null);
+
+    /// <summary>Dynamically creates a <c>ControlListBox</c> under <paramref name="parent"/>.</summary>
+    IListBox CreateListBox(IUiControl parent, string? id = null);
+
+    /// <summary>Creates a slab-safe composite <see cref="IUiItemGrid"/> attached under <paramref name="parent"/>.</summary>
+    /// <param name="parent">Parent control receiving the item grid.</param>
+    /// <param name="options">Grid dimensions, cell size, and tooltip behavior options.</param>
+    /// <param name="id">Optional control identifier.</param>
+    IUiItemGrid CreateItemGrid(IUiControl parent, UiItemGridOptions options, string? id = null);
+
+    /// <summary>Creates a slab-safe composite <see cref="IUiItemGrid"/> with the specified dimensions and cell size.</summary>
+    IUiItemGrid CreateItemGrid(IUiControl parent, int columns, int rows, float cellSize = 48f, string? id = null) =>
+        CreateItemGrid(parent, new UiItemGridOptions(columns, rows, cellSize), id);
 }

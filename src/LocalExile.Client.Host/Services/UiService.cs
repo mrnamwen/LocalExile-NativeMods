@@ -6,17 +6,34 @@ using LocalExile.Client.Sdk.Extend;
 namespace LocalExile.Client.Host.Services;
 
 /// <summary>
-/// Registry for custom UI control factories usable from <c>.ui</c> layouts.
+/// Registry for custom UI control factories usable from <c>.ui</c> layouts, wired live to
+/// 3.29 <c>g_uiControlFactoryMap</c> when running on the native shim.
 /// </summary>
 public sealed class UiControlRegistry : IUiControlRegistry
 {
-    private readonly Dictionary<string, Func<ICustomUiControl>> _factories = new(StringComparer.OrdinalIgnoreCase);
+    private sealed record LiveNativeCustomInstance(string ControlTypeName, UiControlNode HostNode, ICustomUiControl Behavior);
+
+    private readonly Native.INativeBridge? _bridge;
+    private readonly Dictionary<string, (Func<ICustomUiControl> Factory, IDisposable NativeSub)> _factories = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<nint, LiveNativeCustomInstance> _liveNativeInstances = [];
     private readonly Lock _gate = new();
+
+    /// <summary>Creates a new <see cref="UiControlRegistry"/> optionally backed by <paramref name="bridge"/>.</summary>
+    public UiControlRegistry(Native.INativeBridge? bridge = null)
+    {
+        _bridge = bridge;
+    }
 
     /// <inheritdoc/>
     public IReadOnlyCollection<string> RegisteredControlTypes
     {
         get { lock (_gate) { return [.. _factories.Keys]; } }
+    }
+
+    /// <summary>Number of live native custom UI control instances currently tracked from <c>.ui</c> parser hooks.</summary>
+    public int LiveNativeInstanceCount
+    {
+        get { lock (_gate) { return _liveNativeInstances.Count; } }
     }
 
     /// <inheritdoc/>
@@ -28,44 +45,179 @@ public sealed class UiControlRegistry : IUiControlRegistry
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(controlTypeName);
         ArgumentNullException.ThrowIfNull(factory);
+
+        string trimmedName = controlTypeName.Trim();
+        IDisposable nativeSub = Native.NoopDisposable.Instance;
         lock (_gate)
         {
-            if (_factories.ContainsKey(controlTypeName))
+            if (_factories.ContainsKey(trimmedName))
             {
-                throw new InvalidOperationException($"Custom UI control type '{controlTypeName}' is already registered.");
+                throw new InvalidOperationException($"Custom UI control type '{trimmedName}' is already registered.");
             }
 
-            _factories[controlTypeName] = factory;
+            if (_bridge is not null)
+            {
+                nativeSub = _bridge.RegisterNativeCustomUiControlKind(
+                    trimmedName,
+                    handle => HandleNativeCreated(trimmedName, factory, handle),
+                    HandleNativePropertyChanged,
+                    HandleNativeDestroyed);
+            }
+
+            _factories[trimmedName] = (factory, nativeSub);
         }
 
         return new Native.ActionDisposable(() =>
         {
+            IDisposable? toDispose = null;
+            LiveNativeCustomInstance[] orphaned;
             lock (_gate)
             {
-                _factories.Remove(controlTypeName);
+                if (_factories.TryGetValue(trimmedName, out var entry))
+                {
+                    toDispose = entry.NativeSub;
+                    _factories.Remove(trimmedName);
+                }
+
+                orphaned = [.. _liveNativeInstances.Values.Where(i => string.Equals(i.ControlTypeName, trimmedName, StringComparison.OrdinalIgnoreCase))];
+                foreach (LiveNativeCustomInstance inst in orphaned)
+                {
+                    _liveNativeInstances.Remove(inst.HostNode.NativeControlHandle);
+                }
             }
+
+            foreach (LiveNativeCustomInstance inst in orphaned)
+            {
+                try { inst.Behavior.OnDestroy(); }
+                catch { }
+            }
+
+            toDispose?.Dispose();
         });
     }
 
     /// <inheritdoc/>
     public bool IsRegistered(string controlTypeName)
     {
+        if (string.IsNullOrWhiteSpace(controlTypeName))
+        {
+            return false;
+        }
+
         lock (_gate)
         {
-            return _factories.ContainsKey(controlTypeName);
+            return _factories.ContainsKey(controlTypeName.Trim());
         }
     }
 
     /// <inheritdoc/>
     public ICustomUiControl? CreateInstance(string controlTypeName)
     {
+        if (string.IsNullOrWhiteSpace(controlTypeName))
+        {
+            return null;
+        }
+
         Func<ICustomUiControl>? factory;
         lock (_gate)
         {
-            _factories.TryGetValue(controlTypeName, out factory);
+            factory = _factories.TryGetValue(controlTypeName.Trim(), out var entry) ? entry.Factory : null;
         }
 
         return factory?.Invoke();
+    }
+
+    internal void TickNativeInstances(float deltaSeconds)
+    {
+        LiveNativeCustomInstance[] snapshot;
+        lock (_gate)
+        {
+            if (_liveNativeInstances.Count == 0)
+            {
+                return;
+            }
+
+            snapshot = [.. _liveNativeInstances.Values];
+        }
+
+        foreach (LiveNativeCustomInstance inst in snapshot)
+        {
+            try { inst.Behavior.OnFrame(deltaSeconds); }
+            catch { }
+        }
+    }
+
+    private void HandleNativeCreated(string controlTypeName, Func<ICustomUiControl> factory, nint nativeHandle)
+    {
+        if (nativeHandle == nint.Zero)
+        {
+            return;
+        }
+
+        ICustomUiControl behavior;
+        try
+        {
+            behavior = factory();
+        }
+        catch
+        {
+            return;
+        }
+
+        string id = _bridge?.GetNativeUiId(nativeHandle) ?? string.Empty;
+        var hostNode = new UiControlNode(id, controlTypeName, null, behavior)
+        {
+            NativeBridge = _bridge,
+            NativeControlHandle = nativeHandle,
+            IsNativeStockControl = true,
+        };
+
+        lock (_gate)
+        {
+            _liveNativeInstances[nativeHandle] = new LiveNativeCustomInstance(controlTypeName, hostNode, behavior);
+        }
+
+        try { behavior.OnInitialize(hostNode); }
+        catch { }
+    }
+
+    private void HandleNativePropertyChanged(nint nativeHandle, string propertyName, string value)
+    {
+        LiveNativeCustomInstance? inst;
+        lock (_gate)
+        {
+            _liveNativeInstances.TryGetValue(nativeHandle, out inst);
+        }
+
+        if (inst is null)
+        {
+            return;
+        }
+
+        try
+        {
+            inst.HostNode.SetProperty(propertyName, value);
+        }
+        catch
+        {
+            try { inst.Behavior.OnPropertyChanged(propertyName, value); }
+            catch { }
+        }
+    }
+
+    private void HandleNativeDestroyed(nint nativeHandle)
+    {
+        LiveNativeCustomInstance? inst;
+        lock (_gate)
+        {
+            if (!_liveNativeInstances.Remove(nativeHandle, out inst))
+            {
+                return;
+            }
+        }
+
+        try { inst.Behavior.OnDestroy(); }
+        catch { }
     }
 }
 
@@ -611,6 +763,9 @@ public class UiControlNode : IUiControl
         return true;
     }
 
+    /// <summary>Optional hook for subclasses to release native subscriptions before destruction.</summary>
+    protected virtual void OnBeforeDestroy() { }
+
     /// <inheritdoc/>
     public void Destroy()
     {
@@ -619,6 +774,7 @@ public class UiControlNode : IUiControl
             return;
         }
 
+        OnBeforeDestroy();
         UiWindowNode? owner = (this as UiWindowNode) ?? OwningWindow;
         string? subtreePath = Parent is not null ? Path : null;
 
@@ -1162,6 +1318,9 @@ public sealed class UiService : IUiService
     private readonly Native.INativeBridge? _bridge;
     private readonly Dictionary<string, UiWindowNode> _windows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _gate = new();
+    private TooltipService? _tooltips;
+    private InputService? _input;
+    private long _nextDynamicControlId;
 
     internal event Action<string>? WindowTreeInvalidated;
     internal event Action<string, string>? ControlSubtreeRemoved;
@@ -1172,6 +1331,12 @@ public sealed class UiService : IUiService
         _files = files;
         _controlRegistry = controlRegistry;
         _bridge = bridge;
+    }
+
+    internal void AttachPhase4Services(TooltipService? tooltips, InputService? input)
+    {
+        _tooltips = tooltips;
+        _input = input;
     }
 
     /// <inheritdoc/>
@@ -1390,7 +1555,184 @@ public sealed class UiService : IUiService
     public IDisposable RegisterControl(string controlTypeName, Func<ICustomUiControl> factory) =>
         _controlRegistry.Register(controlTypeName, factory);
 
-    /// <summary>Advances per-frame callbacks on all custom UI controls in open windows.</summary>
+    /// <inheritdoc/>
+    public IUiControl CreateControl(IUiControl parent, UiControlKind kind, string? id = null)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        if (parent is not UiControlNode parentNode)
+        {
+            throw new ArgumentException("Parent control must be created by UiService.", nameof(parent));
+        }
+
+        ObjectDisposedException.ThrowIf(parentNode.IsDestroyed, parentNode);
+        string resolvedId = !string.IsNullOrWhiteSpace(id)
+            ? id.Trim()
+            : $"{kind.ToString().ToLowerInvariant()}_{Interlocked.Increment(ref _nextDynamicControlId)}";
+
+        UiControlNode node = kind switch
+        {
+            UiControlKind.Frame => new UiControlNode(resolvedId, "Frame", parentNode),
+            UiControlKind.Label => new UiLabelNode(resolvedId, parentNode),
+            UiControlKind.Button => new UiButtonNode(resolvedId, parentNode),
+            UiControlKind.TextBox => new UiTextBoxNode(resolvedId, parentNode),
+            UiControlKind.CheckBox => new UiCheckBoxNode(resolvedId, parentNode),
+            UiControlKind.Picture => new UiPictureNode(resolvedId, parentNode),
+            UiControlKind.StackLayout => new UiControlNode(resolvedId, "StackLayout", parentNode),
+            UiControlKind.ScrollableFrame => new UiScrollableFrameNode(resolvedId, parentNode),
+            UiControlKind.TabContainer => new UiTabContainerNode(resolvedId, parentNode),
+            UiControlKind.ComboBox => new UiComboBoxNode(resolvedId, parentNode),
+            UiControlKind.ListBox => new UiListBoxNode(resolvedId, parentNode),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), $"Unsupported UiControlKind '{kind}'."),
+        };
+
+        node.OwningUiService = this;
+        node.NativeBridge = _bridge;
+
+        if (_bridge is not null && parentNode.NativeControlHandle != nint.Zero)
+        {
+            nint nativeHandle = _bridge.CreateNativeUiControl(parentNode.NativeControlHandle, kind, resolvedId);
+            if (nativeHandle != nint.Zero)
+            {
+                node.NativeControlHandle = nativeHandle;
+                WireDynamicControlNativeEvents(node, parentNode);
+            }
+        }
+
+        parentNode.AddChild(node);
+        return node;
+    }
+
+    /// <inheritdoc/>
+    public IUiControl CreateFrame(IUiControl parent, string? id = null) =>
+        CreateControl(parent, UiControlKind.Frame, id);
+
+    /// <inheritdoc/>
+    public ILabel CreateLabel(IUiControl parent, string text = "", string? id = null)
+    {
+        var label = (ILabel)CreateControl(parent, UiControlKind.Label, id);
+        if (!string.IsNullOrEmpty(text))
+        {
+            label.Text = text;
+        }
+
+        return label;
+    }
+
+    /// <inheritdoc/>
+    public IButton CreateButton(IUiControl parent, string text = "", string? id = null)
+    {
+        var button = (IButton)CreateControl(parent, UiControlKind.Button, id);
+        if (!string.IsNullOrEmpty(text))
+        {
+            button.Text = text;
+        }
+
+        return button;
+    }
+
+    /// <inheritdoc/>
+    public IPicture CreatePicture(IUiControl parent, string? texturePath = null, string? id = null)
+    {
+        var picture = (IPicture)CreateControl(parent, UiControlKind.Picture, id);
+        if (!string.IsNullOrWhiteSpace(texturePath))
+        {
+            picture.SetTexture(texturePath);
+        }
+
+        return picture;
+    }
+
+    /// <inheritdoc/>
+    public IScrollableFrame CreateScrollableFrame(IUiControl parent, string? id = null) =>
+        (IScrollableFrame)CreateControl(parent, UiControlKind.ScrollableFrame, id);
+
+    /// <inheritdoc/>
+    public ITabContainer CreateTabContainer(IUiControl parent, string? id = null) =>
+        (ITabContainer)CreateControl(parent, UiControlKind.TabContainer, id);
+
+    /// <inheritdoc/>
+    public IComboBox CreateComboBox(IUiControl parent, string? id = null) =>
+        (IComboBox)CreateControl(parent, UiControlKind.ComboBox, id);
+
+    /// <inheritdoc/>
+    public IListBox CreateListBox(IUiControl parent, string? id = null) =>
+        (IListBox)CreateControl(parent, UiControlKind.ListBox, id);
+
+    /// <inheritdoc/>
+    public IUiItemGrid CreateItemGrid(IUiControl parent, UiItemGridOptions options, string? id = null)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        ArgumentNullException.ThrowIfNull(options);
+        if (parent is not UiControlNode parentNode)
+        {
+            throw new ArgumentException("Parent control must be created by UiService.", nameof(parent));
+        }
+
+        ObjectDisposedException.ThrowIf(parentNode.IsDestroyed, parentNode);
+        string resolvedId = !string.IsNullOrWhiteSpace(id)
+            ? id.Trim()
+            : $"item_grid_{Interlocked.Increment(ref _nextDynamicControlId)}";
+
+        var grid = new UiItemGridControl(resolvedId, parentNode, this, _tooltips, _input, options)
+        {
+            OwningUiService = this,
+            NativeBridge = _bridge,
+        };
+
+        if (_bridge is not null && parentNode.NativeControlHandle != nint.Zero)
+        {
+            nint nativeHandle = _bridge.CreateNativeUiControl(parentNode.NativeControlHandle, UiControlKind.Frame, resolvedId);
+            if (nativeHandle != nint.Zero)
+            {
+                grid.NativeControlHandle = nativeHandle;
+            }
+        }
+
+        parentNode.AddChild(grid);
+        grid.InitializeGridVisuals();
+        return grid;
+    }
+
+    private void WireDynamicControlNativeEvents(UiControlNode node, UiControlNode parentNode)
+    {
+        if (_bridge is null || node.NativeControlHandle == nint.Zero)
+        {
+            return;
+        }
+
+        UiWindowNode? ownerWin = (parentNode as UiWindowNode) ?? parentNode.OwningWindow;
+        if (node is UiButtonNode btn)
+        {
+            IDisposable sub = _bridge.SubscribeNativeUiClick(node.NativeControlHandle, btn.Click);
+            ownerWin?.TrackNativeSubscription(sub);
+        }
+        else if (node is UiTextBoxNode tb)
+        {
+            IDisposable sub1 = _bridge.SubscribeNativeUiTextBoxChanged(node.NativeControlHandle, tb.OnNativeTextChanged);
+            IDisposable sub2 = _bridge.SubscribeNativeUiTextBoxSubmitted(node.NativeControlHandle, tb.OnNativeSubmitted);
+            ownerWin?.TrackNativeSubscription(sub1);
+            ownerWin?.TrackNativeSubscription(sub2);
+        }
+        else if (node is UiCheckBoxNode cb)
+        {
+            IDisposable sub = _bridge.SubscribeNativeUiCheckBoxChanged(node.NativeControlHandle, cb.OnNativeCheckedChanged);
+            ownerWin?.TrackNativeSubscription(sub);
+        }
+        else if (node is UiTabContainerNode tc)
+        {
+            tc.BindNativeSubscription();
+        }
+        else if (node is UiComboBoxNode combo)
+        {
+            combo.BindNativeSubscription();
+        }
+        else if (node is UiListBoxNode lb)
+        {
+            lb.BindNativeSubscription();
+        }
+    }
+
+    /// <summary>Advances per-frame callbacks on all custom UI controls in open windows and native parser instances.</summary>
     public void TickCustomControls(float deltaSeconds)
     {
         UiWindowNode[] snapshot;
@@ -1406,6 +1748,8 @@ public sealed class UiService : IUiService
                 win.TickCustomRecursive(deltaSeconds);
             }
         }
+
+        _controlRegistry.TickNativeInstances(deltaSeconds);
     }
 
     private void ReloadInternal(UiWindowNode window)
@@ -1605,6 +1949,22 @@ public sealed class UiService : IUiService
 
                     window.TrackNativeSubscription(_bridge.SubscribeNativeUiCheckBoxChanged(nativeChild, checkBox.OnNativeCheckedChanged));
                 }
+                else if (child is UiPictureNode picture && !string.IsNullOrWhiteSpace(picture.TexturePath))
+                {
+                    _bridge.SetNativeUiPictureTexture(nativeChild, picture.TexturePath!);
+                }
+                else if (child is UiTabContainerNode tabContainer)
+                {
+                    tabContainer.BindNativeSubscription();
+                }
+                else if (child is UiComboBoxNode comboBox)
+                {
+                    comboBox.BindNativeSubscription();
+                }
+                else if (child is UiListBoxNode listBox)
+                {
+                    listBox.BindNativeSubscription();
+                }
 
                 BindChildrenRecursive(window, nativeChild, child);
             }
@@ -1759,6 +2119,32 @@ public sealed class UiService : IUiService
         if (string.Equals(typeName, "CheckBox", StringComparison.OrdinalIgnoreCase))
         {
             return new UiCheckBoxNode(string.Empty, parent);
+        }
+
+        if (string.Equals(typeName, "Picture", StringComparison.OrdinalIgnoreCase))
+        {
+            return new UiPictureNode(string.Empty, parent);
+        }
+
+        if (string.Equals(typeName, "ScrollableFrame", StringComparison.OrdinalIgnoreCase))
+        {
+            return new UiScrollableFrameNode(string.Empty, parent);
+        }
+
+        if (string.Equals(typeName, "TabContainer", StringComparison.OrdinalIgnoreCase))
+        {
+            return new UiTabContainerNode(string.Empty, parent);
+        }
+
+        if (string.Equals(typeName, "ComboBox", StringComparison.OrdinalIgnoreCase))
+        {
+            return new UiComboBoxNode(string.Empty, parent);
+        }
+
+        if (string.Equals(typeName, "ControlListBox", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(typeName, "ListBox", StringComparison.OrdinalIgnoreCase))
+        {
+            return new UiListBoxNode(string.Empty, parent);
         }
 
         ICustomUiControl? custom = _controlRegistry.CreateInstance(typeName);
