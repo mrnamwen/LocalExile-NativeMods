@@ -1541,13 +1541,17 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
         }
 
         uint hash32 = registration.Hash32 ?? PoeContentHash.MurmurHash2(registration.MetadataPath);
+        int effectiveRow = registration.RowIndex ?? -1;
+        IReadOnlyList<string> effectiveComponents = registration.Components is { Count: > 0 }
+            ? registration.Components
+            : (registration.StackSize > 1 ? ["Base", "Stack"] : ["Base"]);
         var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
             ["OwnerId"] = ownerId,
             ["Owner"] = ownerId,
             ["ModId"] = ownerId,
-            ["Row"] = registration.RowIndex ?? 0,
-            ["RowIndex"] = registration.RowIndex ?? 0,
+            ["Row"] = effectiveRow,
+            ["RowIndex"] = effectiveRow,
             ["MetadataPath"] = registration.MetadataPath,
             ["Id"] = registration.MetadataPath,
             ["BaseId"] = registration.MetadataPath,
@@ -1560,7 +1564,7 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
             ["Height"] = registration.Height,
             ["VisualIdentity"] = registration.VisualIdentityHash,
             ["VisualIdentityId"] = registration.VisualIdentityId,
-            ["Components"] = registration.Components ?? [],
+            ["Components"] = effectiveComponents,
             ["MaxCharges"] = registration.MaxCharges,
             ["DropLevel"] = registration.DropLevel,
             ["StackSize"] = registration.StackSize,

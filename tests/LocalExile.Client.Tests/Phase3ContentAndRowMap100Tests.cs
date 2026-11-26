@@ -317,13 +317,26 @@ public sealed class Phase3ContentAndRowMap100Tests
 
         Assert.True(host.SupportsCatalogRegistration);
 
+        // Omitting RowIndex defaults to -1 (triggers Part 2b synthetic row allocation, never overwriting row 0),
+        // and omitting Components defaults to ["Base", "Stack"] when StackSize > 1 so BaseType.Supported == true!
         IDisposable? baseSub = host.RegisterCustomBaseItem(new GatewayCustomBaseItemRegistration(
             MetadataPath: "Metadata/Items/Currency/Mods/Custom/TestOrb",
             Name: "Orb of Reflection",
             ItemClass: "StackableCurrency",
-            StackSize: 20,
-            RowIndex: 4200));
+            StackSize: 20));
         Assert.NotNull(baseSub);
+        Assert.Equal(-1, ReadStaticInt(fakeGatewayAsm, "ItemCatalog", "LastRow"));
+        Assert.Equal("Base,Stack", ReadStaticString(fakeGatewayAsm, "ItemCatalog", "LastComponents"));
+
+        IDisposable? nonStackSub = host.RegisterCustomBaseItem(new GatewayCustomBaseItemRegistration(
+            MetadataPath: "Metadata/Items/Rings/Mods/Custom/TestRing",
+            Name: "Reflection Ring",
+            ItemClass: "Ring",
+            StackSize: 1,
+            RowIndex: 4201));
+        Assert.NotNull(nonStackSub);
+        Assert.Equal(4201, ReadStaticInt(fakeGatewayAsm, "ItemCatalog", "LastRow"));
+        Assert.Equal("Base", ReadStaticString(fakeGatewayAsm, "ItemCatalog", "LastComponents"));
 
         IDisposable? uniqueSub = host.RegisterCustomUnique(new GatewayCustomUniqueRegistration(
             UniqueId: "custom_unique_ring",
@@ -342,7 +355,7 @@ public sealed class Phase3ContentAndRowMap100Tests
             MinAreaLevel: 10));
         Assert.NotNull(dropSub);
 
-        Assert.Equal(1, ReadStaticInt(fakeGatewayAsm, "ItemCatalog", "ActiveCount"));
+        Assert.Equal(2, ReadStaticInt(fakeGatewayAsm, "ItemCatalog", "ActiveCount"));
         Assert.Equal(1, ReadStaticInt(fakeGatewayAsm, "UniqueCatalog", "ActiveCount"));
         Assert.Equal(1, ReadStaticInt(fakeGatewayAsm, "DropPoolOverlays", "ActiveCount"));
 
@@ -436,6 +449,13 @@ public sealed class Phase3ContentAndRowMap100Tests
         return (int)f.GetValue(null)!;
     }
 
+    private static string? ReadStaticString(Assembly asm, string typeName, string fieldName)
+    {
+        Type t = asm.GetType(typeName, throwOnError: true)!;
+        FieldInfo f = t.GetField(fieldName, BindingFlags.Public | BindingFlags.Static)!;
+        return f.GetValue(null) as string;
+    }
+
     private static AssemblyBuilder BuildSyntheticPart2bGatewayAssembly()
     {
         var asmName = new AssemblyName($"SyntheticPart2bGateway_{Guid.NewGuid():N}");
@@ -493,12 +513,61 @@ public sealed class Phase3ContentAndRowMap100Tests
         sendIl.Emit(OpCodes.Ret);
         program.CreateType();
 
-        // Part 2b ItemCatalog.RegisterOverlay, UniqueCatalog.RegisterOverlay, and DropPoolOverlays.Register matching LocalExile a4c7cafa5!
-        DefineCatalogType(mb, "ItemCatalog", "RegisterOverlay", [typeof(string), typeof(string), typeof(string), typeof(string)], ["owner", "id", "name", "class"], builtTokenType);
+        // Part 2b ItemCatalog.RegisterOverlay (capturing row & components), UniqueCatalog.RegisterOverlay, and DropPoolOverlays.Register matching LocalExile a4c7cafa5!
+        DefineItemCatalogType(mb, builtTokenType);
         DefineCatalogType(mb, "UniqueCatalog", "RegisterOverlay", [typeof(string), typeof(string), typeof(string), typeof(double)], ["owner", "name", "baseTypeId", "dropWeight"], builtTokenType);
         DefineCatalogType(mb, "DropPoolOverlays", "Register", [typeof(string), typeof(string), typeof(string), typeof(double)], ["owner", "category", "itemId", "weight"], builtTokenType);
 
         return ab;
+    }
+
+    private static void DefineItemCatalogType(ModuleBuilder mb, Type tokenType)
+    {
+        TypeBuilder tb = mb.DefineType("ItemCatalog", TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+        FieldBuilder activeCount = tb.DefineField("ActiveCount", typeof(int), FieldAttributes.Public | FieldAttributes.Static);
+        FieldBuilder lastRow = tb.DefineField("LastRow", typeof(int), FieldAttributes.Public | FieldAttributes.Static);
+        FieldBuilder lastComponents = tb.DefineField("LastComponents", typeof(string), FieldAttributes.Public | FieldAttributes.Static);
+
+        MethodBuilder decMethod = tb.DefineMethod("Decrement", MethodAttributes.Public | MethodAttributes.Static, typeof(void), Type.EmptyTypes);
+        ILGenerator decIl = decMethod.GetILGenerator();
+        decIl.Emit(OpCodes.Ldsfld, activeCount);
+        decIl.Emit(OpCodes.Ldc_I4_1);
+        decIl.Emit(OpCodes.Sub);
+        decIl.Emit(OpCodes.Stsfld, activeCount);
+        decIl.Emit(OpCodes.Ret);
+
+        MethodBuilder reg = tb.DefineMethod(
+            "RegisterOverlay",
+            MethodAttributes.Public | MethodAttributes.Static,
+            typeof(IDisposable),
+            [typeof(string), typeof(int), typeof(string), typeof(string), typeof(string), typeof(IReadOnlyList<string>)]);
+        reg.DefineParameter(1, ParameterAttributes.None, "owner");
+        reg.DefineParameter(2, ParameterAttributes.None, "row");
+        reg.DefineParameter(3, ParameterAttributes.None, "id");
+        reg.DefineParameter(4, ParameterAttributes.None, "name");
+        reg.DefineParameter(5, ParameterAttributes.None, "class");
+        reg.DefineParameter(6, ParameterAttributes.None, "components");
+
+        MethodInfo stringJoin = typeof(string).GetMethod("Join", [typeof(string), typeof(IEnumerable<string>)])!;
+
+        ILGenerator il = reg.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_1);
+        il.Emit(OpCodes.Stsfld, lastRow);
+        il.Emit(OpCodes.Ldstr, ",");
+        il.Emit(OpCodes.Ldarg_S, (byte)5);
+        il.Emit(OpCodes.Call, stringJoin);
+        il.Emit(OpCodes.Stsfld, lastComponents);
+        il.Emit(OpCodes.Ldsfld, activeCount);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Add);
+        il.Emit(OpCodes.Stsfld, activeCount);
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Ldftn, decMethod);
+        il.Emit(OpCodes.Newobj, typeof(Action).GetConstructor([typeof(object), typeof(nint)])!);
+        il.Emit(OpCodes.Newobj, tokenType.GetConstructor([typeof(Action)])!);
+        il.Emit(OpCodes.Ret);
+
+        tb.CreateType();
     }
 
     private static Type DefineSingleAddEventType(ModuleBuilder mb, string typeName, Type delegateType, Type tokenType)
