@@ -19,7 +19,7 @@ namespace LocalExile.Client.Host.Services;
 /// with deterministic priority ordering, automatic UTF-16LE CRLF encoding for client text files,
 /// and asset invalidation.
 /// </summary>
-public sealed class FileOverlayService : IFileOverlayService
+public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
 {
     private sealed record VirtualFileLayer(long Id, string NormalizedPath, byte[] Bytes, string OwnerModId, int Priority);
     private sealed record DirectoryLayer(long Id, string RootDirectory, string OwnerModId, int Priority, Dictionary<string, string> IndexedFiles);
@@ -166,6 +166,13 @@ public sealed class FileOverlayService : IFileOverlayService
     {
         string normalized = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
         return ResolveOverlayOnly(normalized) ?? _bridge.ReadStockGameFile(normalized);
+    }
+
+    /// <inheritdoc/>
+    public byte[]? ReadStockGameFile(string virtualPath)
+    {
+        string normalized = NativeShimBridge.NormalizeAndValidateVirtualPath(virtualPath);
+        return _bridge.ReadStockGameFile(normalized);
     }
 
     /// <inheritdoc/>
@@ -621,12 +628,14 @@ public sealed class ScriptService : IScriptService
 
     private readonly INativeBridge _bridge;
     private readonly GealBuiltinRegistry _builtins;
+    private readonly ChatService? _chat;
 
     /// <summary>Creates a new <see cref="ScriptService"/>.</summary>
-    public ScriptService(INativeBridge bridge, GealBuiltinRegistry builtins)
+    public ScriptService(INativeBridge bridge, GealBuiltinRegistry builtins, ChatService? chat = null)
     {
         _bridge = bridge;
         _builtins = builtins;
+        _chat = chat;
     }
 
     /// <inheritdoc/>
@@ -718,6 +727,43 @@ public sealed class ScriptService : IScriptService
     /// <inheritdoc/>
     public IDisposable Register(string name, Action<uint, GealArguments> callback) =>
         _builtins.Register(name, callback);
+
+    /// <inheritdoc/>
+    public IDisposable RegisterChatInterceptor(Func<string, string, bool> interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        return _chat is not null
+            ? _chat.RegisterInterceptor(interceptor)
+            : _bridge.RegisterChatInterceptor(interceptor);
+    }
+}
+
+/// <summary>Managed <see cref="IClipboardService"/> backed by <see cref="INativeBridge"/>.</summary>
+public sealed class ClipboardService(INativeBridge bridge) : IClipboardService
+{
+    /// <inheritdoc/>
+    public string? GetText() => bridge.GetClipboardText();
+
+    /// <inheritdoc/>
+    public void SetText(string text) => bridge.SetClipboardText(text);
+}
+
+/// <summary>Managed <see cref="IChatService"/> backed by <see cref="INativeBridge"/>.</summary>
+public sealed class ChatService(INativeBridge bridge) : IChatService
+{
+    /// <inheritdoc/>
+    public IDisposable RegisterInterceptor(Func<string, string, bool> interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        return bridge.RegisterChatInterceptor(interceptor);
+    }
+
+    /// <inheritdoc/>
+    public void SendLine(string text)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(text);
+        bridge.SendChatLine(text);
+    }
 }
 
 /// <summary>Managed <see cref="IAudioService"/> implementation.</summary>
@@ -900,13 +946,33 @@ public sealed class GameLifecycle : IGameLifecycle
     internal void RaiseFrame(float deltaSeconds)
     {
         Interlocked.Increment(ref _frameCount);
-        Frame?.Invoke(deltaSeconds);
+        Action<float>? snapshot = Frame;
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        foreach (Delegate d in snapshot.GetInvocationList())
+        {
+            try { ((Action<float>)d)(deltaSeconds); }
+            catch { }
+        }
     }
 
     internal void RaiseAreaEntered(AreaEventArgs args)
     {
         CurrentAreaId = args.AreaId;
-        AreaEntered?.Invoke(args);
+        Action<AreaEventArgs>? snapshot = AreaEntered;
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        foreach (Delegate d in snapshot.GetInvocationList())
+        {
+            try { ((Action<AreaEventArgs>)d)(args); }
+            catch { }
+        }
     }
 
     internal void RaiseAreaLeft(string areaId)
@@ -916,20 +982,50 @@ public sealed class GameLifecycle : IGameLifecycle
             CurrentAreaId = null;
         }
 
-        AreaLeft?.Invoke(areaId);
+        Action<string>? snapshot = AreaLeft;
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        foreach (Delegate d in snapshot.GetInvocationList())
+        {
+            try { ((Action<string>)d)(areaId); }
+            catch { }
+        }
     }
 
     internal void RaiseConnected()
     {
         IsConnected = true;
-        Connected?.Invoke();
+        Action? snapshot = Connected;
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        foreach (Delegate d in snapshot.GetInvocationList())
+        {
+            try { ((Action)d)(); }
+            catch { }
+        }
     }
 
     internal void RaiseDisconnected(string? reason)
     {
         IsConnected = false;
         CurrentAreaId = null;
-        Disconnected?.Invoke(reason);
+        Action<string?>? snapshot = Disconnected;
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        foreach (Delegate d in snapshot.GetInvocationList())
+        {
+            try { ((Action<string?>)d)(reason); }
+            catch { }
+        }
     }
 }
 
@@ -976,7 +1072,11 @@ public sealed class RulesetRegistry : IRulesetRegistry
                 throw new InvalidOperationException($"Ruleset slot 0x{rulesetId:X2} is already registered.");
             }
 
-            IDisposable sub = _bridge.RegisterRulesetReceiver(rulesetId, payload => instance.OnRulesetUpdate(payload.Span));
+            IDisposable sub = _bridge.RegisterRulesetReceiver(rulesetId, payload =>
+            {
+                try { instance.OnRulesetUpdate(payload.Span); }
+                catch { }
+            });
             _rulesets[rulesetId] = (factory, instance, sub);
         }
 
@@ -1019,7 +1119,8 @@ public sealed class RulesetRegistry : IRulesetRegistry
             return false;
         }
 
-        instance.OnRulesetUpdate(payload);
+        try { instance.OnRulesetUpdate(payload); }
+        catch { }
         return true;
     }
 
@@ -1033,7 +1134,8 @@ public sealed class RulesetRegistry : IRulesetRegistry
 
         foreach (IClientRuleset rs in instances)
         {
-            rs.OnAreaEntered(args);
+            try { rs.OnAreaEntered(args); }
+            catch { }
         }
     }
 
@@ -1047,7 +1149,8 @@ public sealed class RulesetRegistry : IRulesetRegistry
 
         foreach (IClientRuleset rs in instances)
         {
-            rs.OnFrame(dt);
+            try { rs.OnFrame(dt); }
+            catch { }
         }
     }
 
@@ -1061,7 +1164,8 @@ public sealed class RulesetRegistry : IRulesetRegistry
 
         foreach (IClientRuleset rs in instances)
         {
-            rs.OnAreaLeft();
+            try { rs.OnAreaLeft(); }
+            catch { }
         }
     }
 }
@@ -1069,19 +1173,39 @@ public sealed class RulesetRegistry : IRulesetRegistry
 /// <summary>Managed <see cref="IOpcodeRegistry"/> implementation for handler groups and reserved opcodes (<c>0x2fc+</c>).</summary>
 public sealed class OpcodeRegistry(INativeBridge bridge) : IOpcodeRegistry
 {
+    private sealed record GroupEntry(ushort MinOpcode, ushort MaxOpcode, Action<ushort, ReadOnlyMemory<byte>>? Handler, IDisposable NativeSub);
+
     private readonly Dictionary<ushort, List<(Action<ReadOnlyMemory<byte>> Handler, IDisposable NativeSub)>> _handlers = [];
+    private readonly List<GroupEntry> _groups = [];
     private readonly Lock _gate = new();
 
     /// <inheritdoc/>
     public IReadOnlyCollection<ushort> RegisteredOpcodes
     {
-        get { lock (_gate) { return [.. _handlers.Keys]; } }
+        get
+        {
+            lock (_gate)
+            {
+                var set = new HashSet<ushort>(_handlers.Keys);
+                foreach (GroupEntry g in _groups)
+                {
+                    if (g.MinOpcode == g.MaxOpcode)
+                    {
+                        set.Add(g.MinOpcode);
+                    }
+                }
+
+                return [.. set];
+            }
+        }
     }
 
     /// <inheritdoc/>
     public IDisposable RegisterHandler(ushort opcode, Action<ReadOnlyMemory<byte>> handler, string? groupName = null)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        ValidateReservedOpcode(opcode);
+
         IDisposable nativeSub = bridge.RegisterRawOpcodeReceiver(opcode, handler);
         var entry = (handler, nativeSub);
         lock (_gate)
@@ -1113,11 +1237,62 @@ public sealed class OpcodeRegistry(INativeBridge bridge) : IOpcodeRegistry
     }
 
     /// <inheritdoc/>
+    public IDisposable RegisterGroup(ushort minOpcode, ushort maxOpcode, Action<ushort, ReadOnlyMemory<byte>> handler, string? groupName = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        ValidateReservedRange(minOpcode, maxOpcode);
+
+        IDisposable nativeSub = bridge.RegisterRawOpcodeGroup(minOpcode, maxOpcode, handler);
+        var entry = new GroupEntry(minOpcode, maxOpcode, handler, nativeSub);
+        lock (_gate)
+        {
+            _groups.Add(entry);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            nativeSub.Dispose();
+            lock (_gate)
+            {
+                _groups.Remove(entry);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterStreamHandler(ushort minOpcode, ushort maxOpcode, Func<ushort, INativePacketStream, ReadOnlyMemory<byte>, bool> handler, string? groupName = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        ValidateReservedRange(minOpcode, maxOpcode);
+
+        IDisposable nativeSub = bridge.RegisterRawOpcodeStreamHandler(minOpcode, maxOpcode, handler);
+        var entry = new GroupEntry(minOpcode, maxOpcode, null, nativeSub);
+        lock (_gate)
+        {
+            _groups.Add(entry);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            nativeSub.Dispose();
+            lock (_gate)
+            {
+                _groups.Remove(entry);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
     public bool IsRegistered(ushort opcode)
     {
         lock (_gate)
         {
-            return _handlers.TryGetValue(opcode, out var list) && list.Count > 0;
+            if (_handlers.TryGetValue(opcode, out var list) && list.Count > 0)
+            {
+                return true;
+            }
+
+            return _groups.Any(g => opcode >= g.MinOpcode && opcode <= g.MaxOpcode);
         }
     }
 
@@ -1125,22 +1300,54 @@ public sealed class OpcodeRegistry(INativeBridge bridge) : IOpcodeRegistry
     public bool TryDispatch(ushort opcode, ReadOnlyMemory<byte> payload)
     {
         Action<ReadOnlyMemory<byte>>[] snapshot;
+        GroupEntry[] groupSnapshot;
         lock (_gate)
         {
-            if (!_handlers.TryGetValue(opcode, out var list) || list.Count == 0)
-            {
-                return false;
-            }
+            snapshot = _handlers.TryGetValue(opcode, out var list) && list.Count > 0
+                ? [.. list.Select(e => e.Handler)]
+                : [];
+            groupSnapshot = [.. _groups.Where(g => opcode >= g.MinOpcode && opcode <= g.MaxOpcode && g.Handler is not null)];
+        }
 
-            snapshot = [.. list.Select(e => e.Handler)];
+        if (snapshot.Length == 0 && groupSnapshot.Length == 0)
+        {
+            return false;
         }
 
         foreach (Action<ReadOnlyMemory<byte>> handler in snapshot)
         {
-            handler(payload);
+            try { handler(payload); }
+            catch { }
+        }
+
+        foreach (GroupEntry group in groupSnapshot)
+        {
+            try { group.Handler!(opcode, payload); }
+            catch { }
         }
 
         return true;
+    }
+
+    private static void ValidateReservedOpcode(ushort opcode)
+    {
+        if (opcode < IOpcodeRegistry.FirstReservedOpcode)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(opcode),
+                $"Custom opcode 0x{opcode:X4} is below reserved minimum 0x{IOpcodeRegistry.FirstReservedOpcode:X4}.");
+        }
+    }
+
+    private static void ValidateReservedRange(ushort minOpcode, ushort maxOpcode)
+    {
+        ValidateReservedOpcode(minOpcode);
+        if (maxOpcode < minOpcode)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxOpcode),
+                $"maxOpcode (0x{maxOpcode:X4}) must be >= minOpcode (0x{minOpcode:X4}).");
+        }
     }
 }
 
@@ -1277,12 +1484,21 @@ public sealed class RawMemoryService(IAddressLibrary addresses, INativeBridge br
     }
 
     /// <inheritdoc/>
-    public IDisposable InstallHook(string symbolName, nint detourTarget, out nint originalTrampoline, HookType hookType = HookType.InlineDetour)
+    public IDisposable InstallHook(string symbolName, nint detourTarget, out nint originalTrampoline, HookType hookType = HookType.InlineDetour) =>
+        InstallHook(symbolName, detourTarget, out originalTrampoline, hookType, vtableSlotIndex: 0);
+
+    /// <inheritdoc/>
+    public IDisposable InstallHook(
+        string symbolName,
+        nint detourTarget,
+        out nint originalTrampoline,
+        HookType hookType,
+        uint vtableSlotIndex)
     {
         ulong handle = hookType switch
         {
             HookType.InlineDetour => bridge.InstallInlineHook(symbolName, detourTarget, out originalTrampoline),
-            HookType.VtableSlot => bridge.InstallVtableHook(addresses.ResolveAddress(symbolName), 0, detourTarget, out originalTrampoline),
+            HookType.VtableSlot => bridge.InstallVtableHook(addresses.ResolveAddress(symbolName), vtableSlotIndex, detourTarget, out originalTrampoline),
             _ => throw new ArgumentOutOfRangeException(nameof(hookType)),
         };
 
@@ -1290,7 +1506,46 @@ public sealed class RawMemoryService(IAddressLibrary addresses, INativeBridge br
     }
 
     /// <inheritdoc/>
+    public IDisposable InstallVtableHook(nint vtableAddress, uint slotIndex, nint detourTarget, out nint originalSlot)
+    {
+        ulong handle = bridge.InstallVtableHook(vtableAddress, slotIndex, detourTarget, out originalSlot);
+        return new ActionDisposable(() => bridge.RemoveHook(handle));
+    }
+
+    /// <inheritdoc/>
+    public IDisposable InstallHookChain(string symbolName, HookPhase phase, Action<HookContext> callback, int priority = 0)
+    {
+        ulong handle = bridge.InstallInlineHookChain(symbolName, phase, priority, callback);
+        return new ActionDisposable(() => bridge.RemoveHook(handle));
+    }
+
+    /// <inheritdoc/>
+    public IDisposable InstallHookChain(nint address, string? expectedBytesHex, HookPhase phase, Action<HookContext> callback, int priority = 0)
+    {
+        ulong handle = bridge.InstallInlineHookChainAt(address, expectedBytesHex, phase, priority, callback);
+        return new ActionDisposable(() => bridge.RemoveHook(handle));
+    }
+
+    /// <inheritdoc/>
+    public IDisposable InstallVtableHookChain(nint vtableAddress, uint slotIndex, HookPhase phase, Action<HookContext> callback, int priority = 0)
+    {
+        ulong handle = bridge.InstallVtableHookChain(vtableAddress, slotIndex, phase, priority, callback);
+        return new ActionDisposable(() => bridge.RemoveHook(handle));
+    }
+
+    /// <inheritdoc/>
     public nint Call(string symbolName, params nint[] args) => bridge.InvokeNative(symbolName, args);
+
+    /// <inheritdoc/>
+    public NativeCallResult CallEx(string symbolName, ReadOnlySpan<NativeCallArgument> args, bool returnIsFloat = false)
+    {
+        nint address = addresses.ResolveAddress(symbolName);
+        return bridge.InvokeNativeEx(address, args, returnIsFloat);
+    }
+
+    /// <inheritdoc/>
+    public NativeCallResult CallEx(nint targetAddress, ReadOnlySpan<NativeCallArgument> args, bool returnIsFloat = false) =>
+        bridge.InvokeNativeEx(targetAddress, args, returnIsFloat);
 }
 
 /// <summary>Per-mod <see cref="IModScheduler"/> marshaling work onto the game thread via <see cref="INativeBridge"/>.</summary>
@@ -1309,7 +1564,10 @@ public sealed class GameThreadScheduler(INativeBridge bridge) : IModScheduler
             return;
         }
 
-        bridge.EnqueueGameThread(action);
+        if (!bridge.EnqueueGameThread(action))
+        {
+            throw new InvalidOperationException("Failed to enqueue callback onto the game thread because the queue is full or disposed.");
+        }
     }
 
     /// <inheritdoc/>
@@ -1322,7 +1580,7 @@ public sealed class GameThreadScheduler(INativeBridge bridge) : IModScheduler
         }
 
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        bridge.EnqueueGameThread(() =>
+        bool enqueued = bridge.EnqueueGameThread(() =>
         {
             if (cancellationToken.IsCancellationRequested)
             {
@@ -1340,6 +1598,12 @@ public sealed class GameThreadScheduler(INativeBridge bridge) : IModScheduler
                 tcs.TrySetException(ex);
             }
         });
+
+        if (!enqueued)
+        {
+            tcs.TrySetException(new InvalidOperationException("Failed to enqueue callback onto the game thread because the queue is full or disposed."));
+        }
+
         return tcs.Task;
     }
 
@@ -1353,7 +1617,7 @@ public sealed class GameThreadScheduler(INativeBridge bridge) : IModScheduler
         }
 
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        bridge.EnqueueGameThread(() =>
+        bool enqueued = bridge.EnqueueGameThread(() =>
         {
             if (cancellationToken.IsCancellationRequested)
             {
@@ -1370,6 +1634,12 @@ public sealed class GameThreadScheduler(INativeBridge bridge) : IModScheduler
                 tcs.TrySetException(ex);
             }
         });
+
+        if (!enqueued)
+        {
+            tcs.TrySetException(new InvalidOperationException("Failed to enqueue callback onto the game thread because the queue is full or disposed."));
+        }
+
         return tcs.Task;
     }
 }

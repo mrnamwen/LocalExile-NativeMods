@@ -12,13 +12,15 @@ public sealed class AdditionalCoverageTests
 {
     [Theory]
     [InlineData("*", true)]
-    [InlineData("0.1.0-poc", true)]
-    [InlineData(">=0.1.0-poc <0.2.0", true)]
-    [InlineData("^0.1.0", true)]
-    [InlineData("~0.1.0", true)]
-    [InlineData(">=0.2.0", false)]
+    [InlineData("0.2.0", true)]
+    [InlineData(">=0.2.0 <0.3.0", true)]
+    [InlineData(">=0.1.0-poc <2.0.0", true)]
+    [InlineData("^0.2.0", true)]
+    [InlineData("~0.2.0", true)]
+    [InlineData("=0.1.0-poc", false)]
+    [InlineData(">=0.3.0", false)]
     [InlineData("^1.0.0", false)]
-    [InlineData("<0.1.0", false)]
+    [InlineData("<0.2.0", false)]
     public void SdkVersion_EvaluatesSemVerRangesAccurately(string range, bool expected)
     {
         Assert.Equal(expected, SdkVersion.IsCompatible(range));
@@ -55,6 +57,7 @@ public sealed class AdditionalCoverageTests
         Assert.Equal("harvestgarden.Client.dll", manifest.Assembly);
         Assert.Equal("client", manifest.PayloadDir);
         Assert.Single(manifest.EffectiveReplaces, "Metadata/UI/ConfirmationWindow.ui");
+        Assert.Empty(manifest.EffectiveDepends);
         Assert.True(manifest.RawAccess);
         Assert.Equal("Reads camera node pointer", manifest.RawAccessJustification);
         Assert.Equal("deadbeef", manifest.PayloadHash);

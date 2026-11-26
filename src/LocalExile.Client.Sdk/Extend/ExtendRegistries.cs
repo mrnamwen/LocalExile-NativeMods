@@ -123,6 +123,21 @@ public interface IRulesetRegistry
 }
 
 /// <summary>
+/// Sequential reader over a live or synthetic native packet stream (<c>BufferStreamIn</c>).
+/// </summary>
+public interface INativePacketStream
+{
+    /// <summary>Attempts to read <paramref name="destination"/>.Length bytes from the stream.</summary>
+    bool TryRead(Span<byte> destination);
+
+    /// <summary>Reads exactly <paramref name="count"/> bytes from the stream or throws on underflow.</summary>
+    byte[] ReadBytes(int count);
+
+    /// <summary>Reads an unmanaged little-endian value of type <typeparamref name="T"/> from the stream.</summary>
+    T Read<T>() where T : unmanaged;
+}
+
+/// <summary>
 /// Registers custom network opcode handlers via the client's handler-group mechanism.
 /// Per verified 3.29.3d findings, stock opcodes end at <c>0x2fb</c>, so reserved custom opcodes begin at <c>0x2fc</c>.
 /// </summary>
@@ -140,11 +155,25 @@ public interface IOpcodeRegistry
     /// <summary>Opcodes currently claimed by registered handlers.</summary>
     IReadOnlyCollection<ushort> RegisteredOpcodes { get; }
 
-    /// <summary>Registers a handler callback for an incoming opcode.</summary>
-    /// <param name="opcode">Wire opcode identifier.</param>
+    /// <summary>Registers a handler callback for an incoming opcode (<c>&gt;= 0x02FC</c>).</summary>
+    /// <param name="opcode">Wire opcode identifier (<c>&gt;= 0x02FC</c>).</param>
     /// <param name="handler">Callback invoked with the raw payload bytes.</param>
     /// <param name="groupName">Optional logical handler group name.</param>
     IDisposable RegisterHandler(ushort opcode, Action<ReadOnlyMemory<byte>> handler, string? groupName = null);
+
+    /// <summary>Registers a handler callback for an inclusive opcode range (<c>&gt;= 0x02FC</c>).</summary>
+    /// <param name="minOpcode">Inclusive minimum opcode (<c>&gt;= 0x02FC</c>).</param>
+    /// <param name="maxOpcode">Inclusive maximum opcode (<c>&gt;= minOpcode</c>).</param>
+    /// <param name="handler">Callback receiving <c>(opcode, payload)</c>.</param>
+    /// <param name="groupName">Optional logical handler group name.</param>
+    IDisposable RegisterGroup(ushort minOpcode, ushort maxOpcode, Action<ushort, ReadOnlyMemory<byte>> handler, string? groupName = null);
+
+    /// <summary>Registers a native stream-reading handler for an inclusive opcode range (<c>&gt;= 0x02FC</c>).</summary>
+    /// <param name="minOpcode">Inclusive minimum opcode (<c>&gt;= 0x02FC</c>).</param>
+    /// <param name="maxOpcode">Inclusive maximum opcode (<c>&gt;= minOpcode</c>).</param>
+    /// <param name="handler">Callback receiving <c>(opcode, stream, preloadedPayload)</c> and returning <c>true</c> if handled.</param>
+    /// <param name="groupName">Optional logical handler group name.</param>
+    IDisposable RegisterStreamHandler(ushort minOpcode, ushort maxOpcode, Func<ushort, INativePacketStream, ReadOnlyMemory<byte>, bool> handler, string? groupName = null);
 
     /// <summary>Returns <c>true</c> if at least one handler is registered for <paramref name="opcode"/>.</summary>
     bool IsRegistered(ushort opcode);

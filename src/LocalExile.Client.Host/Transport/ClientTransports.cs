@@ -263,13 +263,17 @@ internal sealed class ClientNetChannel(
         string typeName = string.IsNullOrWhiteSpace(messageType) ? typeof(T).Name : messageType;
         return router.SubscribeEnvelope(channelId, typeName, env =>
         {
-            T payload = MessageCodec.DeserializePayload<T>(env);
             if (faultGuard is not null)
             {
-                faultGuard(channelId, () => handler(payload));
+                faultGuard(channelId, () =>
+                {
+                    T payload = MessageCodec.DeserializePayload<T>(env);
+                    handler(payload);
+                });
             }
             else
             {
+                T payload = MessageCodec.DeserializePayload<T>(env);
                 handler(payload);
             }
         });

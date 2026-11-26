@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
+using System.Security.Cryptography;
 using LocalExile.Client.Host.Native;
 using LocalExile.Client.Host.Services;
 using LocalExile.Client.Sdk;
@@ -95,6 +96,27 @@ public sealed class ClientModLoadContext : AssemblyLoadContext
     }
 }
 
+/// <summary>Result status for an entry processed by <see cref="ClientModLoader.LoadModsFromDirectory"/>.</summary>
+public enum ModLoadStatus
+{
+    Loaded = 0,
+    Disabled = 1,
+    InvalidManifest = 2,
+    MissingDependency = 3,
+    DependencyDisabled = 4,
+    CyclicDependency = 5,
+    DependencyFailed = 6,
+    LoadFailed = 7,
+}
+
+/// <summary>Diagnostic outcome for a single mod discovered during batch directory loading.</summary>
+public sealed record ModLoadDiagnostic(
+    string ModId,
+    string ModDirectory,
+    ModLoadStatus Status,
+    string Message,
+    LoadedClientMod? LoadedMod = null);
+
 /// <summary>Result of unloading a client mod, including collectible <see cref="AssemblyLoadContext"/> GC verification.</summary>
 /// <param name="ModId">Identifier of the unloaded mod.</param>
 /// <param name="WasLoaded">Whether the mod existed in the loader.</param>
@@ -129,6 +151,7 @@ public sealed class LoadedClientMod
     /// <summary>Most recent exception caught inside the fault wall, if any.</summary>
     public Exception? LastFault { get; internal set; }
 
+    internal Lock SyncRoot { get; } = new();
     internal ClientModLoadContext? LoadContext { get; set; }
     internal IClientMod? Instance { get; set; }
     internal List<IDisposable> TrackedDisposables { get; } = [];
@@ -203,6 +226,205 @@ public sealed class ClientModLoader : IDisposable
     }
 
     /// <summary>
+    /// Scans <paramref name="modsDirectory"/> for mod subdirectories containing <c>mod.json</c>,
+    /// enforces <c>Enabled</c> and <c>PayloadHash</c>, resolves <c>Depends</c> in deterministic topological order
+    /// (detecting missing/disabled/cyclic dependencies), and loads all valid mods.
+    /// </summary>
+    public IReadOnlyList<ModLoadDiagnostic> LoadModsFromDirectory(string modsDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modsDirectory);
+        string fullRoot = Path.GetFullPath(modsDirectory);
+        if (!Directory.Exists(fullRoot))
+        {
+            return [];
+        }
+
+        string[] subdirs = Directory.GetDirectories(fullRoot);
+        Array.Sort(subdirs, StringComparer.OrdinalIgnoreCase);
+
+        var diagnostics = new List<ModLoadDiagnostic>();
+        var enabledEntries = new Dictionary<string, (ClientModManifest Manifest, string ModDir, string? AssemblyPath, List<string> Deps)>(StringComparer.OrdinalIgnoreCase);
+        var disabledIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string modDir in subdirs)
+        {
+            string manifestPath = Path.Combine(modDir, "mod.json");
+            if (!File.Exists(manifestPath))
+            {
+                continue;
+            }
+
+            ClientModManifest manifest;
+            try
+            {
+                manifest = ClientModManifest.LoadFromFile(manifestPath);
+            }
+            catch (Exception ex)
+            {
+                diagnostics.Add(new ModLoadDiagnostic(Path.GetFileName(modDir), modDir, ModLoadStatus.InvalidManifest, $"{ex.GetType().Name}: {ex.Message}"));
+                continue;
+            }
+
+            if (!manifest.Enabled)
+            {
+                disabledIds.Add(manifest.Id);
+                diagnostics.Add(new ModLoadDiagnostic(manifest.Id, modDir, ModLoadStatus.Disabled, $"Client mod '{manifest.Id}' is disabled (enabled=false)."));
+                continue;
+            }
+
+            if (enabledEntries.ContainsKey(manifest.Id))
+            {
+                diagnostics.Add(new ModLoadDiagnostic(manifest.Id, modDir, ModLoadStatus.InvalidManifest, $"Duplicate mod id '{manifest.Id}' in '{modDir}'."));
+                continue;
+            }
+
+            string? assemblyPath = ResolveAssemblyPath(manifest, modDir);
+            var deps = manifest.EffectiveDepends
+                .Where(d => !string.IsNullOrWhiteSpace(d) && !string.Equals(d, "Game", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            enabledEntries[manifest.Id] = (manifest, modDir, assemblyPath, deps);
+        }
+
+        // Iteratively prune mods with missing or disabled dependencies until fixpoint.
+        var prunedReasons = new Dictionary<string, (ModLoadStatus Status, string Message)>(StringComparer.OrdinalIgnoreCase);
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (string id in enabledEntries.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+            {
+                if (prunedReasons.ContainsKey(id))
+                {
+                    continue;
+                }
+
+                var entry = enabledEntries[id];
+                foreach (string dep in entry.Deps)
+                {
+                    if (disabledIds.Contains(dep))
+                    {
+                        prunedReasons[id] = (ModLoadStatus.DependencyDisabled, $"Dependency '{dep}' of '{id}' is disabled.");
+                        changed = true;
+                        break;
+                    }
+
+                    if (prunedReasons.TryGetValue(dep, out var depReason))
+                    {
+                        prunedReasons[id] = (depReason.Status, $"Dependency '{dep}' of '{id}' could not be loaded: {depReason.Message}");
+                        changed = true;
+                        break;
+                    }
+
+                    if (!enabledEntries.ContainsKey(dep) && GetMod(dep) is not { IsDisabled: false })
+                    {
+                        prunedReasons[id] = (ModLoadStatus.MissingDependency, $"Dependency '{dep}' of '{id}' was not found.");
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        foreach (string id in prunedReasons.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+        {
+            var entry = enabledEntries[id];
+            var reason = prunedReasons[id];
+            diagnostics.Add(new ModLoadDiagnostic(id, entry.ModDir, reason.Status, reason.Message));
+            enabledEntries.Remove(id);
+        }
+
+        // Kahn topological sort over remaining enabled mods with deterministic OrdinalIgnoreCase ordering.
+        var indegree = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var dependents = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (string id in enabledEntries.Keys)
+        {
+            indegree[id] = 0;
+            dependents[id] = [];
+        }
+
+        foreach (var kv in enabledEntries)
+        {
+            string id = kv.Key;
+            foreach (string dep in kv.Value.Deps)
+            {
+                if (enabledEntries.ContainsKey(dep) && !string.Equals(dep, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    indegree[id]++;
+                    dependents[dep].Add(id);
+                }
+                else if (string.Equals(dep, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    indegree[id]++;
+                    dependents[id].Add(id);
+                }
+            }
+        }
+
+        var ready = indegree.Where(kv => kv.Value == 0).Select(kv => kv.Key).ToList();
+        ready.Sort(StringComparer.OrdinalIgnoreCase);
+        var loadOrder = new List<string>(enabledEntries.Count);
+
+        while (ready.Count > 0)
+        {
+            string current = ready[0];
+            ready.RemoveAt(0);
+            loadOrder.Add(current);
+
+            foreach (string dependent in dependents[current])
+            {
+                indegree[dependent]--;
+                if (indegree[dependent] == 0)
+                {
+                    ready.Add(dependent);
+                    ready.Sort(StringComparer.OrdinalIgnoreCase);
+                }
+            }
+        }
+
+        foreach (string cyclicId in indegree.Where(kv => kv.Value > 0).Select(kv => kv.Key).OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+        {
+            var entry = enabledEntries[cyclicId];
+            diagnostics.Add(new ModLoadDiagnostic(
+                cyclicId,
+                entry.ModDir,
+                ModLoadStatus.CyclicDependency,
+                $"Cyclic dependency detected involving '{cyclicId}' (depends: [{string.Join(", ", entry.Deps)}])."));
+        }
+
+        var failedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string id in loadOrder)
+        {
+            var entry = enabledEntries[id];
+            string? failedDep = entry.Deps.FirstOrDefault(d => failedIds.Contains(d));
+            if (failedDep is not null)
+            {
+                failedIds.Add(id);
+                diagnostics.Add(new ModLoadDiagnostic(
+                    id,
+                    entry.ModDir,
+                    ModLoadStatus.DependencyFailed,
+                    $"Skipped '{id}' because dependency '{failedDep}' failed to load."));
+                continue;
+            }
+
+            try
+            {
+                LoadedClientMod loaded = LoadMod(entry.Manifest, entry.ModDir, entry.AssemblyPath);
+                diagnostics.Add(new ModLoadDiagnostic(id, entry.ModDir, ModLoadStatus.Loaded, "Loaded successfully.", loaded));
+            }
+            catch (Exception ex)
+            {
+                failedIds.Add(id);
+                diagnostics.Add(new ModLoadDiagnostic(id, entry.ModDir, ModLoadStatus.LoadFailed, $"{ex.GetType().Name}: {ex.Message}"));
+            }
+        }
+
+        return diagnostics;
+    }
+
+    /// <summary>
     /// Loads a client mod from a directory containing <c>mod.json</c> (and optionally a client DLL and/or <c>files/</c> payload).
     /// </summary>
     public LoadedClientMod LoadModFromDirectory(string modDirectory)
@@ -216,21 +438,19 @@ public sealed class ClientModLoader : IDisposable
         }
 
         ClientModManifest manifest = ClientModManifest.LoadFromFile(manifestPath);
-        string? assemblyPath = null;
+        string? assemblyPath = ResolveAssemblyPath(manifest, fullDir);
+        return LoadMod(manifest, fullDir, assemblyPath);
+    }
+
+    private static string? ResolveAssemblyPath(ClientModManifest manifest, string fullDir)
+    {
         if (!string.IsNullOrWhiteSpace(manifest.Assembly))
         {
-            assemblyPath = Path.Combine(fullDir, manifest.Assembly);
-        }
-        else
-        {
-            string convention = Path.Combine(fullDir, $"{manifest.Id}.Client.dll");
-            if (File.Exists(convention))
-            {
-                assemblyPath = convention;
-            }
+            return Path.Combine(fullDir, manifest.Assembly);
         }
 
-        return LoadMod(manifest, fullDir, assemblyPath);
+        string convention = Path.Combine(fullDir, $"{manifest.Id}.Client.dll");
+        return File.Exists(convention) ? convention : null;
     }
 
     /// <summary>
@@ -240,6 +460,11 @@ public sealed class ClientModLoader : IDisposable
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
+
+        if (!manifest.Enabled)
+        {
+            throw new InvalidOperationException($"Client mod '{manifest.Id}' is disabled in its manifest.");
+        }
 
         if (!SdkVersion.IsCompatible(manifest.SdkVersionRange))
         {
@@ -287,7 +512,7 @@ public sealed class ClientModLoader : IDisposable
 
         if (payloadDir is not null)
         {
-            loaded.TrackedDisposables.Add(_runtime.FileOverlayService.RegisterDirectoryForMod(manifest.Id, payloadDir, priority: 0));
+            TrackModDisposable(loaded, _runtime.FileOverlayService.RegisterDirectoryForMod(manifest.Id, payloadDir, priority: 0));
         }
 
         if (!string.IsNullOrWhiteSpace(assemblyPath))
@@ -296,6 +521,19 @@ public sealed class ClientModLoader : IDisposable
             {
                 DisposeTracked(loaded);
                 throw new FileNotFoundException($"Client mod assembly '{assemblyPath}' was not found.", assemblyPath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(manifest.PayloadHash))
+            {
+                try
+                {
+                    VerifyAssemblyPayloadHash(assemblyPath, manifest.PayloadHash, manifest.Id);
+                }
+                catch
+                {
+                    DisposeTracked(loaded);
+                    throw;
+                }
             }
 
             ClientModLoadContext alc = new(manifest.Id, fullDir, _shadowRoot);
@@ -340,6 +578,25 @@ public sealed class ClientModLoader : IDisposable
         return loaded;
     }
 
+    private static void VerifyAssemblyPayloadHash(string assemblyPath, string payloadHash, string modId)
+    {
+        string expected = payloadHash.Trim();
+        if (expected.Length != 64 || !expected.All(char.IsAsciiHexDigit))
+        {
+            throw new InvalidDataException(
+                $"Client mod '{modId}' has malformed payloadHash '{payloadHash}' (expected 64 hex characters for SHA-256).");
+        }
+
+        using FileStream fs = File.OpenRead(assemblyPath);
+        byte[] actualHash = SHA256.HashData(fs);
+        string actualHex = Convert.ToHexStringLower(actualHash);
+        if (!string.Equals(actualHex, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"PayloadHash verification failed for client mod '{modId}' ('{Path.GetFileName(assemblyPath)}'): expected {expected}, actual {actualHex}.");
+        }
+    }
+
     /// <summary>
     /// Loads an already-instantiated in-process <see cref="IClientMod"/> (useful for unit tests and built-in mods)
     /// with full manifest permission checks, tracked disposables, and fault isolation.
@@ -348,6 +605,11 @@ public sealed class ClientModLoader : IDisposable
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(instance);
+
+        if (!manifest.Enabled)
+        {
+            throw new InvalidOperationException($"Client mod '{manifest.Id}' is disabled in its manifest.");
+        }
 
         if (!SdkVersion.IsCompatible(manifest.SdkVersionRange))
         {
@@ -625,31 +887,64 @@ public sealed class ClientModLoader : IDisposable
         }
         catch (Exception ex)
         {
-            bool disabledNow = false;
-            if (mod is not null)
+            RecordExternalFault(modId, ex);
+            return false;
+        }
+    }
+
+    internal void RecordExternalFault(string modId, Exception ex)
+    {
+        LoadedClientMod? mod = GetMod(modId);
+        bool disabledNow = false;
+        if (mod is not null)
+        {
+            lock (_gate)
             {
-                lock (_gate)
+                mod.FaultCount++;
+                mod.LastFault = ex;
+                if (mod.FaultCount >= _maxFaultsBeforeDisable && !mod.IsDisabled)
                 {
-                    mod.FaultCount++;
-                    mod.LastFault = ex;
-                    if (mod.FaultCount >= _maxFaultsBeforeDisable && !mod.IsDisabled)
-                    {
-                        mod.IsDisabled = true;
-                        mod.DisabledReason = $"Disabled after {mod.FaultCount} unhandled exception(s): {ex.GetType().Name}: {ex.Message}";
-                        disabledNow = true;
-                    }
+                    mod.IsDisabled = true;
+                    mod.DisabledReason = $"Disabled after {mod.FaultCount} unhandled exception(s): {ex.GetType().Name}: {ex.Message}";
+                    disabledNow = true;
                 }
 
                 if (disabledNow)
                 {
-                    DisposeTracked(mod);
                     mod.FrameCallbacks.Clear();
                 }
             }
 
-            _runtime.Log("ERROR", modId, $"Fault wall caught {ex.GetType().Name}: {ex.Message}{(disabledNow ? " [MOD DISABLED]" : string.Empty)}");
-            ModFaulted?.Invoke(modId, ex, disabledNow);
-            return false;
+            if (disabledNow)
+            {
+                DisposeTracked(mod);
+            }
+        }
+
+        _runtime.Log("ERROR", modId, $"Fault wall caught {ex.GetType().Name}: {ex.Message}{(disabledNow ? " [MOD DISABLED]" : string.Empty)}");
+        ModFaulted?.Invoke(modId, ex, disabledNow);
+    }
+
+    internal static void TrackModDisposable(LoadedClientMod mod, IDisposable resource)
+    {
+        ArgumentNullException.ThrowIfNull(resource);
+        bool disposeImmediately = false;
+        lock (mod.SyncRoot)
+        {
+            if (mod.IsDisabled)
+            {
+                disposeImmediately = true;
+            }
+            else
+            {
+                mod.TrackedDisposables.Add(resource);
+            }
+        }
+
+        if (disposeImmediately)
+        {
+            try { resource.Dispose(); }
+            catch { }
         }
     }
 
@@ -721,13 +1016,18 @@ public sealed class ClientModLoader : IDisposable
 
     private static void DisposeTracked(LoadedClientMod mod)
     {
-        for (int i = mod.TrackedDisposables.Count - 1; i >= 0; i--)
+        IDisposable[] snapshot;
+        lock (mod.SyncRoot)
         {
-            try { mod.TrackedDisposables[i].Dispose(); }
-            catch { }
+            snapshot = [.. mod.TrackedDisposables];
+            mod.TrackedDisposables.Clear();
         }
 
-        mod.TrackedDisposables.Clear();
+        for (int i = snapshot.Length - 1; i >= 0; i--)
+        {
+            try { snapshot[i].Dispose(); }
+            catch { }
+        }
     }
 
     /// <inheritdoc/>
@@ -817,11 +1117,8 @@ internal sealed class ScopedClientContext : IClientContext
         }
     }
 
-    public void TrackDisposable(IDisposable resource)
-    {
-        ArgumentNullException.ThrowIfNull(resource);
-        _mod.TrackedDisposables.Add(resource);
-    }
+    public void TrackDisposable(IDisposable resource) =>
+        ClientModLoader.TrackModDisposable(_mod, resource);
 }
 
 internal sealed class TrackedNetChannel(INetChannel inner, Action<IDisposable> track) : INetChannel
@@ -854,10 +1151,49 @@ internal sealed class ScopedRawMemory(IRawMemory inner, Action<IDisposable> trac
     public byte[] ReadBytes(nint address, int count) => inner.ReadBytes(address, count);
     public void WriteBytes(nint address, ReadOnlySpan<byte> data) => inner.WriteBytes(address, data);
     public nint Call(string symbolName, params nint[] args) => inner.Call(symbolName, args);
+    public NativeCallResult CallEx(string symbolName, ReadOnlySpan<NativeCallArgument> args, bool returnIsFloat = false) =>
+        inner.CallEx(symbolName, args, returnIsFloat);
+    public NativeCallResult CallEx(nint targetAddress, ReadOnlySpan<NativeCallArgument> args, bool returnIsFloat = false) =>
+        inner.CallEx(targetAddress, args, returnIsFloat);
 
     public IDisposable InstallHook(string symbolName, nint detourTarget, out nint originalTrampoline, HookType hookType = HookType.InlineDetour)
     {
         IDisposable sub = inner.InstallHook(symbolName, detourTarget, out originalTrampoline, hookType);
+        track(sub);
+        return sub;
+    }
+
+    public IDisposable InstallHook(string symbolName, nint detourTarget, out nint originalTrampoline, HookType hookType, uint vtableSlotIndex)
+    {
+        IDisposable sub = inner.InstallHook(symbolName, detourTarget, out originalTrampoline, hookType, vtableSlotIndex);
+        track(sub);
+        return sub;
+    }
+
+    public IDisposable InstallVtableHook(nint vtableAddress, uint slotIndex, nint detourTarget, out nint originalSlot)
+    {
+        IDisposable sub = inner.InstallVtableHook(vtableAddress, slotIndex, detourTarget, out originalSlot);
+        track(sub);
+        return sub;
+    }
+
+    public IDisposable InstallHookChain(string symbolName, HookPhase phase, Action<HookContext> callback, int priority = 0)
+    {
+        IDisposable sub = inner.InstallHookChain(symbolName, phase, callback, priority);
+        track(sub);
+        return sub;
+    }
+
+    public IDisposable InstallHookChain(nint address, string? expectedBytesHex, HookPhase phase, Action<HookContext> callback, int priority = 0)
+    {
+        IDisposable sub = inner.InstallHookChain(address, expectedBytesHex, phase, callback, priority);
+        track(sub);
+        return sub;
+    }
+
+    public IDisposable InstallVtableHookChain(nint vtableAddress, uint slotIndex, HookPhase phase, Action<HookContext> callback, int priority = 0)
+    {
+        IDisposable sub = inner.InstallVtableHookChain(vtableAddress, slotIndex, phase, callback, priority);
         track(sub);
         return sub;
     }
@@ -875,23 +1211,35 @@ internal sealed class ScopedGameServices : IGameServices
         _loader = loader;
         _mod = mod;
         Ui = new TrackedUiService(runtime.Ui, track);
+        Chat = new TrackedChatService(runtime.Chat, loader, mod.Manifest.Id, track);
         Files = new TrackedFileOverlayService(runtime.FileOverlayService, mod.Manifest.Id, track);
-        Scripts = new TrackedScriptService(runtime.Scripts, track);
+        Scripts = new TrackedScriptService(runtime.Scripts, loader, mod.Manifest.Id, track);
+        var audio = new TrackedAudioService(runtime.Audio);
+        track(audio);
+        Audio = audio;
         Stats = new TrackedStatsService(runtime.Stats, track);
+        var world = new TrackedWorldService(runtime.World);
+        track(world);
+        World = world;
+        var lifecycle = new TrackedGameLifecycle(runtime.Lifecycle, loader, mod.Manifest.Id);
+        track(lifecycle);
+        Lifecycle = lifecycle;
         GealBuiltins = new TrackedGealBuiltinRegistry(runtime.GealBuiltins, track);
         UiControls = new TrackedUiControlRegistry(runtime.UiControls, track);
-        Rulesets = new TrackedRulesetRegistry(runtime.Rulesets, track);
-        Opcodes = new TrackedOpcodeRegistry(runtime.Opcodes, track);
+        Rulesets = new TrackedRulesetRegistry(runtime.Rulesets, loader, mod.Manifest.Id, track);
+        Opcodes = new TrackedOpcodeRegistry(runtime.Opcodes, loader, mod.Manifest.Id, track);
         Content = new TrackedContentRegistry(runtime.Content, track);
     }
 
     public IUiService Ui { get; }
+    public IClipboardService Clipboard => _runtime.Clipboard;
+    public IChatService Chat { get; }
     public IFileOverlayService Files { get; }
     public IScriptService Scripts { get; }
-    public IAudioService Audio => _runtime.Audio;
+    public IAudioService Audio { get; }
     public IStatsService Stats { get; }
-    public IWorldService World => _runtime.World;
-    public IGameLifecycle Lifecycle => _runtime.Lifecycle;
+    public IWorldService World { get; }
+    public IGameLifecycle Lifecycle { get; }
     public IGealBuiltinRegistry GealBuiltins { get; }
     public IUiControlRegistry UiControls { get; }
     public IRulesetRegistry Rulesets { get; }
@@ -919,7 +1267,9 @@ internal sealed class ScopedGameServices : IGameServices
     private sealed class TrackedUiService(IUiService inner, Action<IDisposable> track) : IUiService
     {
         public IReadOnlyCollection<IUiWindow> OpenWindows => inner.OpenWindows;
+        public IUiControl? GetRootControl() => inner.GetRootControl();
         public IUiWindow Load(string virtualPath, string? windowId = null) { IUiWindow w = inner.Load(virtualPath, windowId); track(w); return w; }
+        public IUiWindow CreateWindowInto(IUiControl parent, string virtualPath, string? windowId = null) { IUiWindow w = inner.CreateWindowInto(parent, virtualPath, windowId); track(w); return w; }
         public IUiWindow? GetWindow(string windowId) => inner.GetWindow(windowId);
         public bool CloseWindow(string windowId) => inner.CloseWindow(windowId);
         public void ReloadWindow(string windowId) => inner.ReloadWindow(windowId);
@@ -927,7 +1277,7 @@ internal sealed class ScopedGameServices : IGameServices
         public IDisposable RegisterControl(string controlTypeName, Func<ICustomUiControl> factory) { IDisposable d = inner.RegisterControl(controlTypeName, factory); track(d); return d; }
     }
 
-    private sealed class TrackedFileOverlayService(FileOverlayService inner, string modId, Action<IDisposable> track) : IFileOverlayService
+    private sealed class TrackedFileOverlayService(FileOverlayService inner, string modId, Action<IDisposable> track) : IFileOverlayService, IStockFileProvider
     {
         public IDisposable RegisterDirectory(string rootDirectory, int priority = 0) { IDisposable d = inner.RegisterDirectoryForMod(modId, rootDirectory, priority); track(d); return d; }
         public IDisposable RegisterVirtualFile(string virtualPath, ReadOnlyMemory<byte> rawBytes, int priority = 100) { IDisposable d = inner.RegisterVirtualFileForMod(modId, virtualPath, rawBytes, priority); track(d); return d; }
@@ -936,11 +1286,30 @@ internal sealed class ScopedGameServices : IGameServices
         public bool Exists(string virtualPath) => inner.Exists(virtualPath);
         public byte[]? ReadAllBytes(string virtualPath) => inner.ReadAllBytes(virtualPath);
         public string? ReadAllText(string virtualPath) => inner.ReadAllText(virtualPath);
+        public byte[]? ReadStockGameFile(string virtualPath) => inner.ReadStockGameFile(virtualPath);
         public void Invalidate(string virtualPath) => inner.Invalidate(virtualPath);
         public IReadOnlyList<FileOverlayEntry> GetRegisteredOverlays() => inner.GetRegisteredOverlays();
     }
 
-    private sealed class TrackedScriptService(IScriptService inner, Action<IDisposable> track) : IScriptService
+    private sealed class TrackedChatService(IChatService inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IChatService
+    {
+        public IDisposable RegisterInterceptor(Func<string, string, bool> interceptor)
+        {
+            ArgumentNullException.ThrowIfNull(interceptor);
+            IDisposable sub = inner.RegisterInterceptor((sender, text) =>
+            {
+                bool result = false;
+                loader.ExecuteFaultIsolated(modId, () => result = interceptor(sender, text));
+                return result;
+            });
+            track(sub);
+            return sub;
+        }
+
+        public void SendLine(string text) => inner.SendLine(text);
+    }
+
+    private sealed class TrackedScriptService(IScriptService inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IScriptService
     {
         public GealInvocationResult InvokeFunction(uint objectId, string functionName, params GealValue[] arguments) => inner.InvokeFunction(objectId, functionName, arguments);
         public GealInvocationResult InvokeEvent(uint objectId, string eventName, params GealValue[] arguments) => inner.InvokeEvent(objectId, eventName, arguments);
@@ -948,6 +1317,335 @@ internal sealed class ScopedGameServices : IGameServices
         public IReadOnlyCollection<string> GetRegisteredBuiltins() => inner.GetRegisteredBuiltins();
         public IDisposable Register(string name, Func<uint, GealArguments, GealValue> callback) { IDisposable d = inner.Register(name, callback); track(d); return d; }
         public IDisposable Register(string name, Action<uint, GealArguments> callback) { IDisposable d = inner.Register(name, callback); track(d); return d; }
+        public IDisposable RegisterChatInterceptor(Func<string, string, bool> interceptor)
+        {
+            ArgumentNullException.ThrowIfNull(interceptor);
+            IDisposable d = inner.RegisterChatInterceptor((sender, text) =>
+            {
+                bool result = false;
+                loader.ExecuteFaultIsolated(modId, () => result = interceptor(sender, text));
+                return result;
+            });
+            track(d);
+            return d;
+        }
+    }
+
+    private sealed class TrackedAudioService(IAudioService inner) : IAudioService, IDisposable
+    {
+        private readonly HashSet<int> _ownedChannels = [];
+        private readonly Lock _gate = new();
+
+        public int ActiveChannelCount => inner.ActiveChannelCount;
+
+        public int PlayEvent(string fmodEventPath, float volume = 1.0f)
+        {
+            int ch = inner.PlayEvent(fmodEventPath, volume);
+            if (ch > 0)
+            {
+                lock (_gate) { _ownedChannels.Add(ch); }
+            }
+
+            return ch;
+        }
+
+        public int PlaySoundFile(string virtualOggPath, float volume = 1.0f) => PlaySoundFile(virtualOggPath, volume, loop: false);
+
+        public int PlaySoundFile(string virtualOggPath, float volume, bool loop)
+        {
+            int ch = inner.PlaySoundFile(virtualOggPath, volume, loop);
+            if (ch > 0)
+            {
+                lock (_gate) { _ownedChannels.Add(ch); }
+            }
+
+            return ch;
+        }
+
+        public void SetChannelVolume(int channelHandle, float volume) => inner.SetChannelVolume(channelHandle, volume);
+
+        public bool IsChannelPlaying(int channelHandle) => inner.IsChannelPlaying(channelHandle);
+
+        public void StopChannel(int channelHandle)
+        {
+            lock (_gate) { _ownedChannels.Remove(channelHandle); }
+            inner.StopChannel(channelHandle);
+        }
+
+        public void Dispose()
+        {
+            int[] channels;
+            lock (_gate)
+            {
+                channels = [.. _ownedChannels];
+                _ownedChannels.Clear();
+            }
+
+            foreach (int ch in channels)
+            {
+                try { inner.StopChannel(ch); }
+                catch { }
+            }
+        }
+    }
+
+    private sealed class TrackedWorldService(IWorldService inner) : IWorldService, IDisposable
+    {
+        private readonly HashSet<uint> _ownedObjects = [];
+        private readonly Lock _gate = new();
+
+        public string CurrentAreaId => inner.CurrentAreaId;
+        public IReadOnlyCollection<WorldObjectInfo> Objects => inner.Objects;
+        public WorldObjectInfo? FindObject(uint objectId) => inner.FindObject(objectId);
+
+        public uint SpawnClientObject(string metadataPath, float x, float y, float z = 0f)
+        {
+            uint id = inner.SpawnClientObject(metadataPath, x, y, z);
+            lock (_gate) { _ownedObjects.Add(id); }
+            return id;
+        }
+
+        public bool RemoveClientObject(uint objectId)
+        {
+            lock (_gate) { _ownedObjects.Remove(objectId); }
+            return inner.RemoveClientObject(objectId);
+        }
+
+        public void PlayEffect(uint targetObjectId, string effectPath) => inner.PlayEffect(targetObjectId, effectPath);
+
+        public void Dispose()
+        {
+            uint[] ids;
+            lock (_gate)
+            {
+                ids = [.. _ownedObjects];
+                _ownedObjects.Clear();
+            }
+
+            foreach (uint id in ids)
+            {
+                try { inner.RemoveClientObject(id); }
+                catch { }
+            }
+        }
+    }
+
+    private sealed class TrackedGameLifecycle(IGameLifecycle inner, ClientModLoader loader, string modId) : IGameLifecycle, IDisposable
+    {
+        private enum LifecycleEventKind : byte { Frame, AreaEntered, AreaLeft, Connected, Disconnected }
+
+        private readonly List<(LifecycleEventKind Kind, Delegate Original, Delegate Wrapped)> _subscriptions = [];
+        private readonly Lock _gate = new();
+        private bool _disposed;
+
+        public long FrameCount => inner.FrameCount;
+        public bool IsConnected => inner.IsConnected;
+        public string? CurrentAreaId => inner.CurrentAreaId;
+
+        public event Action<float>? Frame
+        {
+            add
+            {
+                if (value is null) return;
+                Action<float> wrapped = dt => loader.ExecuteFaultIsolated(modId, () => value(dt));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((LifecycleEventKind.Frame, value, wrapped));
+                }
+
+                inner.Frame += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(LifecycleEventKind.Frame, value) is Action<float> wrapped)
+                {
+                    inner.Frame -= wrapped;
+                }
+            }
+        }
+
+        public event Action<AreaEventArgs>? AreaEntered
+        {
+            add
+            {
+                if (value is null) return;
+                Action<AreaEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((LifecycleEventKind.AreaEntered, value, wrapped));
+                }
+
+                inner.AreaEntered += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(LifecycleEventKind.AreaEntered, value) is Action<AreaEventArgs> wrapped)
+                {
+                    inner.AreaEntered -= wrapped;
+                }
+            }
+        }
+
+        public event Action<string>? AreaLeft
+        {
+            add
+            {
+                if (value is null) return;
+                Action<string> wrapped = areaId => loader.ExecuteFaultIsolated(modId, () => value(areaId));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((LifecycleEventKind.AreaLeft, value, wrapped));
+                }
+
+                inner.AreaLeft += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(LifecycleEventKind.AreaLeft, value) is Action<string> wrapped)
+                {
+                    inner.AreaLeft -= wrapped;
+                }
+            }
+        }
+
+        public event Action? Connected
+        {
+            add
+            {
+                if (value is null) return;
+                Action wrapped = () => loader.ExecuteFaultIsolated(modId, value);
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((LifecycleEventKind.Connected, value, wrapped));
+                }
+
+                inner.Connected += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(LifecycleEventKind.Connected, value) is Action wrapped)
+                {
+                    inner.Connected -= wrapped;
+                }
+            }
+        }
+
+        public event Action<string?>? Disconnected
+        {
+            add
+            {
+                if (value is null) return;
+                Action<string?> wrapped = reason => loader.ExecuteFaultIsolated(modId, () => value(reason));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((LifecycleEventKind.Disconnected, value, wrapped));
+                }
+
+                inner.Disconnected += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(LifecycleEventKind.Disconnected, value) is Action<string?> wrapped)
+                {
+                    inner.Disconnected -= wrapped;
+                }
+            }
+        }
+
+        private Delegate? RemoveSubscription(LifecycleEventKind kind, Delegate original)
+        {
+            lock (_gate)
+            {
+                for (int i = _subscriptions.Count - 1; i >= 0; i--)
+                {
+                    var entry = _subscriptions[i];
+                    if (entry.Kind == kind && entry.Original.Equals(original))
+                    {
+                        _subscriptions.RemoveAt(i);
+                        return entry.Wrapped;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        public void Dispose()
+        {
+            (LifecycleEventKind Kind, Delegate Original, Delegate Wrapped)[] snapshot;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                snapshot = [.. _subscriptions];
+                _subscriptions.Clear();
+            }
+
+            foreach (var entry in snapshot)
+            {
+                switch (entry.Kind)
+                {
+                    case LifecycleEventKind.Frame:
+                        inner.Frame -= (Action<float>)entry.Wrapped;
+                        break;
+                    case LifecycleEventKind.AreaEntered:
+                        inner.AreaEntered -= (Action<AreaEventArgs>)entry.Wrapped;
+                        break;
+                    case LifecycleEventKind.AreaLeft:
+                        inner.AreaLeft -= (Action<string>)entry.Wrapped;
+                        break;
+                    case LifecycleEventKind.Connected:
+                        inner.Connected -= (Action)entry.Wrapped;
+                        break;
+                    case LifecycleEventKind.Disconnected:
+                        inner.Disconnected -= (Action<string?>)entry.Wrapped;
+                        break;
+                }
+            }
+        }
+    }
+
+    private sealed class FaultIsolatedRulesetProxy(IClientRuleset inner, ClientModLoader loader, string modId) : IClientRuleset
+    {
+        public byte RulesetId => inner.RulesetId;
+        public string Name => inner.Name;
+
+        public void OnAreaEntered(AreaEventArgs area) =>
+            loader.ExecuteFaultIsolated(modId, () => inner.OnAreaEntered(area));
+
+        public void OnRulesetUpdate(ReadOnlySpan<byte> payload)
+        {
+            LoadedClientMod? mod = loader.GetMod(modId);
+            if (mod is not null && mod.IsDisabled)
+            {
+                return;
+            }
+
+            try
+            {
+                inner.OnRulesetUpdate(payload);
+            }
+            catch (Exception ex)
+            {
+                loader.RecordExternalFault(modId, ex);
+            }
+        }
+
+        public void OnFrame(float deltaSeconds) =>
+            loader.ExecuteFaultIsolated(modId, () => inner.OnFrame(deltaSeconds));
+
+        public void OnAreaLeft() =>
+            loader.ExecuteFaultIsolated(modId, inner.OnAreaLeft);
     }
 
     private sealed class TrackedStatsService(IStatsService inner, Action<IDisposable> track) : IStatsService
@@ -975,19 +1673,65 @@ internal sealed class ScopedGameServices : IGameServices
         public ICustomUiControl? CreateInstance(string controlTypeName) => inner.CreateInstance(controlTypeName);
     }
 
-    private sealed class TrackedRulesetRegistry(IRulesetRegistry inner, Action<IDisposable> track) : IRulesetRegistry
+    private sealed class TrackedRulesetRegistry(IRulesetRegistry inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IRulesetRegistry
     {
         public IReadOnlyCollection<byte> RegisteredIds => inner.RegisteredIds;
-        public IDisposable Register<TRuleset>() where TRuleset : class, IClientRuleset, new() { IDisposable d = inner.Register<TRuleset>(); track(d); return d; }
-        public IDisposable Register(byte rulesetId, Func<IClientRuleset> factory) { IDisposable d = inner.Register(rulesetId, factory); track(d); return d; }
+
+        public IDisposable Register<TRuleset>() where TRuleset : class, IClientRuleset, new()
+        {
+            var probe = new TRuleset();
+            return Register(probe.RulesetId, static () => new TRuleset());
+        }
+
+        public IDisposable Register(byte rulesetId, Func<IClientRuleset> factory)
+        {
+            ArgumentNullException.ThrowIfNull(factory);
+            IDisposable d = inner.Register(rulesetId, () => new FaultIsolatedRulesetProxy(factory(), loader, modId));
+            track(d);
+            return d;
+        }
+
         public bool IsRegistered(byte rulesetId) => inner.IsRegistered(rulesetId);
         public bool TryDispatchUpdate(byte rulesetId, ReadOnlySpan<byte> payload) => inner.TryDispatchUpdate(rulesetId, payload);
     }
 
-    private sealed class TrackedOpcodeRegistry(IOpcodeRegistry inner, Action<IDisposable> track) : IOpcodeRegistry
+    private sealed class TrackedOpcodeRegistry(IOpcodeRegistry inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IOpcodeRegistry
     {
         public IReadOnlyCollection<ushort> RegisteredOpcodes => inner.RegisteredOpcodes;
-        public IDisposable RegisterHandler(ushort opcode, Action<ReadOnlyMemory<byte>> handler, string? groupName = null) { IDisposable d = inner.RegisterHandler(opcode, handler, groupName); track(d); return d; }
+
+        public IDisposable RegisterHandler(ushort opcode, Action<ReadOnlyMemory<byte>> handler, string? groupName = null)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            IDisposable d = inner.RegisterHandler(opcode, payload => loader.ExecuteFaultIsolated(modId, () => handler(payload)), groupName);
+            track(d);
+            return d;
+        }
+
+        public IDisposable RegisterGroup(ushort minOpcode, ushort maxOpcode, Action<ushort, ReadOnlyMemory<byte>> handler, string? groupName = null)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            IDisposable d = inner.RegisterGroup(minOpcode, maxOpcode, (op, payload) => loader.ExecuteFaultIsolated(modId, () => handler(op, payload)), groupName);
+            track(d);
+            return d;
+        }
+
+        public IDisposable RegisterStreamHandler(ushort minOpcode, ushort maxOpcode, Func<ushort, INativePacketStream, ReadOnlyMemory<byte>, bool> handler, string? groupName = null)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            IDisposable d = inner.RegisterStreamHandler(
+                minOpcode,
+                maxOpcode,
+                (op, stream, payload) =>
+                {
+                    bool handled = false;
+                    loader.ExecuteFaultIsolated(modId, () => handled = handler(op, stream, payload));
+                    return handled;
+                },
+                groupName);
+            track(d);
+            return d;
+        }
+
         public bool IsRegistered(ushort opcode) => inner.IsRegistered(opcode);
         public bool TryDispatch(ushort opcode, ReadOnlyMemory<byte> payload) => inner.TryDispatch(opcode, payload);
     }

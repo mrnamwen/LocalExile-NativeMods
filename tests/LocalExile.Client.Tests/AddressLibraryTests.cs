@@ -181,7 +181,10 @@ public sealed class AddressLibraryTests
         Assert.Equal(48, sizeof(NmSymbolInfo));
         Assert.Equal(16, sizeof(NmGameAllocHeader));
         Assert.Equal(528, sizeof(NmExceptionInfo));
-        Assert.Equal(336, sizeof(NmAbiTable));
+        Assert.Equal(128, sizeof(NmHookContext));
+        Assert.Equal(104, sizeof(NmNativeCallDesc));
+        Assert.Equal(552, sizeof(NmAbiTable));
+        Assert.Equal(0x00000200u, NativeShimConstants.AbiVersion);
         Assert.Equal("LocalExile.Client.Host.NativeEntryPoint", typeof(NativeEntryPoint).FullName);
 
         NmAbiTable table = default;
@@ -517,8 +520,33 @@ public sealed class AddressLibraryTests
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static NmStatus MockUnregisterRulesetHandler(ulong token) { Interlocked.Increment(ref _unregisteredCount); return NmStatus.Ok; }
 
+    [Fact]
+    public unsafe void NativeShimBridge_RejectsLegacy010Future030AndTruncatedAbiTables()
+    {
+        NmAbiTable legacy = default;
+        legacy.StructSize = (uint)sizeof(NmAbiTable);
+        legacy.AbiVersion = 0x00000100u;
+        nint legacyPtr = (nint)(&legacy);
+        Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(legacyPtr));
+        Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(legacyPtr));
+
+        NmAbiTable future = default;
+        future.StructSize = (uint)sizeof(NmAbiTable);
+        future.AbiVersion = 0x00000300u;
+        nint futurePtr = (nint)(&future);
+        Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(futurePtr));
+        Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(futurePtr));
+
+        NmAbiTable truncated = default;
+        truncated.StructSize = 336u;
+        truncated.AbiVersion = NativeShimConstants.AbiVersion;
+        nint truncatedPtr = (nint)(&truncated);
+        Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(truncatedPtr));
+        Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(truncatedPtr));
+    }
+
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    private static unsafe NmStatus MockRegisterChatHandler(delegate* unmanaged[Cdecl]<byte*, byte*, void*, void> cb, void* ud, ulong* outToken)
+    private static unsafe NmStatus MockRegisterChatHandler(delegate* unmanaged[Cdecl]<byte*, byte*, void*, int> cb, void* ud, ulong* outToken)
     {
         *outToken = 1;
         return NmStatus.Ok;

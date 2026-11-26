@@ -3,6 +3,28 @@ using LocalExile.Client.Sdk.Extend;
 namespace LocalExile.Client.Sdk.Engine;
 
 /// <summary>
+/// Screen-space rectangle describing a UI control's position and dimensions in 3.29 UI coordinates.
+/// </summary>
+/// <param name="X">Absolute or layout X coordinate.</param>
+/// <param name="Y">Absolute or layout Y coordinate.</param>
+/// <param name="Width">Control width.</param>
+/// <param name="Height">Control height.</param>
+public readonly record struct UiRect(float X, float Y, float Width, float Height);
+
+/// <summary>
+/// Provides UTF-8/UTF-16 clipboard access through the Win32 clipboard (or simulated host buffer).
+/// </summary>
+public interface IClipboardService
+{
+    /// <summary>Reads the current text on the clipboard, or <c>null</c> if unavailable.</summary>
+    string? GetText();
+
+    /// <summary>Writes <paramref name="text"/> onto the clipboard.</summary>
+    /// <param name="text">Text to place on the clipboard.</param>
+    void SetText(string text);
+}
+
+/// <summary>
 /// Base abstraction for a node in the client's native <c>.ui</c> control tree.
 /// </summary>
 public interface IUiControl
@@ -21,6 +43,30 @@ public interface IUiControl
 
     /// <summary>Gets or sets the control's text or caption.</summary>
     string Text { get; set; }
+
+    /// <summary>Gets the control's current position and size.</summary>
+    UiRect Rect { get; }
+
+    /// <summary>Alias for <see cref="Rect"/>.</summary>
+    UiRect Bounds => Rect;
+
+    /// <summary>Gets or sets whether the control is enabled for interaction.</summary>
+    bool IsEnabled { get; set; }
+
+    /// <summary>Updates the control's relative position.</summary>
+    void SetPosition(float x, float y);
+
+    /// <summary>Updates the control's dimensions.</summary>
+    void SetSize(float width, float height);
+
+    /// <summary>Attaches a child control under this control.</summary>
+    void AddChild(IUiControl child);
+
+    /// <summary>Detaches a child control from this control.</summary>
+    bool RemoveChild(IUiControl child);
+
+    /// <summary>Destroys this control, detaching it from its parent and releasing native resources.</summary>
+    void Destroy();
 
     /// <summary>The parent control, or <c>null</c> for a window root.</summary>
     IUiControl? Parent { get; }
@@ -101,6 +147,13 @@ public interface ICheckBox : IUiControl
     /// <summary>Gets or sets whether the check box is checked.</summary>
     bool IsChecked { get; set; }
 
+    /// <summary>Alias for <see cref="IsChecked"/>.</summary>
+    bool Checked
+    {
+        get => IsChecked;
+        set => IsChecked = value;
+    }
+
     /// <summary>Raised when <see cref="IsChecked"/> changes.</summary>
     event Action<bool>? CheckedChanged;
 }
@@ -134,11 +187,21 @@ public interface IUiService
     /// <summary>Currently open mod windows.</summary>
     IReadOnlyCollection<IUiWindow> OpenWindows { get; }
 
+    /// <summary>Returns the live native UI root control, or <c>null</c> if unavailable.</summary>
+    IUiControl? GetRootControl();
+
     /// <summary>Loads a <c>.ui</c> file through the file overlay and attaches a new isolated window to the active UI root.</summary>
     /// <param name="virtualPath">Virtual path to the <c>.ui</c> layout (for example <c>Metadata/UI/Mods/Garden/Stockpile.ui</c>).</param>
     /// <param name="windowId">Optional explicit window identifier; defaults to the root control id or filename.</param>
     /// <returns>The loaded window handle.</returns>
     IUiWindow Load(string virtualPath, string? windowId = null);
+
+    /// <summary>Loads a <c>.ui</c> layout and attaches it directly as a child of <paramref name="parent"/>.</summary>
+    /// <param name="parent">Parent control receiving the loaded child window.</param>
+    /// <param name="virtualPath">Virtual path to the <c>.ui</c> layout.</param>
+    /// <param name="windowId">Optional explicit window identifier.</param>
+    /// <returns>The loaded child window handle.</returns>
+    IUiWindow CreateWindowInto(IUiControl parent, string virtualPath, string? windowId = null);
 
     /// <summary>Retrieves an open window by its identifier, or <c>null</c> if not open.</summary>
     IUiWindow? GetWindow(string windowId);

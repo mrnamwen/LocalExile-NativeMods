@@ -298,4 +298,26 @@ public interface IScriptService
 
     /// <summary>Registers a custom void GEAL built-in function.</summary>
     IDisposable Register(string name, Action<uint, GealArguments> callback);
+
+    /// <summary>
+    /// Registers an S→C chat line interceptor invoked on the game thread.
+    /// Returning <c>true</c> suppresses the message from appearing in the in-game chat panel.
+    /// </summary>
+    IDisposable RegisterChatInterceptor(Func<string, string, bool> interceptor);
+}
+
+/// <summary>
+/// Provides access to client chat interceptors and C→S chat line transmission.
+/// </summary>
+public interface IChatService
+{
+    /// <summary>
+    /// Registers an S→C chat interceptor invoked on the game thread with <c>(sender, text)</c>.
+    /// Returning <c>true</c> suppresses the chat message from reaching PoE's chat panel.
+    /// </summary>
+    IDisposable RegisterInterceptor(Func<string, string, bool> interceptor);
+
+    /// <summary>Sends a C→S <c>0x15</c> chat line or slash command to the server.</summary>
+    /// <param name="text">Chat message or command line.</param>
+    void SendLine(string text);
 }

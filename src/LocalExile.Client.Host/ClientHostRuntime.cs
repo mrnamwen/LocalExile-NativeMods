@@ -51,12 +51,28 @@ public sealed record ClientHostOptions
 /// </summary>
 public sealed class ClientHostRuntime : IDisposable
 {
+    private sealed class UiEventKeyComparer : IEqualityComparer<(string WindowId, string ControlPath, string EventName)>
+    {
+        public static readonly UiEventKeyComparer Instance = new();
+
+        public bool Equals((string WindowId, string ControlPath, string EventName) x, (string WindowId, string ControlPath, string EventName) y) =>
+            string.Equals(x.WindowId, y.WindowId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.ControlPath, y.ControlPath, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.EventName, y.EventName, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string WindowId, string ControlPath, string EventName) obj) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.WindowId),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.ControlPath),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.EventName));
+    }
+
     private readonly INativeBridge _bridge;
     private readonly ClientHostOptions _options;
     private readonly IDisposable _frameSub;
     private readonly INetChannel _systemChannel;
     private readonly List<IDisposable> _systemSubs = [];
-    private readonly HashSet<(string WindowId, string ControlPath, string EventName)> _subscribedUiEvents = [];
+    private readonly Dictionary<(string WindowId, string ControlPath, string EventName), Action> _subscribedUiEvents = new(UiEventKeyComparer.Instance);
     private bool _started;
     private bool _disposed;
     private long _frameCount;
@@ -66,6 +82,10 @@ public sealed class ClientHostRuntime : IDisposable
     private ulong _lastObservedConnectionToken;
     private ulong _handshakeConnectionToken;
     private bool _isLiveConnected;
+
+    internal bool IsDisposed => Volatile.Read(ref _disposed);
+
+    internal int SubscribedUiEventCount => _subscribedUiEvents.Count;
 
     /// <summary>Total number of game frames processed by this host runtime.</summary>
     public long FrameCount => Interlocked.Read(ref _frameCount);
@@ -87,6 +107,12 @@ public sealed class ClientHostRuntime : IDisposable
 
     /// <summary>Native UI service.</summary>
     public UiService Ui { get; }
+
+    /// <summary>System clipboard service.</summary>
+    public ClipboardService Clipboard { get; }
+
+    /// <summary>Client chat interceptor &amp; send service.</summary>
+    public ChatService Chat { get; }
 
     /// <summary>Custom GEAL built-in registry.</summary>
     public GealBuiltinRegistry GealBuiltins { get; }
@@ -141,8 +167,12 @@ public sealed class ClientHostRuntime : IDisposable
         FileOverlayService = new FileOverlayService(_bridge);
         UiControls = new UiControlRegistry();
         Ui = new UiService(FileOverlayService, UiControls, _bridge);
+        Ui.WindowTreeInvalidated += DetachWindowUiEvents;
+        Ui.ControlSubtreeRemoved += DetachControlSubtreeUiEvents;
+        Clipboard = new ClipboardService(_bridge);
+        Chat = new ChatService(_bridge);
         GealBuiltins = new GealBuiltinRegistry();
-        Scripts = new ScriptService(_bridge, GealBuiltins);
+        Scripts = new ScriptService(_bridge, GealBuiltins, Chat);
         Audio = new AudioService(_bridge);
         Stats = new StatsService(_bridge);
         Lifecycle = new GameLifecycle();
@@ -394,7 +424,7 @@ public sealed class ClientHostRuntime : IDisposable
         HandshakeCompleted?.Invoke(handshake);
     }
 
-    private void HandleServerUiCommand(ServerUiCommand cmd)
+    internal void HandleServerUiCommand(ServerUiCommand cmd)
     {
         switch (cmd.Kind)
         {
@@ -485,45 +515,114 @@ public sealed class ClientHostRuntime : IDisposable
     {
         string eventName = cmd.EventName ?? "Clicked";
         string controlPath = cmd.ControlPath ?? string.Empty;
-        var key = (cmd.WindowId, controlPath, eventName);
-        if (!_subscribedUiEvents.Add(key))
+        string windowId = !string.IsNullOrWhiteSpace(cmd.WindowId)
+            ? cmd.WindowId
+            : (Ui.OpenWindows.FirstOrDefault()?.Id ?? string.Empty);
+
+        var key = (windowId, controlPath, eventName);
+        if (_subscribedUiEvents.ContainsKey(key))
         {
             return;
         }
 
-        IUiControl? control = FindTargetControl(cmd.WindowId, controlPath);
+        IUiControl? control = FindTargetControl(windowId, controlPath);
         if (control is null)
         {
-            _subscribedUiEvents.Remove(key);
             return;
         }
 
+        Action? detach = null;
         if (control is IButton button && string.Equals(eventName, "Clicked", StringComparison.OrdinalIgnoreCase))
         {
-            button.Clicked += () =>
-                _systemChannel.Send(new ClientUiEventNotification(cmd.WindowId, controlPath, "Clicked"));
+            void OnClicked() => _systemChannel.Send(new ClientUiEventNotification(windowId, controlPath, "Clicked"));
+            button.Clicked += OnClicked;
+            detach = () => button.Clicked -= OnClicked;
         }
         else if (control is ICheckBox checkBox && string.Equals(eventName, "CheckedChanged", StringComparison.OrdinalIgnoreCase))
         {
-            checkBox.CheckedChanged += isChecked =>
-                _systemChannel.Send(new ClientUiEventNotification(cmd.WindowId, controlPath, "CheckedChanged", isChecked ? "true" : "false"));
+            void OnChecked(bool isChecked) => _systemChannel.Send(new ClientUiEventNotification(windowId, controlPath, "CheckedChanged", isChecked ? "true" : "false"));
+            checkBox.CheckedChanged += OnChecked;
+            detach = () => checkBox.CheckedChanged -= OnChecked;
         }
         else if (control is ITextBox textBox && string.Equals(eventName, "Submitted", StringComparison.OrdinalIgnoreCase))
         {
-            textBox.Submitted += value =>
-                _systemChannel.Send(new ClientUiEventNotification(cmd.WindowId, controlPath, "Submitted", value));
+            void OnSubmitted(string value) => _systemChannel.Send(new ClientUiEventNotification(windowId, controlPath, "Submitted", value));
+            textBox.Submitted += OnSubmitted;
+            detach = () => textBox.Submitted -= OnSubmitted;
+        }
+        else if (control is ITextBox textBox2 && string.Equals(eventName, "TextChanged", StringComparison.OrdinalIgnoreCase))
+        {
+            void OnTextChanged(string value) => _systemChannel.Send(new ClientUiEventNotification(windowId, controlPath, "TextChanged", value));
+            textBox2.TextChanged += OnTextChanged;
+            detach = () => textBox2.TextChanged -= OnTextChanged;
+        }
+
+        if (detach is not null)
+        {
+            _subscribedUiEvents[key] = detach;
+        }
+    }
+
+    private void DetachWindowUiEvents(string windowId)
+    {
+        if (string.IsNullOrWhiteSpace(windowId) || _subscribedUiEvents.Count == 0)
+        {
+            return;
+        }
+
+        var keys = _subscribedUiEvents.Keys
+            .Where(k => string.Equals(k.WindowId, windowId, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        foreach (var k in keys)
+        {
+            if (_subscribedUiEvents.Remove(k, out Action? detach))
+            {
+                detach();
+            }
+        }
+    }
+
+    private void DetachControlSubtreeUiEvents(string windowId, string controlPath)
+    {
+        if (string.IsNullOrWhiteSpace(windowId) || string.IsNullOrWhiteSpace(controlPath) || _subscribedUiEvents.Count == 0)
+        {
+            return;
+        }
+
+        string prefix = controlPath + ".";
+        var keys = _subscribedUiEvents.Keys
+            .Where(k => string.Equals(k.WindowId, windowId, StringComparison.OrdinalIgnoreCase) &&
+                        (string.Equals(k.ControlPath, controlPath, StringComparison.OrdinalIgnoreCase) ||
+                         k.ControlPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        foreach (var k in keys)
+        {
+            if (_subscribedUiEvents.Remove(k, out Action? detach))
+            {
+                detach();
+            }
         }
     }
 
     /// <inheritdoc/>
     public void Dispose()
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed))
         {
             return;
         }
 
-        _disposed = true;
+        Volatile.Write(ref _disposed, true);
+        Ui.WindowTreeInvalidated -= DetachWindowUiEvents;
+        Ui.ControlSubtreeRemoved -= DetachControlSubtreeUiEvents;
+
+        foreach (Action detach in _subscribedUiEvents.Values.ToArray())
+        {
+            detach();
+        }
+
+        _subscribedUiEvents.Clear();
+
         foreach (IDisposable sub in _systemSubs)
         {
             sub.Dispose();

@@ -194,7 +194,23 @@ public static class NativeEntryPoint
                 runtime.Start();
                 ActiveRuntime = runtime;
 
-                AutoLoadClientMods(hostDir, runtime, WriteLog);
+                bool enqueued = bridge.EnqueueGameThread(() =>
+                {
+                    lock (Gate)
+                    {
+                        if (!ReferenceEquals(ActiveRuntime, runtime) || runtime.IsDisposed)
+                        {
+                            return;
+                        }
+                    }
+
+                    AutoLoadClientMods(hostDir, runtime, WriteLog);
+                });
+                if (!enqueued)
+                {
+                    WriteLog("ERROR", "loader", "Failed to enqueue client mod auto-load onto game thread queue.");
+                }
+
                 return (int)NmStatus.Ok;
             }
         }
@@ -311,27 +327,22 @@ public static class NativeEntryPoint
             return;
         }
 
-        string[] subdirs = Directory.GetDirectories(modsDir);
-        Array.Sort(subdirs, StringComparer.OrdinalIgnoreCase);
+        IReadOnlyList<ModLoadDiagnostic> results = runtime.Loader.LoadModsFromDirectory(modsDir);
         int loadedCount = 0;
-
-        foreach (string modDir in subdirs)
+        foreach (ModLoadDiagnostic diag in results)
         {
-            string manifestPath = Path.Combine(modDir, "mod.json");
-            if (!File.Exists(manifestPath))
+            if (diag.Status == ModLoadStatus.Loaded && diag.LoadedMod is { } mod)
             {
-                continue;
-            }
-
-            try
-            {
-                LoadedClientMod mod = runtime.Loader.LoadModFromDirectory(modDir);
                 loadedCount++;
                 log("INFO", "loader", $"Loaded client mod '{mod.Manifest.Id}' v{mod.Manifest.Version} (gen={mod.Generation}, assembly='{Path.GetFileName(mod.AssemblyPath ?? "<data-only>")}', collectibleAlc={mod.LoadContext?.IsCollectible ?? false}).");
             }
-            catch (Exception ex)
+            else if (diag.Status == ModLoadStatus.Disabled)
             {
-                log("ERROR", "loader", $"Failed to load client mod from '{modDir}': {ex.GetType().Name}: {ex.Message}");
+                log("INFO", "loader", $"Skipped disabled client mod '{diag.ModId}' in '{diag.ModDirectory}'.");
+            }
+            else
+            {
+                log("ERROR", "loader", $"Failed to load client mod '{diag.ModId}' from '{diag.ModDirectory}' [{diag.Status}]: {diag.Message}");
             }
         }
 

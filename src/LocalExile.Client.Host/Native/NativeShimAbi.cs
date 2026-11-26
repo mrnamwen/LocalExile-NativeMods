@@ -5,12 +5,15 @@ using LocalExile.Client.Sdk.Addresses;
 namespace LocalExile.Client.Host.Native;
 
 /// <summary>
-/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.1.0).
+/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.2.0).
 /// </summary>
 public static class NativeShimConstants
 {
-    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (1 &lt;&lt; 8) | 0</c>.</summary>
-    public const uint AbiVersion = 0x00000100u;
+    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (2 &lt;&lt; 8) | 0</c>.</summary>
+    public const uint AbiVersion = 0x00000200u;
+
+    /// <summary>First custom opcode above the 3.29.3d stock instance dispatcher bound (<c>0x02FC</c>).</summary>
+    public const ushort OpcodeReservedMin = 0x02FC;
 
     /// <summary>Nominal 3.29 PE32+ image base (ASLR DYNAMIC_BASE relocates at runtime).</summary>
     public const ulong NominalImageBase = 0x140000000ul;
@@ -192,8 +195,49 @@ public unsafe struct NmExceptionInfo
     }
 }
 
+/// <summary>Matches <c>nm_hook_kind_t</c> in <c>nativemods_abi.h</c>.</summary>
+public enum NmHookKind : int
+{
+    InlineDetour = 1,
+    VtableSlot = 2,
+}
+
+/// <summary>Matches <c>nm_hook_phase_t</c> in <c>nativemods_abi.h</c>.</summary>
+public enum NmHookPhase : int
+{
+    Pre = 0,
+    Post = 1,
+}
+
+/// <summary>Matches <c>nm_hook_context_t</c> (128 bytes) in <c>nativemods_abi.h</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmHookContext
+{
+    public fixed ulong Args[8];
+    public fixed ulong FloatArgs[4];
+    public ulong ReturnValue;
+    public ulong ReturnFloat;
+    public ulong TargetAddress;
+    public byte SkipOriginal;
+    public fixed byte Reserved[7];
+}
+
+/// <summary>Matches <c>nm_native_call_desc_t</c> (104 bytes) in <c>nativemods_abi.h</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmNativeCallDesc
+{
+    public ulong TargetAddress;
+    public uint ArgCount;
+    public uint FloatArgMask;
+    public byte ReturnIsFloat;
+    public fixed byte Reserved[7];
+    public fixed ulong Args[8];
+    public ulong OutInt;
+    public ulong OutFloatBits;
+}
+
 /// <summary>
-/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.1.0, 41 function pointers).
+/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.2.0, 68 function pointers, 552 bytes).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct NmAbiTable
@@ -235,7 +279,7 @@ public unsafe struct NmAbiTable
     public delegate* unmanaged[Cdecl]<uint, delegate* unmanaged[Cdecl]<uint, byte*, uint, void*, void>, void*, ulong*, NmStatus> RegisterRulesetHandler;
     public delegate* unmanaged[Cdecl]<ulong, NmStatus> UnregisterRulesetHandler;
     public delegate* unmanaged[Cdecl]<uint, byte*, uint, NmStatus> SendRulesetPacket;
-    public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<byte*, byte*, void*, void>, void*, ulong*, NmStatus> RegisterChatChannelHandler;
+    public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<byte*, byte*, void*, int>, void*, ulong*, NmStatus> RegisterChatChannelHandler;
     public delegate* unmanaged[Cdecl]<ulong, NmStatus> UnregisterChatChannelHandler;
     public delegate* unmanaged[Cdecl]<byte*, NmStatus> SendChatLine;
 
@@ -263,5 +307,42 @@ public unsafe struct NmAbiTable
     /* Fast overlay path pre-filter & live connection generation token (2) */
     public delegate* unmanaged[Cdecl]<ulong, byte**, nuint, NmStatus> SetFileOverlayKnownPaths;
     public delegate* unmanaged[Cdecl]<ulong*, NmStatus> GetActiveConnectionToken;
+
+    /* ABI 0.2.0: Multi-mod pre/post hook chains & 8-arg/float guarded native calls (4) */
+    public delegate* unmanaged[Cdecl]<ulong, byte*, int, int, delegate* unmanaged[Cdecl]<NmHookContext*, void*, void>, void*, ulong*, NmStatus> InstallInlineChainHook;
+    public delegate* unmanaged[Cdecl]<byte*, int, int, delegate* unmanaged[Cdecl]<NmHookContext*, void*, void>, void*, ulong*, NmStatus> InstallInlineChainHookSym;
+    public delegate* unmanaged[Cdecl]<void*, uint, int, int, delegate* unmanaged[Cdecl]<NmHookContext*, void*, void>, void*, ulong*, NmStatus> InstallVtableChainHook;
+    public delegate* unmanaged[Cdecl]<NmNativeCallDesc*, NmExceptionInfo*, NmStatus> CallNativeGuarded;
+
+    /* ABI 0.2.0: Stock game file reads & hot-reload invalidation (2) */
+    public delegate* unmanaged[Cdecl]<byte*, byte**, nuint*, NmStatus> FilesReadStock;
+    public delegate* unmanaged[Cdecl]<byte*, NmStatus> FilesInvalidate;
+
+    /* ABI 0.2.0: Raw packets & 0x02FC+ opcode handler group (4) */
+    public delegate* unmanaged[Cdecl]<ushort, byte*, uint, NmStatus> SendRawPacket;
+    public delegate* unmanaged[Cdecl]<ushort, ushort, delegate* unmanaged[Cdecl]<ushort, void*, byte*, uint, void*, int>, void*, ulong*, NmStatus> RegisterOpcodeHandlerGroup;
+    public delegate* unmanaged[Cdecl]<ulong, NmStatus> UnregisterOpcodeHandlerGroup;
+    public delegate* unmanaged[Cdecl]<void*, void*, ulong, NmStatus> StreamRead;
+
+    /* ABI 0.2.0: Extended live native UI controls (15) */
+    public delegate* unmanaged[Cdecl]<void*, byte*, void**, NmStatus> UiCreateWindowInto;
+    public delegate* unmanaged[Cdecl]<void*, float*, float*, float*, float*, NmStatus> UiGetRect;
+    public delegate* unmanaged[Cdecl]<void*, float, float, NmStatus> UiSetPosition;
+    public delegate* unmanaged[Cdecl]<void*, float, float, NmStatus> UiSetSize;
+    public delegate* unmanaged[Cdecl]<void*, int, NmStatus> UiSetEnabled;
+    public delegate* unmanaged[Cdecl]<void*, void*, NmStatus> UiRemoveChild;
+    public delegate* unmanaged[Cdecl]<void*, NmStatus> UiDestroyControl;
+    public delegate* unmanaged[Cdecl]<void*, byte*, nuint, nuint*, NmStatus> UiTextboxGetText;
+    public delegate* unmanaged[Cdecl]<void*, byte*, NmStatus> UiTextboxSetText;
+    public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, void*, void>, void*, ulong*, NmStatus> UiTextboxSubscribeChanged;
+    public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, void*, void>, void*, ulong*, NmStatus> UiTextboxSubscribeSubmitted;
+    public delegate* unmanaged[Cdecl]<void*, int*, NmStatus> UiCheckboxGetChecked;
+    public delegate* unmanaged[Cdecl]<void*, int, NmStatus> UiCheckboxSetChecked;
+    public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, void*, void>, void*, ulong*, NmStatus> UiCheckboxSubscribeChanged;
+    public delegate* unmanaged[Cdecl]<ulong, NmStatus> UiUnsubscribe;
+
+    /* ABI 0.2.0: Clipboard (2) */
+    public delegate* unmanaged[Cdecl]<byte*, nuint, nuint*, NmStatus> ClipboardGetText;
+    public delegate* unmanaged[Cdecl]<byte*, NmStatus> ClipboardSetText;
 }
 

@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using LocalExile.Client.Sdk.Addresses;
 using LocalExile.Client.Sdk.Engine;
+using LocalExile.Client.Sdk.Extend;
+using LocalExile.Client.Sdk.Raw;
 
 namespace LocalExile.Client.Host.Native;
 
@@ -14,11 +17,77 @@ namespace LocalExile.Client.Host.Native;
 /// </summary>
 public sealed class SimulatedNativeBridge : INativeBridge
 {
+    private const int MaxQueueCapacity = 4096;
+
+    private sealed record SimulatedChainHookEntry(
+        ulong Handle,
+        string TargetKey,
+        HookPhase Phase,
+        int Priority,
+        Action<HookContext> Callback);
+
+    private sealed record SimulatedGroupHandlerEntry(
+        ushort MinOpcode,
+        ushort MaxOpcode,
+        Action<ushort, ReadOnlyMemory<byte>>? ByteHandler,
+        Func<ushort, INativePacketStream, ReadOnlyMemory<byte>, bool>? StreamHandler);
+
+    private sealed class SimulatedPacketStream(ReadOnlyMemory<byte> payload) : INativePacketStream
+    {
+        private int _cursor;
+
+        public bool TryRead(Span<byte> destination)
+        {
+            if (_cursor + destination.Length > payload.Length)
+            {
+                return false;
+            }
+
+            payload.Span.Slice(_cursor, destination.Length).CopyTo(destination);
+            _cursor += destination.Length;
+            return true;
+        }
+
+        public byte[] ReadBytes(int count)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(count);
+            byte[] buf = new byte[count];
+            if (!TryRead(buf))
+            {
+                throw new EndOfStreamException($"Failed to read {count} byte(s) from simulated packet stream.");
+            }
+
+            return buf;
+        }
+
+        public T Read<T>() where T : unmanaged
+        {
+            Span<byte> buf = stackalloc byte[Unsafe.SizeOf<T>()];
+            if (!TryRead(buf))
+            {
+                throw new EndOfStreamException($"Failed to read {typeof(T).Name} from simulated packet stream.");
+            }
+
+            return MemoryMarshal.Read<T>(buf);
+        }
+    }
+
+    private readonly struct GameThreadScope(bool prev) : IDisposable
+    {
+        public void Dispose() => s_inNativeGameFrame = prev;
+    }
+
+    [ThreadStatic]
+    private static bool s_inNativeGameFrame;
+
     private readonly Dictionary<string, AddressEntry> _symbols = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Func<ReadOnlySpan<nint>, nint>> _nativeCallStubs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<nint, Func<ReadOnlySpan<NativeCallArgument>, bool, NativeCallResult>> _nativeExCallStubs = [];
     private readonly Dictionary<ulong, (string Symbol, nint Detour)> _activeHooks = [];
+    private readonly List<SimulatedChainHookEntry> _chainHooks = [];
     private readonly List<Action<float>> _frameCallbacks = [];
     private readonly ConcurrentQueue<Action> _mainThreadQueue = new();
+    private int _queuedCount;
     private readonly List<Func<string, byte[]?>> _overlayResolvers = [];
     private readonly Dictionary<string, byte[]> _stockFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _invalidatedPaths = [];
@@ -26,6 +95,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly Dictionary<byte, List<Action<ReadOnlyMemory<byte>>>> _rulesetReceivers = [];
     private readonly List<Func<string, string, bool>> _chatInterceptors = [];
     private readonly Dictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawOpcodeReceivers = [];
+    private readonly List<SimulatedGroupHandlerEntry> _rawOpcodeGroups = [];
     private readonly Dictionary<int, (string PathOrEvent, bool IsFmod, float Volume, bool Loop, bool Active)> _audioChannels = [];
     private readonly Dictionary<string, int> _stats = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, WorldObjectInfo> _worldObjects = [];
@@ -35,8 +105,10 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly Dictionary<string, nint> _nativeUiWindowsByPath = new(StringComparer.Ordinal);
     private readonly Dictionary<(nint Parent, string Key), nint> _nativeUiChildren = [];
     private readonly Dictionary<nint, SimulatedNativeUiControl> _nativeUiControls = [];
+    private readonly nint _simulatedUiRootHandle = 0x0F00;
     private readonly Lock _gate = new();
 
+    private string? _clipboardText;
     private int _gameThreadId;
     private ulong _nextHookHandle = 1;
     private int _nextAudioChannel = 1;
@@ -48,15 +120,22 @@ public sealed class SimulatedNativeBridge : INativeBridge
     public sealed class SimulatedNativeUiControl
     {
         public required nint Handle { get; init; }
-        public required nint ParentHandle { get; init; }
+        public nint ParentHandle { get; set; }
         public required string Key { get; init; }
         public bool Visible { get; set; } = true;
+        public bool Enabled { get; set; } = true;
+        public UiRect Rect { get; set; }
         public string Text { get; set; } = string.Empty;
+        public bool IsChecked { get; set; }
         public bool? LastSetTextIsButton { get; set; }
         public int SetTextCallCount { get; set; }
         public int SetVisibleCallCount { get; set; }
         public int NativeSubscribeCount { get; set; }
         public Action? ActiveClickHandler { get; set; }
+        public Action? ActiveTextChangedHandler { get; set; }
+        public Action? ActiveSubmittedHandler { get; set; }
+        public Action? ActiveCheckedChangedHandler { get; set; }
+        public bool Destroyed { get; set; }
     }
 
     /// <summary>
@@ -78,7 +157,21 @@ public sealed class SimulatedNativeBridge : INativeBridge
     public nint ImageBase { get; }
 
     /// <inheritdoc/>
-    public bool IsOnGameThread => Environment.CurrentManagedThreadId == _gameThreadId;
+    public bool IsOnGameThread =>
+        s_inNativeGameFrame ||
+        (Volatile.Read(ref _gameThreadId) is int tid && tid != 0 && Environment.CurrentManagedThreadId == tid);
+
+    private GameThreadScope EnterSimulatedGameThreadScope(bool captureGameThreadId)
+    {
+        if (captureGameThreadId && Volatile.Read(ref _gameThreadId) == 0)
+        {
+            Interlocked.CompareExchange(ref _gameThreadId, Environment.CurrentManagedThreadId, 0);
+        }
+
+        bool prev = s_inNativeGameFrame;
+        s_inNativeGameFrame = true;
+        return new GameThreadScope(prev);
+    }
 
     /// <summary>Callback invoked whenever the client sends a C→S <c>0x2ca</c> ruleset packet.</summary>
     public Action<byte, ReadOnlyMemory<byte>>? OnOutgoingRulesetPacket { get; set; }
@@ -153,7 +246,14 @@ public sealed class SimulatedNativeBridge : INativeBridge
                 ? "cc8aa38345be2a837575215d2ce142ebecf7b007345843265b335ebb8ac5964c"
                 : null);
         ImageBase = imageBase ?? unchecked((nint)NativeShimConstants.NominalImageBase);
-        _gameThreadId = Environment.CurrentManagedThreadId;
+        Volatile.Write(ref _gameThreadId, Environment.CurrentManagedThreadId);
+        _nativeUiControls[_simulatedUiRootHandle] = new SimulatedNativeUiControl
+        {
+            Handle = _simulatedUiRootHandle,
+            ParentHandle = nint.Zero,
+            Key = "__root__",
+            Visible = true,
+        };
 
         foreach (AddressEntry entry in symbols ?? CreateDefaultSymbols(build))
         {
@@ -161,8 +261,20 @@ public sealed class SimulatedNativeBridge : INativeBridge
         }
     }
 
+    /// <summary>Returns all registered symbol names in the simulated address table.</summary>
+    public IReadOnlyCollection<string> GetRegisteredSymbolNames()
+    {
+        lock (_gate)
+        {
+            return [.. _symbols.Keys];
+        }
+    }
+
     /// <summary>Binds the current managed thread as the simulated game thread.</summary>
-    public void BindCurrentThreadAsGameThread() => _gameThreadId = Environment.CurrentManagedThreadId;
+    public void BindCurrentThreadAsGameThread() => Volatile.Write(ref _gameThreadId, Environment.CurrentManagedThreadId);
+
+    /// <summary>Clears the captured simulated game thread ID (for testing off-thread bootstrap behavior).</summary>
+    public void ClearGameThreadBinding() => Volatile.Write(ref _gameThreadId, 0);
 
     /// <summary>Adds or replaces a symbol entry in the simulated address table.</summary>
     public void RegisterSymbol(AddressEntry entry)
@@ -179,6 +291,15 @@ public sealed class SimulatedNativeBridge : INativeBridge
         lock (_gate)
         {
             _nativeCallStubs[symbolName] = stub;
+        }
+    }
+
+    /// <summary>Registers a stub handler invoked when <see cref="InvokeNativeEx"/> is called for <paramref name="targetAddress"/>.</summary>
+    public void RegisterNativeExStub(nint targetAddress, Func<ReadOnlySpan<NativeCallArgument>, bool, NativeCallResult> stub)
+    {
+        lock (_gate)
+        {
+            _nativeExCallStubs[targetAddress] = stub;
         }
     }
 
@@ -204,14 +325,9 @@ public sealed class SimulatedNativeBridge : INativeBridge
         }
     }
 
-    /// <summary>Adds a simulated stock text file (encoded as UTF-16LE BOM CRLF if applicable).</summary>
-    public void AddStockTextFile(string virtualPath, string text)
-    {
-        byte[] bytes = ClientTextEncoding.RequiresUtf16LeBomCrlf(virtualPath)
-            ? ClientTextEncoding.EncodeUtf16LeBomCrlf(text)
-            : System.Text.Encoding.UTF8.GetBytes(text);
-        AddStockFile(virtualPath, bytes);
-    }
+    /// <summary>Adds a simulated stock text file (encoded per PoE 3.29 client rules: UTF-16LE BOM/no-BOM CRLF or UTF-8).</summary>
+    public void AddStockTextFile(string virtualPath, string text) =>
+        AddStockFile(virtualPath, ClientTextEncoding.EncodeTextForPath(virtualPath, text));
 
     /// <summary>Adds a simulated server-replicated world object.</summary>
     public void AddServerWorldObject(WorldObjectInfo obj)
@@ -256,7 +372,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
     /// <summary>Advances the simulated client by one frame, draining queued work and invoking frame callbacks.</summary>
     public void SimulateFrame(float deltaSeconds = 1f / 60f)
     {
-        _gameThreadId = Environment.CurrentManagedThreadId;
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
         DrainGameThreadQueue(deltaSeconds);
 
         Action<float>[] callbacks;
@@ -285,6 +401,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
             receivers = [.. list];
         }
 
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
         foreach (Action<ReadOnlyMemory<byte>> rx in receivers)
         {
             rx(payload);
@@ -302,37 +419,69 @@ public sealed class SimulatedNativeBridge : INativeBridge
             interceptors = [.. _chatInterceptors];
         }
 
+        bool suppress = false;
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
         foreach (Func<string, string, bool> interceptor in interceptors)
         {
-            if (interceptor(sender, text))
+            try
             {
-                return true;
+                if (interceptor(sender, text))
+                {
+                    suppress = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Exception wall: fail-open (do not suppress stock chat or abort subsequent interceptors).
+                System.Diagnostics.Trace.TraceWarning($"[SimulatedNativeBridge] Chat interceptor faulted and failed open: {ex.Message}");
             }
         }
 
-        return false;
+        return suppress;
     }
 
     /// <summary>Delivers a simulated incoming raw opcode payload.</summary>
     public bool SimulateIncomingRawPacket(ushort opcode, ReadOnlyMemory<byte> payload)
     {
         Action<ReadOnlyMemory<byte>>[] receivers;
+        SimulatedGroupHandlerEntry[] groups;
         lock (_gate)
         {
-            if (!_rawOpcodeReceivers.TryGetValue(opcode, out List<Action<ReadOnlyMemory<byte>>>? list) || list.Count == 0)
-            {
-                return false;
-            }
-
-            receivers = [.. list];
+            receivers = _rawOpcodeReceivers.TryGetValue(opcode, out List<Action<ReadOnlyMemory<byte>>>? list) && list.Count > 0
+                ? [.. list]
+                : [];
+            groups = [.. _rawOpcodeGroups.Where(g => opcode >= g.MinOpcode && opcode <= g.MaxOpcode)];
         }
 
+        if (receivers.Length == 0 && groups.Length == 0)
+        {
+            return false;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
         foreach (Action<ReadOnlyMemory<byte>> rx in receivers)
         {
             rx(payload);
         }
 
-        return true;
+        bool anyHandled = receivers.Length > 0;
+        foreach (SimulatedGroupHandlerEntry g in groups)
+        {
+            if (g.StreamHandler is not null)
+            {
+                if (g.StreamHandler(opcode, new SimulatedPacketStream(payload), payload))
+                {
+                    anyHandled = true;
+                }
+            }
+            else if (g.ByteHandler is not null)
+            {
+                g.ByteHandler(opcode, payload);
+                anyHandled = true;
+            }
+        }
+
+        return anyHandled;
     }
 
     /// <inheritdoc/>
@@ -426,10 +575,126 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
+    public ulong InstallInlineHookChain(string symbolName, HookPhase phase, int priority, Action<HookContext> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        if (!ResolveSymbol(symbolName, out _, out nint addr))
+        {
+            throw new KeyNotFoundException($"Cannot install hook chain: symbol '{symbolName}' is missing or unverified.");
+        }
+
+        lock (_gate)
+        {
+            ulong handle = _nextHookHandle++;
+            string targetKey = $"addr:0x{(ulong)addr:X}";
+            _activeHooks[handle] = ($"chain:{symbolName}", addr);
+            _chainHooks.Add(new SimulatedChainHookEntry(handle, targetKey, phase, priority, callback));
+            return handle;
+        }
+    }
+
+    /// <inheritdoc/>
+    public ulong InstallInlineHookChainAt(nint address, string? expectedBytesHex, HookPhase phase, int priority, Action<HookContext> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        if (address == nint.Zero)
+        {
+            throw new ArgumentException("Cannot install hook chain at null address.", nameof(address));
+        }
+
+        if (!string.IsNullOrWhiteSpace(expectedBytesHex) && !VerifyExpectedBytes(address, expectedBytesHex))
+        {
+            throw new InvalidOperationException($"Byte verification failed at 0x{(ulong)address:X}.");
+        }
+
+        lock (_gate)
+        {
+            ulong handle = _nextHookHandle++;
+            string targetKey = $"addr:0x{(ulong)address:X}";
+            _activeHooks[handle] = ($"chain:{targetKey}", address);
+            _chainHooks.Add(new SimulatedChainHookEntry(handle, targetKey, phase, priority, callback));
+            return handle;
+        }
+    }
+
+    /// <inheritdoc/>
+    public ulong InstallVtableHookChain(nint vtableAddress, uint slotIndex, HookPhase phase, int priority, Action<HookContext> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        if (vtableAddress == nint.Zero)
+        {
+            throw new ArgumentException("Cannot install vtable hook chain at null vtable.", nameof(vtableAddress));
+        }
+
+        lock (_gate)
+        {
+            ulong handle = _nextHookHandle++;
+            string targetKey = $"vtable:0x{(ulong)vtableAddress:X}[{slotIndex}]";
+            _activeHooks[handle] = ($"chain:{targetKey}", vtableAddress + (nint)(slotIndex * 8));
+            _chainHooks.Add(new SimulatedChainHookEntry(handle, targetKey, phase, priority, callback));
+            return handle;
+        }
+    }
+
+    /// <summary>Executes simulated pre/post hook chain callbacks for <paramref name="targetAddress"/> in deterministic priority order.</summary>
+    public HookContext SimulateHookChainCall(nint targetAddress, HookContext context, Func<HookContext, ulong>? originalFunc = null)
+    {
+        return SimulateHookChainCallByKey($"addr:0x{(ulong)targetAddress:X}", context, originalFunc);
+    }
+
+    /// <summary>Executes simulated pre/post vtable hook chain callbacks in deterministic priority order.</summary>
+    public HookContext SimulateVtableHookChainCall(nint vtableAddress, uint slotIndex, HookContext context, Func<HookContext, ulong>? originalFunc = null)
+    {
+        return SimulateHookChainCallByKey($"vtable:0x{(ulong)vtableAddress:X}[{slotIndex}]", context, originalFunc);
+    }
+
+    private HookContext SimulateHookChainCallByKey(string targetKey, HookContext context, Func<HookContext, ulong>? originalFunc)
+    {
+        SimulatedChainHookEntry[] preHooks;
+        SimulatedChainHookEntry[] postHooks;
+        lock (_gate)
+        {
+            preHooks =
+            [
+                .. _chainHooks
+                    .Where(h => h.TargetKey == targetKey && h.Phase == HookPhase.Pre)
+                    .OrderBy(h => h.Priority)
+                    .ThenBy(h => h.Handle),
+            ];
+            postHooks =
+            [
+                .. _chainHooks
+                    .Where(h => h.TargetKey == targetKey && h.Phase == HookPhase.Post)
+                    .OrderBy(h => h.Priority)
+                    .ThenBy(h => h.Handle),
+            ];
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: false);
+        foreach (SimulatedChainHookEntry entry in preHooks)
+        {
+            entry.Callback(context);
+        }
+
+        if (!context.SkipOriginal && originalFunc is not null)
+        {
+            context.ReturnValue = originalFunc(context);
+        }
+
+        foreach (SimulatedChainHookEntry entry in postHooks)
+        {
+            entry.Callback(context);
+        }
+
+        return context;
+    }
+
+    /// <inheritdoc/>
     public bool RemoveHook(ulong hookHandle)
     {
         lock (_gate)
         {
+            _chainHooks.RemoveAll(h => h.Handle == hookHandle);
             return _activeHooks.Remove(hookHandle);
         }
     }
@@ -485,6 +750,33 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
+    public NativeCallResult InvokeNativeEx(nint targetAddress, ReadOnlySpan<NativeCallArgument> args, bool returnIsFloat = false)
+    {
+        if (targetAddress == nint.Zero)
+        {
+            throw new ArgumentException("Cannot invoke null target address.", nameof(targetAddress));
+        }
+
+        if (args.Length > 8)
+        {
+            throw new ArgumentOutOfRangeException(nameof(args), "Win64 guarded native calls support at most 8 arguments.");
+        }
+
+        Func<ReadOnlySpan<NativeCallArgument>, bool, NativeCallResult>? stub;
+        lock (_gate)
+        {
+            _nativeExCallStubs.TryGetValue(targetAddress, out stub);
+        }
+
+        if (stub is not null)
+        {
+            return stub(args, returnIsFloat);
+        }
+
+        return default;
+    }
+
+    /// <inheritdoc/>
     public IDisposable RegisterFrameCallback(Action<float> onFrame)
     {
         lock (_gate)
@@ -502,14 +794,40 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
-    public void EnqueueGameThread(Action action) => _mainThreadQueue.Enqueue(action);
+    public bool EnqueueGameThread(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (Volatile.Read(ref _disposed))
+        {
+            return false;
+        }
+
+        while (true)
+        {
+            int current = Volatile.Read(ref _queuedCount);
+            if (current >= MaxQueueCapacity)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref _queuedCount, current + 1, current) == current)
+            {
+                break;
+            }
+        }
+
+        _mainThreadQueue.Enqueue(action);
+        return true;
+    }
 
     /// <inheritdoc/>
     public int DrainGameThreadQueue(float deltaSeconds = 0f, int maxItems = 256)
     {
         int count = 0;
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
         while (count < maxItems && _mainThreadQueue.TryDequeue(out Action? work))
         {
+            Interlocked.Decrement(ref _queuedCount);
             work();
             count++;
         }
@@ -537,7 +855,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
     /// <inheritdoc/>
     public byte[]? ReadStockGameFile(string virtualPath)
     {
-        string normalized = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
+        string normalized = NativeShimBridge.NormalizeAndValidateVirtualPath(virtualPath);
         lock (_gate)
         {
             return _stockFiles.TryGetValue(normalized, out byte[]? data) ? (byte[])data.Clone() : null;
@@ -642,6 +960,47 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
+    public IDisposable RegisterRawOpcodeGroup(ushort minOpcode, ushort maxOpcode, Action<ushort, ReadOnlyMemory<byte>> onPayload)
+    {
+        ArgumentNullException.ThrowIfNull(onPayload);
+        var entry = new SimulatedGroupHandlerEntry(minOpcode, maxOpcode, onPayload, null);
+        lock (_gate)
+        {
+            _rawOpcodeGroups.Add(entry);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _rawOpcodeGroups.Remove(entry);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterRawOpcodeStreamHandler(ushort minOpcode, ushort maxOpcode, Func<ushort, INativePacketStream, ReadOnlyMemory<byte>, bool> onStream)
+    {
+        ArgumentNullException.ThrowIfNull(onStream);
+        var entry = new SimulatedGroupHandlerEntry(minOpcode, maxOpcode, null, onStream);
+        lock (_gate)
+        {
+            _rawOpcodeGroups.Add(entry);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _rawOpcodeGroups.Remove(entry);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public bool StreamRead(nint streamHandle, Span<byte> destination) => false;
+
+    /// <inheritdoc/>
     public void SendRawPacket(ushort opcode, ReadOnlySpan<byte> payload)
     {
         OnOutgoingRawPacket?.Invoke(opcode, payload.ToArray());
@@ -738,6 +1097,9 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
+    public nint GetNativeUiRoot() => EnableSimulatedNativeUi ? _simulatedUiRootHandle : nint.Zero;
+
+    /// <inheritdoc/>
     public nint CreateNativeUiWindow(string virtualPath)
     {
         if (!EnableSimulatedNativeUi || string.IsNullOrWhiteSpace(virtualPath))
@@ -750,13 +1112,12 @@ public sealed class SimulatedNativeBridge : INativeBridge
         {
             if (_nativeUiWindowsByPath.TryGetValue(norm, out nint existing))
             {
-                if (_nativeUiControls.TryGetValue(existing, out SimulatedNativeUiControl? ctrl))
+                if (_nativeUiControls.TryGetValue(existing, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
                 {
                     ctrl.Visible = true;
                     ctrl.SetVisibleCallCount++;
+                    return existing;
                 }
-
-                return existing;
             }
 
             nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
@@ -765,6 +1126,34 @@ public sealed class SimulatedNativeBridge : INativeBridge
             {
                 Handle = handle,
                 ParentHandle = nint.Zero,
+                Key = norm,
+                Visible = true,
+            };
+            return handle;
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint CreateNativeUiWindowInto(nint parentControl, string virtualPath)
+    {
+        if (!EnableSimulatedNativeUi || parentControl == nint.Zero || string.IsNullOrWhiteSpace(virtualPath))
+        {
+            return nint.Zero;
+        }
+
+        string norm = ClientTextEncoding.NormalizeVirtualPath(virtualPath);
+        lock (_gate)
+        {
+            if (!_nativeUiControls.ContainsKey(parentControl))
+            {
+                return nint.Zero;
+            }
+
+            nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            _nativeUiControls[handle] = new SimulatedNativeUiControl
+            {
+                Handle = handle,
+                ParentHandle = parentControl,
                 Key = norm,
                 Visible = true,
             };
@@ -788,7 +1177,9 @@ public sealed class SimulatedNativeBridge : INativeBridge
             }
 
             var key = (parentControl, dotPath.Trim());
-            if (_nativeUiChildren.TryGetValue(key, out nint existing))
+            if (_nativeUiChildren.TryGetValue(key, out nint existing) &&
+                _nativeUiControls.TryGetValue(existing, out SimulatedNativeUiControl? existingCtrl) &&
+                !existingCtrl.Destroyed)
             {
                 return existing;
             }
@@ -840,6 +1231,331 @@ public sealed class SimulatedNativeBridge : INativeBridge
                 ctrl.LastSetTextIsButton = isButton;
                 ctrl.SetTextCallCount++;
             }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiRect(nint control, out UiRect rect)
+    {
+        rect = default;
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                rect = ctrl.Rect;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiPosition(nint control, float x, float y)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.Rect = ctrl.Rect with { X = x, Y = y };
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiSize(nint control, float width, float height)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.Rect = ctrl.Rect with { Width = width, Height = height };
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiEnabled(nint control, bool enabled)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.Enabled = enabled;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool RemoveNativeUiChild(nint parentControl, nint childControl)
+    {
+        if (!EnableSimulatedNativeUi || parentControl == nint.Zero || childControl == nint.Zero)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(childControl, out SimulatedNativeUiControl? ctrl) && ctrl.ParentHandle == parentControl)
+            {
+                ctrl.ParentHandle = nint.Zero;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void DestroyNativeUiControl(nint control)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.Destroyed = true;
+                ctrl.Visible = false;
+                ctrl.ParentHandle = nint.Zero;
+                ctrl.ActiveClickHandler = null;
+                ctrl.ActiveTextChangedHandler = null;
+                ctrl.ActiveSubmittedHandler = null;
+                ctrl.ActiveCheckedChangedHandler = null;
+                _nativeUiControls.Remove(control);
+
+                foreach (string k in _nativeUiWindowsByPath.Where(kv => kv.Value == control).Select(kv => kv.Key).ToArray())
+                {
+                    _nativeUiWindowsByPath.Remove(k);
+                }
+
+                foreach ((nint Parent, string Key) ck in _nativeUiChildren.Where(kv => kv.Value == control).Select(kv => kv.Key).ToArray())
+                {
+                    _nativeUiChildren.Remove(ck);
+                }
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public string? GetNativeUiTextBoxText(nint textboxControl)
+    {
+        if (!EnableSimulatedNativeUi || textboxControl == nint.Zero)
+        {
+            return null;
+        }
+
+        lock (_gate)
+        {
+            return _nativeUiControls.TryGetValue(textboxControl, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed
+                ? ctrl.Text
+                : null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiTextBoxText(nint textboxControl, string text)
+    {
+        if (!EnableSimulatedNativeUi || textboxControl == nint.Zero)
+        {
+            return;
+        }
+
+        Action? changed = null;
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(textboxControl, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                string next = text ?? string.Empty;
+                if (!string.Equals(ctrl.Text, next, StringComparison.Ordinal))
+                {
+                    ctrl.Text = next;
+                    changed = ctrl.ActiveTextChangedHandler;
+                }
+            }
+        }
+
+        changed?.Invoke();
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiTextBoxChanged(nint textboxControl, Action onChanged)
+    {
+        ArgumentNullException.ThrowIfNull(onChanged);
+        if (!EnableSimulatedNativeUi || textboxControl == nint.Zero)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(textboxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                return NoopDisposable.Instance;
+            }
+
+            ctrl.NativeSubscribeCount++;
+            ctrl.ActiveTextChangedHandler = onChanged;
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                if (_nativeUiControls.TryGetValue(textboxControl, out SimulatedNativeUiControl? ctrl) &&
+                    ReferenceEquals(ctrl.ActiveTextChangedHandler, onChanged))
+                {
+                    ctrl.ActiveTextChangedHandler = null;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiTextBoxSubmitted(nint textboxControl, Action onSubmitted)
+    {
+        ArgumentNullException.ThrowIfNull(onSubmitted);
+        if (!EnableSimulatedNativeUi || textboxControl == nint.Zero)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(textboxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                return NoopDisposable.Instance;
+            }
+
+            ctrl.NativeSubscribeCount++;
+            ctrl.ActiveSubmittedHandler = onSubmitted;
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                if (_nativeUiControls.TryGetValue(textboxControl, out SimulatedNativeUiControl? ctrl) &&
+                    ReferenceEquals(ctrl.ActiveSubmittedHandler, onSubmitted))
+                {
+                    ctrl.ActiveSubmittedHandler = null;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public bool? GetNativeUiCheckBoxChecked(nint checkboxControl)
+    {
+        if (!EnableSimulatedNativeUi || checkboxControl == nint.Zero)
+        {
+            return null;
+        }
+
+        lock (_gate)
+        {
+            return _nativeUiControls.TryGetValue(checkboxControl, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed
+                ? ctrl.IsChecked
+                : null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiCheckBoxChecked(nint checkboxControl, bool isChecked)
+    {
+        if (!EnableSimulatedNativeUi || checkboxControl == nint.Zero)
+        {
+            return;
+        }
+
+        Action? changed = null;
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(checkboxControl, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                if (ctrl.IsChecked != isChecked)
+                {
+                    ctrl.IsChecked = isChecked;
+                    changed = ctrl.ActiveCheckedChangedHandler;
+                }
+            }
+        }
+
+        changed?.Invoke();
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiCheckBoxChanged(nint checkboxControl, Action onChanged)
+    {
+        ArgumentNullException.ThrowIfNull(onChanged);
+        if (!EnableSimulatedNativeUi || checkboxControl == nint.Zero)
+        {
+            return NoopDisposable.Instance;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(checkboxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                return NoopDisposable.Instance;
+            }
+
+            ctrl.NativeSubscribeCount++;
+            ctrl.ActiveCheckedChangedHandler = onChanged;
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                if (_nativeUiControls.TryGetValue(checkboxControl, out SimulatedNativeUiControl? ctrl) &&
+                    ReferenceEquals(ctrl.ActiveCheckedChangedHandler, onChanged))
+                {
+                    ctrl.ActiveCheckedChangedHandler = null;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public string? GetClipboardText()
+    {
+        lock (_gate)
+        {
+            return _clipboardText;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetClipboardText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        lock (_gate)
+        {
+            _clipboardText = text;
         }
     }
 
@@ -916,6 +1632,8 @@ public sealed class SimulatedNativeBridge : INativeBridge
         lock (_gate)
         {
             if (!_nativeUiControls.TryGetValue(buttonHandle, out SimulatedNativeUiControl? ctrl) ||
+                ctrl.Destroyed ||
+                !ctrl.Enabled ||
                 ctrl.ActiveClickHandler is null)
             {
                 return false;
@@ -936,8 +1654,68 @@ public sealed class SimulatedNativeBridge : INativeBridge
             handler = ctrl.ActiveClickHandler;
         }
 
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
         handler.Invoke();
         return true;
+    }
+
+    /// <summary>Simulates native text editing inside a <c>TextBox</c>, firing <c>TextChanged</c>.</summary>
+    public bool SimulateNativeUiTextBoxChanged(nint textboxHandle, string newText)
+    {
+        Action? handler;
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(textboxHandle, out SimulatedNativeUiControl? ctrl) || ctrl.Destroyed)
+            {
+                return false;
+            }
+
+            ctrl.Text = newText ?? string.Empty;
+            handler = ctrl.ActiveTextChangedHandler;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        handler?.Invoke();
+        return handler is not null;
+    }
+
+    /// <summary>Simulates pressing Enter inside a <c>TextBox</c>, firing <c>Submitted</c>.</summary>
+    public bool SimulateNativeUiTextBoxSubmitted(nint textboxHandle)
+    {
+        Action? handler;
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(textboxHandle, out SimulatedNativeUiControl? ctrl) || ctrl.Destroyed)
+            {
+                return false;
+            }
+
+            handler = ctrl.ActiveSubmittedHandler;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        handler?.Invoke();
+        return handler is not null;
+    }
+
+    /// <summary>Simulates toggling a <c>CheckBox</c> natively, firing <c>CheckedChanged</c>.</summary>
+    public bool SimulateNativeUiCheckBoxChanged(nint checkboxHandle, bool isChecked)
+    {
+        Action? handler;
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(checkboxHandle, out SimulatedNativeUiControl? ctrl) || ctrl.Destroyed)
+            {
+                return false;
+            }
+
+            ctrl.IsChecked = isChecked;
+            handler = ctrl.ActiveCheckedChangedHandler;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        handler?.Invoke();
+        return handler is not null;
     }
 
     private bool IsDescendantOf(nint handle, nint ancestor)
@@ -1074,33 +1852,55 @@ public sealed class SimulatedNativeBridge : INativeBridge
         bool is3c = build == ClientBuildId.Build3293c;
         string codeStatus = is3c ? "code_shared_3_29_3c" : "live_verified";
         string staticCodeStatus = is3c ? "code_shared_3_29_3c" : "static_verified";
+        string status3dOnly = is3c ? "unverified_3_29_3c" : "static_verified";
+        string live3dOnly = is3c ? "unverified_3_29_3c" : "live_verified";
 
         return
         [
             new("frame.state_stack_pass_a_hook", 0x1528FBFul, "frame", codeStatus, "488b5d284883eb10", SourceDoc: "spikes/agent.js"),
-            new("ui.control_load", 0x18B08D0ul, "ui", codeStatus, SourceDoc: "spikes/agent.js"),
-            new("ui.control_set_visible", 0x18B0A30ul, "ui", codeStatus, SourceDoc: "spikes/agent.js"),
-            new("ui.control_find_child", 0x18B6420ul, "ui", codeStatus, SourceDoc: "spikes/agent.js"),
-            new("files.read_whole_file", 0x0E564D0ul, "files", staticCodeStatus, SourceDoc: "08-deep-analysis.md §1"),
-            new("files.text_stream_open", 0x21D5B50ul, "files", codeStatus, SourceDoc: "spikes/agent.js"),
-            new("files.asset_invalidator", 0x1010560ul, "files", staticCodeStatus, SourceDoc: "10-verification.md §2"),
-            new("geal.interpreter", 0x1DF0D70ul, "geal", staticCodeStatus, SourceDoc: "08-deep-analysis.md §4"),
-            new("rulesets.create", 0x15A6800ul, "rulesets", staticCodeStatus, SourceDoc: "10-verification.md §3"),
-            new("rulesets.s2c_filter", 0x15A6B50ul, "rulesets", staticCodeStatus, SourceDoc: "10-verification.md §3"),
-            new("rulesets.c2s_writer", 0x1FA7C10ul, "rulesets", staticCodeStatus, SourceDoc: "10-verification.md §3"),
-            new("rulesets.creator_table", is3c ? null : 0x475DC70ul, "rulesets", is3c ? "unverified_3_29_3c" : "static_verified", SourceDoc: "10-verification.md §3", Kind: "data"),
-            new("geal.builtin_table", is3c ? null : 0x45C50F8ul, "geal", is3c ? "unverified_3_29_3c" : "static_verified", SourceDoc: "12-ceiling.md §4", Kind: "data"),
-            new("allocator.alloc", 0x2C8CF60ul, "allocator", codeStatus, SourceDoc: "08-deep-analysis.md §6"),
-            new("allocator.free", 0x2C8CA30ul, "allocator", staticCodeStatus, SourceDoc: "08-deep-analysis.md §6"),
-            new("allocator.wstring_assign", 0x0144010ul, "allocator", codeStatus, SourceDoc: "spikes/agent.js"),
-            new("runtime.deadlock_detector", 0x0E3ED10ul, "runtime", staticCodeStatus, SourceDoc: "10-verification.md §6"),
-            new("runtime.cxx_throw_exception", 0x2CE6A40ul, "runtime", codeStatus, SourceDoc: "spikes/agent.js"),
-            new("network.chat_listener", 0x017A270ul, "network", codeStatus, SourceDoc: "spikes/agent.js"),
-            new("network.handler_group_register", 0x29A7710ul, "network", staticCodeStatus, SourceDoc: "08-deep-analysis.md §2"),
-            new("audio.submit_request", 0x0FF86E0ul, "audio", staticCodeStatus, SourceDoc: "08-deep-analysis.md §6"),
-            new("stats.set_value", 0x24D65C0ul, "stats", staticCodeStatus, SourceDoc: "08-deep-analysis.md §6"),
-            new("stats.get_value", 0x24D6510ul, "stats", staticCodeStatus, SourceDoc: "08-deep-analysis.md §6"),
-            new("world.create_client_object", 0x1EC47E0ul, "world", staticCodeStatus, SourceDoc: "08-deep-analysis.md §5"),
+            new("ui.control_load", 0x18B08D0ul, "ui", codeStatus, "48895c240848897c241055488dac24b0feffff", SourceDoc: "spikes/agent.js"),
+            new("ui.set_visible", 0x18B0A30ul, "ui", codeStatus, "40534883ec20488b", SourceDoc: "spikes/agent.js"),
+            new("ui.find_child", 0x18B6420ul, "ui", codeStatus, "48896c2418488974", SourceDoc: "spikes/agent.js"),
+            new("ui.vtable_frame", is3c ? null : 0x3033598ul, "ui", live3dOnly, SourceDoc: "07-spike-results.md", Kind: "vtable"),
+            new("ui.vtable_label", is3c ? null : 0x34AE300ul, "ui", live3dOnly, SourceDoc: "07-spike-results.md", Kind: "vtable"),
+            new("ui.vtable_button", is3c ? null : 0x34B0E88ul, "ui", live3dOnly, SourceDoc: "07-spike-results.md", Kind: "vtable"),
+            new("ui.vtable_textbox", is3c ? null : 0x30321A0ul, "ui", live3dOnly, SourceDoc: "07-spike-results.md", Kind: "vtable"),
+            new("ui.vtable_checkbox", is3c ? null : 0x34AFE98ul, "ui", live3dOnly, SourceDoc: "07-spike-results.md", Kind: "vtable"),
+            new("ui.vtable_stack_layout", is3c ? null : 0x3051F80ul, "ui", live3dOnly, SourceDoc: "07-spike-results.md", Kind: "vtable"),
+            new("ui.vtable_picture", is3c ? null : 0x30418B0ul, "ui", live3dOnly, SourceDoc: "07-spike-results.md", Kind: "vtable"),
+            new("ui.control_set_position", is3c ? null : 0x18B1080ul, "ui", status3dOnly, "48895c240848896c2410488974241857", SourceDoc: "Game.exe 3.29.3d"),
+            new("ui.control_set_size", is3c ? null : 0x1906A30ul, "ui", status3dOnly, "4883ec380f2e89680200004c8bc97509", SourceDoc: "Game.exe 3.29.3d"),
+            new("ui.control_get_abs_pos", is3c ? null : 0x18B1250ul, "ui", status3dOnly, "405356574883ec20488bb9e001000048", SourceDoc: "Game.exe 3.29.3d"),
+            new("ui.control_detach", is3c ? null : 0x18B5A00ul, "ui", status3dOnly, "4883ec384885c90f84cf0000004c8b89", SourceDoc: "Game.exe 3.29.3d"),
+            new("ui.children_remove_at", is3c ? null : 0x18B6720ul, "ui", status3dOnly, "48895c240848896c2410488974241857", SourceDoc: "Game.exe 3.29.3d"),
+            new("ui.event_list_get_ctrl", is3c ? null : 0x055AE30ul, "ui", status3dOnly, "48895c24184889742420488954241055", SourceDoc: "Game.exe 3.29.3d"),
+            new("files.read_whole_file", 0x0E564D0ul, "files", staticCodeStatus, "48895c241848895424105556574156", SourceDoc: "08-deep-analysis.md §1"),
+            new("files.text_stream_open", 0x21D5B50ul, "files", codeStatus, "48895c241048896c", SourceDoc: "spikes/agent.js"),
+            new("files.hot_reload_invalidate_ext", 0x1010560ul, "files", staticCodeStatus, "488bc44889581048", SourceDoc: "10-verification.md §2"),
+            new("files.hash_to_wstring_view", 0x0E40AF0ul, "files", staticCodeStatus, "48895c24184889742420574883ec30", SourceDoc: "Game.exe 3.29.3d"),
+            new("files.hash_and_register_path", is3c ? null : 0x0E40A90ul, "files", status3dOnly, "48895c2408574883ec3048837a0800", SourceDoc: "Game.exe 3.29.3d"),
+            new("files.filesystem_holder_get", is3c ? null : 0x0E571D0ul, "files", status3dOnly, "48895c2410574883ec3033db65488b04", SourceDoc: "Game.exe 3.29.3d"),
+            new("files.hot_reload_singleton", is3c ? null : 0x10062A0ul, "files", status3dOnly, "4883ec2865488b042558000000b91000", SourceDoc: "Game.exe 3.29.3d"),
+            new("geal.interpreter", 0x1DF0D70ul, "geal", staticCodeStatus, "488bc44c8948204c", SourceDoc: "08-deep-analysis.md §4"),
+            new("rulesets.create", 0x15A6800ul, "rulesets", staticCodeStatus, "48895c2408555657", SourceDoc: "10-verification.md §3"),
+            new("rulesets.s2c_0x2c9_filter", 0x15A6B50ul, "rulesets", staticCodeStatus, "48895c24085556574154415541564157", SourceDoc: "10-verification.md §3"),
+            new("rulesets.c2s_0x2ca_writer", 0x1FA7C10ul, "rulesets", staticCodeStatus, "48895c2410574883", SourceDoc: "10-verification.md §3"),
+            new("rulesets.creator_table", is3c ? null : 0x475DC70ul, "rulesets", status3dOnly, SourceDoc: "10-verification.md §3", Kind: "data"),
+            new("geal.builtin_factory_table", is3c ? null : 0x45C50F8ul, "geal", status3dOnly, SourceDoc: "12-ceiling.md §4", Kind: "data"),
+            new("allocator.alloc", 0x2C8CF60ul, "allocator", codeStatus, "48895c2408488974", SourceDoc: "08-deep-analysis.md §6"),
+            new("allocator.free", 0x2C8CA30ul, "allocator", staticCodeStatus, "4c8bd14c8d49ff49", SourceDoc: "08-deep-analysis.md §6"),
+            new("runtime.wstring_assign", 0x0144010ul, "runtime", codeStatus, "48895c241048896c", SourceDoc: "spikes/agent.js"),
+            new("runtime.wstring_destroy", is3c ? null : 0x0134500ul, "runtime", status3dOnly, "40534883ec20488b5118488bd94883fa", SourceDoc: "Game.exe 3.29.3d"),
+            new("runtime.string_destroy", is3c ? null : 0x0134810ul, "runtime", status3dOnly, "40534883ec20488b5118488bd94883fa", SourceDoc: "Game.exe 3.29.3d"),
+            new("runtime.deadlock_detector", 0x0E3ED10ul, "runtime", staticCodeStatus, "4055535657415441", SourceDoc: "10-verification.md §6"),
+            new("runtime.cxx_throw_exception", 0x2CE6A40ul, "runtime", codeStatus, "48895c2418488974", SourceDoc: "spikes/agent.js"),
+            new("network.chat_panel_listener", 0x017A270ul, "network", codeStatus, "48895c2408488974241855574156", SourceDoc: "spikes/agent.js"),
+            new("network.register_handler_group", 0x29A7710ul, "network", staticCodeStatus, "48895c2410574883", SourceDoc: "08-deep-analysis.md §2"),
+            new("network.stream_reader", is3c ? null : 0x0DF9ED0ul, "network", status3dOnly, "48895c240848896c2410488974241857", SourceDoc: "Game.exe 3.29.3d"),
+            new("audio.submit_request", 0x0FF86E0ul, "audio", staticCodeStatus, "48895c2410555657", SourceDoc: "08-deep-analysis.md §6"),
+            new("stats.set_local", 0x24D65C0ul, "stats", staticCodeStatus, "48895c241848896c", SourceDoc: "08-deep-analysis.md §6"),
+            new("stats.read", 0x24D6510ul, "stats", staticCodeStatus, "4c8b99f800000044", SourceDoc: "08-deep-analysis.md §6"),
+            new("world.create_client_object", 0x1EC47E0ul, "world", staticCodeStatus, "48895c241848894c", SourceDoc: "08-deep-analysis.md §5"),
         ];
     }
 

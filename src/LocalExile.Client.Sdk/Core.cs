@@ -13,13 +13,13 @@ namespace LocalExile.Client.Sdk;
 public static class SdkVersion
 {
     /// <summary>The current semantic version string of the Client SDK.</summary>
-    public const string Current = "0.1.0-poc";
+    public const string Current = "0.2.0";
 
     /// <summary>The current binary/envelope wire protocol version.</summary>
     public const int ProtocolVersion = 1;
 
     /// <summary>The parsed major.minor.patch version of the Client SDK.</summary>
-    public static Version Parsed { get; } = new(0, 1, 0);
+    public static Version Parsed { get; } = new(0, 2, 0);
 
     /// <summary>
     /// Evaluates whether <see cref="Current"/> satisfies a simplified SemVer range string
@@ -246,9 +246,8 @@ public sealed record ClientModManifest(
         });
 
         JsonElement root = doc.RootElement;
-        JsonElement clientSection = root.TryGetProperty("nativeClient", out JsonElement nc) && nc.ValueKind == JsonValueKind.Object
-            ? nc
-            : root;
+        bool hasNativeClient = root.TryGetProperty("nativeClient", out JsonElement nc) && nc.ValueKind == JsonValueKind.Object;
+        JsonElement clientSection = hasNativeClient ? nc : root;
 
         string id = GetString(root, "id") ?? GetString(clientSection, "id")
             ?? throw new FormatException("Client mod manifest is missing required property 'id'.");
@@ -261,7 +260,22 @@ public sealed record ClientModManifest(
             ?? "*";
         string? assembly = GetString(clientSection, "assembly") ?? GetString(root, "assembly");
         string? payloadDir = GetString(clientSection, "payloadDir") ?? GetString(root, "payloadDir");
-        IReadOnlyList<string> depends = GetStringList(root, "depends");
+        IReadOnlyList<string> depends;
+        if (hasNativeClient && TryGetStringList(clientSection, "depends", out List<string> clientDepends))
+        {
+            depends = clientDepends;
+        }
+        else
+        {
+            List<string> rootDepends = GetStringList(root, "depends");
+            if (hasNativeClient)
+            {
+                rootDepends.RemoveAll(d => string.Equals(d, "Game", StringComparison.OrdinalIgnoreCase));
+            }
+
+            depends = rootDepends;
+        }
+
         List<string> replaces = GetStringList(clientSection, "replaces");
         if (replaces.Count == 0)
         {
@@ -281,7 +295,7 @@ public sealed record ClientModManifest(
         {
             payloadHash = GetString(integrityElem, "packageSha256");
         }
-        bool enabled = GetBool(root, "enabled") ?? true;
+        bool enabled = (GetBool(root, "enabled") ?? true) && (GetBool(clientSection, "enabled") ?? true);
 
         return new ClientModManifest(
             Id: id,
@@ -328,28 +342,32 @@ public sealed record ClientModManifest(
         return null;
     }
 
-    private static List<string> GetStringList(JsonElement element, string propertyName)
+    private static bool TryGetStringList(JsonElement element, string propertyName, out List<string> values)
     {
         foreach (JsonProperty prop in element.EnumerateObject())
         {
             if (string.Equals(prop.Name, propertyName, StringComparison.OrdinalIgnoreCase)
                 && prop.Value.ValueKind == JsonValueKind.Array)
             {
-                var list = new List<string>();
+                values = [];
                 foreach (JsonElement item in prop.Value.EnumerateArray())
                 {
                     if (item.ValueKind == JsonValueKind.String && item.GetString() is { } text)
                     {
-                        list.Add(text);
+                        values.Add(text);
                     }
                 }
 
-                return list;
+                return true;
             }
         }
 
-        return [];
+        values = [];
+        return false;
     }
+
+    private static List<string> GetStringList(JsonElement element, string propertyName) =>
+        TryGetStringList(element, propertyName, out List<string> values) ? values : [];
 }
 
 /// <summary>
@@ -403,6 +421,12 @@ public interface IGameServices
 {
     /// <summary>Native UI window and control bridge.</summary>
     IUiService Ui { get; }
+
+    /// <summary>System clipboard UTF-8/UTF-16 text service.</summary>
+    IClipboardService Clipboard { get; }
+
+    /// <summary>Client chat command and S→C chat interceptor service.</summary>
+    IChatService Chat { get; }
 
     /// <summary>Virtual, loose-directory, and bundle file overlay service.</summary>
     IFileOverlayService Files { get; }

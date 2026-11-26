@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="LocalExile.Client.Tests" />
     <ProjectReference Include="..\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
   </ItemGroup>
 </Project>

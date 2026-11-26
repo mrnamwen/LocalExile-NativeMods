@@ -28,7 +28,7 @@ public sealed class ModLoaderAndIsolationTests
                   "name": "Sample Mod",
                   "version": "1.0.0",
                   "nativeClient": {
-                    "sdkVersionRange": ">=0.1.0-poc <0.2.0",
+                    "sdkVersionRange": ">=0.2.0 <2.0.0",
                     "assembly": "sample.Client.dll",
                     "rawAccess": false
                   }
@@ -83,7 +83,7 @@ public sealed class ModLoaderAndIsolationTests
                   "name": "Networked Collectible Mod",
                   "version": "1.0.0",
                   "nativeClient": {
-                    "sdkVersionRange": ">=0.1.0-poc <0.2.0",
+                    "sdkVersionRange": ">=0.2.0 <2.0.0",
                     "assembly": "netmod.Client.dll"
                   }
                 }
