@@ -106,6 +106,10 @@ public sealed record ClientBridgeOptions
         "ruleset.0x2c9",
         "chat.fallback",
         "ui.server-driven",
+        "tier1.slots",
+        "tier1.toasts",
+        "tier1.hotkeys",
+        "tier1.queries",
     ];
 }
 
@@ -177,6 +181,73 @@ public interface IClientUiSession
 
     /// <summary>Instructs the client host to play a visual effect on a world object.</summary>
     Task PlayEffectAsync(uint objectId, string effectPath, CancellationToken cancellationToken = default);
+
+    /// <summary>Registers (or updates) a native toolbar button in a managed <see cref="ScreenSlot"/>.</summary>
+    Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(
+        ScreenSlot slot,
+        string id,
+        string text,
+        SlotAttachmentOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Registers (or updates) a native toolbar button in a managed <see cref="ScreenSlot"/> with a synchronous click handler.</summary>
+    Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(
+        ScreenSlot slot,
+        string id,
+        string text,
+        Action<IClientSession> onClick,
+        SlotAttachmentOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Registers (or updates) a native toolbar button in a managed <see cref="ScreenSlot"/> with an asynchronous click handler.</summary>
+    Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(
+        ScreenSlot slot,
+        string id,
+        string text,
+        Func<IClientSession, Task> onClick,
+        SlotAttachmentOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Registers (or updates) a native toolbar button in a managed <see cref="ScreenSlot"/> with an asynchronous click handler supporting cancellation.</summary>
+    Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(
+        ScreenSlot slot,
+        string id,
+        string text,
+        Func<IClientSession, CancellationToken, Task> onClick,
+        SlotAttachmentOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Removes a previously registered toolbar button from <paramref name="slot"/>.</summary>
+    Task RemoveSlotButtonAsync(ScreenSlot slot, string id, CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes synchronously to clicks on a toolbar button in <paramref name="slot"/>.</summary>
+    Task<IDisposable> OnSlotButtonClickAsync(
+        ScreenSlot slot,
+        string id,
+        Action<IClientSession> handler,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes asynchronously to clicks on a toolbar button in <paramref name="slot"/>.</summary>
+    Task<IDisposable> OnSlotButtonClickAsync(
+        ScreenSlot slot,
+        string id,
+        Func<IClientSession, Task> handler,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes asynchronously with cancellation support to clicks on a toolbar button in <paramref name="slot"/>.</summary>
+    Task<IDisposable> OnSlotButtonClickAsync(
+        ScreenSlot slot,
+        string id,
+        Func<IClientSession, CancellationToken, Task> handler,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Displays a NativeMods HUD toast notification on the client.</summary>
+    Task ShowToastAsync(
+        string title,
+        string message,
+        ToastSeverity severity = ToastSeverity.Info,
+        int durationMs = 4000,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Begins a command/UI batch sharing this session's ordered outbound queue.</summary>
     IClientCommandBatch BeginBatch();
@@ -604,7 +675,7 @@ public sealed class ServerUiWindowHandle
 /// <summary>
 /// Per-connection NativeMods session tracked by <see cref="ClientBridgeHost"/> on the LocalExile Gateway.
 /// </summary>
-public interface IClientSession
+public interface IClientSession : IClientPhase1Session
 {
     /// <summary>Unique connection identifier.</summary>
     string ConnectionId { get; }
@@ -635,6 +706,9 @@ public interface IClientSession
 
     /// <summary>Server-driven UI helper for this connection.</summary>
     IClientUiSession Ui { get; }
+
+    /// <summary>Tier 1 <c>0.3.0</c> Phase 1 session facade (slots, HUD toasts, hotkeys, screen/hover queries).</summary>
+    IClientPhase1Session Phase1 { get; }
 
     /// <summary>
     /// Checks whether this client has installed the client mod <paramref name="modId"/>

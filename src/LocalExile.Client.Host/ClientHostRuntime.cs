@@ -150,6 +150,9 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Pre-game Login-TCP character creation hook service.</summary>
     public PreGameService PreGame { get; }
 
+    /// <summary>Client-side Tier 1 ServerBridge 0.3.0 protocol dispatcher (slots, toasts, hotkeys, screen/hover queries).</summary>
+    public ServerBridgeTier1Handler Tier1Handler { get; }
+
     /// <summary>World object &amp; effect service.</summary>
     public WorldService World { get; }
 
@@ -216,6 +219,7 @@ public sealed class ClientHostRuntime : IDisposable
         _systemChannel = Router.CreateChannel(MessageCodec.SystemChannel);
         _systemSubs.Add(_systemChannel.On<ServerHandshake>(HandleServerHandshake));
         _systemSubs.Add(_systemChannel.On<ServerUiCommand>(HandleServerUiCommand));
+        Tier1Handler = new ServerBridgeTier1Handler(_systemChannel, Scheduler, Screens, Input, Hover, Toasts, Log);
 
         // Passive S->C ##NM chat fallback listener when HostRuleset is primary so servers
         // sending either 0x2c9 ruleset packets OR ##NM chat lines reach client mods seamlessly.
@@ -322,6 +326,7 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Notifies lifecycle that the client disconnected from an instance server.</summary>
     public void NotifyDisconnected(string? reason = null)
     {
+        Tier1Handler.HandleDisconnected();
         Toasts.HandleDisconnected();
         Lifecycle.RaiseDisconnected(reason);
     }
@@ -669,6 +674,7 @@ public sealed class ClientHostRuntime : IDisposable
 
         _systemSubs.Clear();
         _frameSub.Dispose();
+        Tier1Handler.Dispose();
         Loader.Dispose();
         Toasts.Dispose();
         Screens.Dispose();

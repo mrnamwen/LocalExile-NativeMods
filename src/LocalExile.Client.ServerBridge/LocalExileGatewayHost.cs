@@ -66,6 +66,115 @@ public sealed record GatewayCosmeticChangeContext(
     bool IsSkillCosmetic = false);
 
 /// <summary>
+/// Lightweight mutable Gateway character-creation context forwarded from <c>GameEvents.CharacterCreated</c>
+/// (LocalExile Core Hooks Part 2a) without creating a compile-time dependency on <c>GameServer.Gateway</c>.
+/// Mutations to <see cref="StartingAreaId"/>, <see cref="StartingLevel"/>, and <see cref="SuppressStartKit"/>
+/// are propagated back onto the underlying Gateway <c>CharacterCreatedContext</c> before Auth completes creation.
+/// </summary>
+public sealed class GatewayCharacterCreatedContext
+{
+    /// <summary>Account name owning the newly created character.</summary>
+    public string Account { get; }
+
+    /// <summary>Unique identifier assigned to the new character.</summary>
+    public Guid CharacterId { get; }
+
+    /// <summary>New character name.</summary>
+    public string Name { get; }
+
+    /// <summary>Character class enum name (for example <c>"Ranger"</c> or <c>"Witch"</c>).</summary>
+    public string ClassName { get; }
+
+    /// <summary>Numeric character class enum value.</summary>
+    public int ClassId { get; }
+
+    /// <summary>Target league name.</summary>
+    public string League { get; }
+
+    /// <summary><c>true</c> if the character was created in a Hardcore league.</summary>
+    public bool Hardcore { get; }
+
+    /// <summary><c>true</c> if the character was created in a Solo Self-Found league.</summary>
+    public bool Ssf { get; }
+
+    /// <summary>Optional league form identifier.</summary>
+    public string? LeagueForm { get; }
+
+    /// <summary>Structured NativeMods creation options parsed from <c>CreateCharacter.S78</c> (<c>|nm:k=v&amp;...</c>).</summary>
+    public IReadOnlyDictionary<string, string> CreationOptions { get; }
+
+    /// <summary>Optional underlying live <c>CharacterCreatedContext</c> object for advanced reflection consumers.</summary>
+    public object? RawContext { get; }
+
+    /// <summary>Optional town <c>WorldAreas</c> id (for example <c>"2_11_endgame_town"</c>) to assign before first login.</summary>
+    public string? StartingAreaId { get; set; }
+
+    /// <summary>Optional starting character level (<c>1..100</c>) to apply before S→C <c>0x15</c>/<c>0x13</c>.</summary>
+    public int? StartingLevel { get; set; }
+
+    /// <summary>When <c>true</c>, suppresses starter weapon, starter flasks/scrolls, and opening tutorial seeding.</summary>
+    public bool SuppressStartKit { get; set; }
+
+    /// <summary>Creates a new <see cref="GatewayCharacterCreatedContext"/>.</summary>
+    public GatewayCharacterCreatedContext(
+        string account,
+        Guid characterId,
+        string name,
+        string className,
+        int classId,
+        string league,
+        bool hardcore,
+        bool ssf,
+        string? leagueForm,
+        IReadOnlyDictionary<string, string> creationOptions,
+        string? startingAreaId = null,
+        int? startingLevel = null,
+        bool suppressStartKit = false,
+        object? rawContext = null)
+    {
+        Account = account ?? string.Empty;
+        CharacterId = characterId;
+        Name = name ?? string.Empty;
+        ClassName = className ?? string.Empty;
+        ClassId = classId;
+        League = league ?? string.Empty;
+        Hardcore = hardcore;
+        Ssf = ssf;
+        LeagueForm = leagueForm;
+        CreationOptions = creationOptions ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        StartingAreaId = startingAreaId;
+        StartingLevel = startingLevel;
+        SuppressStartKit = suppressStartKit;
+        RawContext = rawContext;
+    }
+
+    /// <summary>Tries to read a structured creation option from <see cref="CreationOptions"/>.</summary>
+    public bool TryGetOption(string key, out string? value)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            value = null;
+            return false;
+        }
+
+        return CreationOptions.TryGetValue(key.Trim(), out value);
+    }
+}
+
+/// <summary>
+/// Lightweight result projected from LocalExile's <c>GameEvents.QuoteVendor</c> (<c>VendorQuoteResult</c>).
+/// </summary>
+/// <param name="Rewards">Vendor reward item objects returned by the quote provider.</param>
+/// <param name="Recipes">Matched vendor recipe names.</param>
+/// <param name="Error">Optional quote error message, or <c>null</c> on success.</param>
+/// <param name="RawResult">Underlying live <c>VendorQuoteResult</c> object, if available.</param>
+public sealed record GatewayVendorQuoteResult(
+    IReadOnlyList<object> Rewards,
+    IReadOnlyList<string> Recipes,
+    string? Error = null,
+    object? RawResult = null);
+
+/// <summary>
 /// Abstraction over LocalExile's <c>global::Client</c>, <c>global::GameEvents</c>, and <c>global::Program</c>
 /// allowing <see cref="LocalExileGatewayHost"/> and <see cref="LocalExileGatewaySink"/> to work both via
 /// cached reflection against live Gateway assemblies and with fake adapters in unit tests.
@@ -125,6 +234,12 @@ public interface ILocalExileGatewayAdapter
 
     /// <summary>Subscribes to <c>GameEvents.CosmeticChanged</c> if available.</summary>
     IDisposable? SubscribeCosmeticChanged(string ownerId, Func<GatewayCosmeticChangeContext, Task> onCosmeticChanged);
+
+    /// <summary>Subscribes to <c>GameEvents.CharacterCreated</c> (LocalExile Core Hooks Part 2a) if available.</summary>
+    IDisposable? SubscribeCharacterCreated(string ownerId, Func<GatewayCharacterCreatedContext, Task> onCharacterCreated) => null;
+
+    /// <summary>Evaluates a vendor sale quote via <c>GameEvents.QuoteVendor</c> (LocalExile Core Hooks Part 2a) if available.</summary>
+    GatewayVendorQuoteResult? TryQuoteVendor(object player, IEnumerable offeredItems) => null;
 }
 
 /// <summary>
@@ -177,6 +292,9 @@ public sealed class LocalExileGatewayHostOptions
 
     /// <summary>Optional callback invoked when <c>GameEvents.CosmeticChanged</c> fires.</summary>
     public Func<GatewayCosmeticChangeContext, Task>? OnCosmeticChanged { get; set; }
+
+    /// <summary>Optional callback invoked when <c>GameEvents.CharacterCreated</c> (Core Hooks Part 2a) fires.</summary>
+    public Func<GatewayCharacterCreatedContext, Task>? OnCharacterCreated { get; set; }
 
     /// <summary>Optional Gateway adapter override (defaults to cached reflection over <c>GameServer.Gateway</c>).</summary>
     public ILocalExileGatewayAdapter? Adapter { get; set; }
@@ -282,6 +400,13 @@ public sealed class LocalExileGatewayHostBuilder
     public LocalExileGatewayHostBuilder OnCosmeticChanged(Func<GatewayCosmeticChangeContext, Task> handler)
     {
         Options.OnCosmeticChanged = handler;
+        return this;
+    }
+
+    /// <summary>Sets a callback invoked on <c>GameEvents.CharacterCreated</c> (LocalExile Core Hooks Part 2a).</summary>
+    public LocalExileGatewayHostBuilder OnCharacterCreated(Func<GatewayCharacterCreatedContext, Task> handler)
+    {
+        Options.OnCharacterCreated = handler;
         return this;
     }
 }
@@ -532,6 +657,28 @@ public sealed class LocalExileGatewayHost : IDisposable
         return TrackSubscription(sub);
     }
 
+    /// <summary>
+    /// Registers a <c>GameEvents.CharacterCreated</c> handler (Core Hooks Part 2a) tracked for automatic disposal.
+    /// Returns <c>null</c> when running against an older Gateway build that does not expose <c>GameEvents.CharacterCreated</c>.
+    /// </summary>
+    public IDisposable? RegisterCharacterCreated(Func<GatewayCharacterCreatedContext, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        IDisposable? sub = _adapter.SubscribeCharacterCreated(OwnerId, handler);
+        return sub is not null ? TrackSubscription(sub) : null;
+    }
+
+    /// <summary>
+    /// Evaluates a vendor sale quote via <c>GameEvents.QuoteVendor</c> (Core Hooks Part 2a), returning <c>null</c>
+    /// when no vendor quote provider is registered or when running on an older Gateway build.
+    /// </summary>
+    public GatewayVendorQuoteResult? QuoteVendor(object player, IEnumerable offeredItems)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        ArgumentNullException.ThrowIfNull(offeredItems);
+        return _adapter.TryQuoteVendor(player, offeredItems);
+    }
+
     private void HookGatewayTransportAndLifecycle()
     {
         if (_options.UseCoreClientChannel && _adapter.SupportsCoreClientChannel)
@@ -661,6 +808,12 @@ public sealed class LocalExileGatewayHost : IDisposable
             }) is { } cosSub)
         {
             TrackSubscription(cosSub);
+        }
+
+        if (_options.OnCharacterCreated is not null &&
+            _adapter.SubscribeCharacterCreated(OwnerId, _options.OnCharacterCreated) is { } createdSub)
+        {
+            TrackSubscription(createdSub);
         }
     }
 
@@ -1108,6 +1261,140 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
         return AddToGameEvent(gameEvent, ownerId, bridge);
     }
 
+    public IDisposable? SubscribeCharacterCreated(string ownerId, Func<GatewayCharacterCreatedContext, Task> onCharacterCreated)
+    {
+        GatewayTypes types = RequireTypes();
+        if (types.GameEventsCharacterCreated?.GetValue(null) is not { } gameEvent)
+        {
+            return null;
+        }
+
+        Func<object, Task> bridge = async ctxObj =>
+        {
+            Type ct = ctxObj.GetType();
+            string account = ct.GetProperty("Account", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) as string ?? string.Empty;
+            Guid charId = ct.GetProperty("CharacterId", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) is Guid g ? g : Guid.Empty;
+            string name = ct.GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) as string ?? string.Empty;
+            object? classVal = ct.GetProperty("Class", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj);
+            string className = classVal?.ToString() ?? string.Empty;
+            int classId = classVal is not null ? Convert.ToInt32(classVal, CultureInfo.InvariantCulture) : 0;
+            string league = ct.GetProperty("League", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) as string ?? string.Empty;
+            bool hardcore = ct.GetProperty("Hardcore", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) is bool hc && hc;
+            bool ssf = ct.GetProperty("Ssf", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) is bool isSsf && isSsf;
+            string? leagueForm = ct.GetProperty("LeagueForm", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) as string;
+            var options = ct.GetProperty("CreationOptions", BindingFlags.Public | BindingFlags.Instance)?.GetValue(ctxObj) as IReadOnlyDictionary<string, string>
+                ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            PropertyInfo? areaProp = ct.GetProperty("StartingAreaId", BindingFlags.Public | BindingFlags.Instance);
+            PropertyInfo? levelProp = ct.GetProperty("StartingLevel", BindingFlags.Public | BindingFlags.Instance);
+            PropertyInfo? suppressProp = ct.GetProperty("SuppressStartKit", BindingFlags.Public | BindingFlags.Instance);
+
+            string? initialArea = areaProp?.GetValue(ctxObj) as string;
+            int? initialLevel = levelProp?.GetValue(ctxObj) as int?;
+            bool initialSuppress = suppressProp?.GetValue(ctxObj) is bool s && s;
+
+            var wrapped = new GatewayCharacterCreatedContext(
+                account,
+                charId,
+                name,
+                className,
+                classId,
+                league,
+                hardcore,
+                ssf,
+                leagueForm,
+                options,
+                initialArea,
+                initialLevel,
+                initialSuppress,
+                ctxObj);
+
+            try
+            {
+                await onCharacterCreated(wrapped).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (areaProp?.CanWrite == true && !string.Equals(wrapped.StartingAreaId, initialArea, StringComparison.Ordinal))
+                {
+                    areaProp.SetValue(ctxObj, wrapped.StartingAreaId);
+                }
+
+                if (levelProp?.CanWrite == true && wrapped.StartingLevel != initialLevel)
+                {
+                    levelProp.SetValue(ctxObj, wrapped.StartingLevel);
+                }
+
+                if (suppressProp?.CanWrite == true && wrapped.SuppressStartKit != initialSuppress)
+                {
+                    suppressProp.SetValue(ctxObj, wrapped.SuppressStartKit);
+                }
+            }
+        };
+
+        return AddToGameEvent(gameEvent, ownerId, bridge);
+    }
+
+    public GatewayVendorQuoteResult? TryQuoteVendor(object player, IEnumerable offeredItems)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        ArgumentNullException.ThrowIfNull(offeredItems);
+
+        GatewayTypes? types = ResolveTypes(player.GetType().Assembly);
+        MethodInfo? quoteMethod = types?.GameEventsQuoteVendor;
+        if (quoteMethod is null)
+        {
+            return null;
+        }
+
+        ParameterInfo[] ps = quoteMethod.GetParameters();
+        if (ps.Length != 2)
+        {
+            return null;
+        }
+
+        object offeredArg = offeredItems;
+        Type paramType = ps[1].ParameterType;
+        if (!paramType.IsInstanceOfType(offeredItems) && paramType.IsGenericType)
+        {
+            Type elemType = paramType.GetGenericArguments()[0];
+            Type listType = typeof(List<>).MakeGenericType(elemType);
+            IList typedList = (IList)Activator.CreateInstance(listType)!;
+            foreach (object? item in offeredItems)
+            {
+                if (item is not null && elemType.IsInstanceOfType(item))
+                {
+                    typedList.Add(item);
+                }
+            }
+
+            offeredArg = typedList;
+        }
+
+        object? rawResult = quoteMethod.Invoke(null, [player, offeredArg]);
+        if (rawResult is null)
+        {
+            return null;
+        }
+
+        Type rt = rawResult.GetType();
+        var rewards = new List<object>();
+        if (rt.GetProperty("Rewards", BindingFlags.Public | BindingFlags.Instance)?.GetValue(rawResult) is IEnumerable rawRewards)
+        {
+            foreach (object? reward in rawRewards)
+            {
+                if (reward is not null)
+                {
+                    rewards.Add(reward);
+                }
+            }
+        }
+
+        var recipes = rt.GetProperty("Recipes", BindingFlags.Public | BindingFlags.Instance)?.GetValue(rawResult) as IReadOnlyList<string> ?? [];
+        string? error = rt.GetProperty("Error", BindingFlags.Public | BindingFlags.Instance)?.GetValue(rawResult) as string;
+        return new GatewayVendorQuoteResult(rewards, recipes, error, rawResult);
+    }
+
     private static IDisposable AddToGameEvent(object gameEvent, string ownerId, Delegate bridge)
     {
         Type eventType = gameEvent.GetType();
@@ -1224,7 +1511,10 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
                 GameEventsPlayerLeaving: gameEvents.GetField("PlayerLeaving", BindingFlags.Public | BindingFlags.Static)!,
                 GameEventsClientReady: gameEvents.GetField("ClientReady", BindingFlags.Public | BindingFlags.Static),
                 GameEventsClientMessage: gameEvents.GetField("ClientMessage", BindingFlags.Public | BindingFlags.Static),
-                GameEventsCosmeticChanged: gameEvents.GetField("CosmeticChanged", BindingFlags.Public | BindingFlags.Static));
+                GameEventsCosmeticChanged: gameEvents.GetField("CosmeticChanged", BindingFlags.Public | BindingFlags.Static),
+                GameEventsCharacterCreated: gameEvents.GetField("CharacterCreated", BindingFlags.Public | BindingFlags.Static),
+                GameEventsQuoteVendor: gameEvents.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "QuoteVendor" && m.GetParameters().Length == 2));
 
             _typesByAssembly.AddOrUpdate(targetAssembly, resolved);
             return resolved;
@@ -1366,5 +1656,7 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
         FieldInfo GameEventsPlayerLeaving,
         FieldInfo? GameEventsClientReady,
         FieldInfo? GameEventsClientMessage,
-        FieldInfo? GameEventsCosmeticChanged);
+        FieldInfo? GameEventsCosmeticChanged,
+        FieldInfo? GameEventsCharacterCreated,
+        MethodInfo? GameEventsQuoteVendor);
 }

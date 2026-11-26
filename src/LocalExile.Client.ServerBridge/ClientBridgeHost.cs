@@ -353,6 +353,31 @@ public sealed class ClientBridgeHost : IDisposable
     public Task<bool> TrySendAsync<T>(string connectionId, T message, CancellationToken cancellationToken = default) =>
         TrySendAsync(connectionId, ResolveDefaultChannel(), message, messageType: null, cancellationToken);
 
+    /// <summary>Displays a NativeMods HUD toast notification on <paramref name="connectionId"/>.</summary>
+    public Task ShowToastAsync(
+        string connectionId,
+        string title,
+        string message,
+        ToastSeverity severity = ToastSeverity.Info,
+        int durationMs = 4000,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).ShowToastAsync(title, message, severity, durationMs, cancellationToken);
+
+    /// <summary>Queries the current active screen, open panels, active stash tab, and map tier on <paramref name="connectionId"/>.</summary>
+    public Task<ClientScreenStateSnapshot> QueryScreenStateAsync(
+        string connectionId,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryScreenStateAsync(timeout, cancellationToken);
+
+    /// <summary>Queries the currently hovered control, hovered item, and cursor item on <paramref name="connectionId"/>.</summary>
+    public Task<ClientHoverStateSnapshot> QueryHoverStateAsync(
+        string connectionId,
+        bool refresh = true,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetOrCreateSession(connectionId).QueryHoverStateAsync(refresh, timeout, cancellationToken);
+
     internal string ResolveDefaultChannel() => DefaultChannel ?? MessageCodec.SystemChannel;
 
     /// <summary>
@@ -748,6 +773,48 @@ public sealed class ClientBridgeHost : IDisposable
                 await session.DispatchUiEventAsync(uiEvent, cancellationToken).ConfigureAwait(false);
                 return GatewayBridgeBus.ResultHandled;
             }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.SlotButtonClick, StringComparison.Ordinal))
+            {
+                Tier1SlotButtonClickPayload click = MessageCodec.DeserializePayload<Tier1SlotButtonClickPayload>(envelope);
+                await session.DispatchTier1SlotButtonClickAsync(click, cancellationToken).ConfigureAwait(false);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.HotkeyTriggered, StringComparison.Ordinal))
+            {
+                ClientHotkeyTriggeredEvent hotkeyEvt = MessageCodec.DeserializePayload<ClientHotkeyTriggeredEvent>(envelope);
+                await session.DispatchTier1HotkeyTriggeredAsync(hotkeyEvt, cancellationToken).ConfigureAwait(false);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.ScreenStateResponse, StringComparison.Ordinal))
+            {
+                Tier1ScreenStateResponsePayload screenResp = MessageCodec.DeserializePayload<Tier1ScreenStateResponsePayload>(envelope);
+                session.HandleTier1ScreenStateResponse(screenResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.HoverStateResponse, StringComparison.Ordinal))
+            {
+                Tier1HoverStateResponsePayload hoverResp = MessageCodec.DeserializePayload<Tier1HoverStateResponsePayload>(envelope);
+                session.HandleTier1HoverStateResponse(hoverResp);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.ScreenStateChanged, StringComparison.Ordinal))
+            {
+                ClientScreenChangedEvent screenChanged = MessageCodec.DeserializePayload<ClientScreenChangedEvent>(envelope);
+                await session.DispatchTier1ScreenChangedAsync(screenChanged, cancellationToken).ConfigureAwait(false);
+                return GatewayBridgeBus.ResultHandled;
+            }
+
+            if (string.Equals(envelope.MessageType, Tier1MessageTypes.HoverStateChanged, StringComparison.Ordinal))
+            {
+                ClientHoverStateSnapshot hoverChanged = MessageCodec.DeserializePayload<ClientHoverStateSnapshot>(envelope);
+                await session.DispatchTier1HoverChangedAsync(hoverChanged, cancellationToken).ConfigureAwait(false);
+                return GatewayBridgeBus.ResultHandled;
+            }
         }
 
         await session.DispatchEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
@@ -925,6 +992,7 @@ internal sealed class ClientSession : IClientSession
 {
     private readonly ClientBridgeHost _host;
     private readonly ClientUiSession _ui;
+    private readonly ClientPhase1Session _phase1;
     private readonly Dictionary<(string Channel, string MessageType), List<Func<IClientSession, ModEnvelope, CancellationToken, Task>>> _handlers = [];
     private readonly List<PendingBatchEntry> _batchQueue = [];
     private readonly Lock _gate = new();
@@ -944,6 +1012,7 @@ internal sealed class ClientSession : IClientSession
     public IReadOnlyCollection<string> ClientMods =>
         Handshake?.InstalledMods is { Count: > 0 } mods ? mods.Select(m => m.Id).ToArray() : [];
     public IClientUiSession Ui => _ui;
+    public IClientPhase1Session Phase1 => _phase1;
 
     public ClientSession(ClientBridgeHost host, string connectionId, NetTransportKind defaultTransport)
     {
@@ -951,6 +1020,7 @@ internal sealed class ClientSession : IClientSession
         ConnectionId = connectionId;
         ActiveTransport = defaultTransport;
         _ui = new ClientUiSession(this, host);
+        _phase1 = new ClientPhase1Session(this, host);
     }
 
     internal void SetActiveTransport(NetTransportKind kind)
@@ -1050,6 +1120,94 @@ internal sealed class ClientSession : IClientSession
         ModEnvelope envelope = MessageCodec.CreateTypedEnvelope(MessageCodec.SystemChannel, command, messageType: null, _host.NextSequence());
         return QueueOrSendAsync(envelope, command, cancellationToken);
     }
+
+    internal Task QueueOrSendSystemMessageAsync<T>(string messageType, T payload, CancellationToken cancellationToken)
+    {
+        if (IsClosed)
+        {
+            return Task.CompletedTask;
+        }
+
+        ModEnvelope envelope = MessageCodec.CreateTypedEnvelope(MessageCodec.SystemChannel, payload, messageType, _host.NextSequence());
+        return QueueOrSendAsync(envelope, uiCommand: null, cancellationToken);
+    }
+
+    // ---- IClientPhase1Session forwarding ----
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterSlotButtonAsync(slot, id, text, options, cancellationToken);
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, Action<IClientSession> onClick, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterSlotButtonAsync(slot, id, text, onClick, options, cancellationToken);
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, Func<IClientSession, Task> onClick, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterSlotButtonAsync(slot, id, text, onClick, options, cancellationToken);
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, Func<IClientSession, CancellationToken, Task> onClick, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterSlotButtonAsync(slot, id, text, onClick, options, cancellationToken);
+
+    public Task RemoveSlotButtonAsync(ScreenSlot slot, string id, CancellationToken cancellationToken = default) =>
+        _phase1.RemoveSlotButtonAsync(slot, id, cancellationToken);
+
+    public Task<IDisposable> OnSlotButtonClickAsync(ScreenSlot slot, string id, Action<IClientSession> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnSlotButtonClickAsync(slot, id, handler, cancellationToken);
+
+    public Task<IDisposable> OnSlotButtonClickAsync(ScreenSlot slot, string id, Func<IClientSession, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnSlotButtonClickAsync(slot, id, handler, cancellationToken);
+
+    public Task<IDisposable> OnSlotButtonClickAsync(ScreenSlot slot, string id, Func<IClientSession, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnSlotButtonClickAsync(slot, id, handler, cancellationToken);
+
+    public Task ShowToastAsync(string title, string message, ToastSeverity severity = ToastSeverity.Info, int durationMs = 4000, CancellationToken cancellationToken = default) =>
+        _phase1.ShowToastAsync(title, message, severity, durationMs, cancellationToken);
+
+    public Task<ServerHotkeyHandle> RegisterHotkeyAsync(string id, string displayName, KeyChord defaultChord, bool allowWhenTextInputFocused = false, bool suppressGameInput = false, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterHotkeyAsync(id, displayName, defaultChord, allowWhenTextInputFocused, suppressGameInput, cancellationToken);
+
+    public Task<ServerHotkeyHandle> RegisterHotkeyAsync(string id, string displayName, string defaultChord, bool allowWhenTextInputFocused = false, bool suppressGameInput = false, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterHotkeyAsync(id, displayName, defaultChord, allowWhenTextInputFocused, suppressGameInput, cancellationToken);
+
+    public Task<ServerHotkeyHandle> RegisterHotkeyAsync(string id, string displayName, KeyChord defaultChord, Func<IClientSession, ClientHotkeyTriggeredEvent, CancellationToken, Task> onTriggered, bool allowWhenTextInputFocused = false, bool suppressGameInput = false, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterHotkeyAsync(id, displayName, defaultChord, onTriggered, allowWhenTextInputFocused, suppressGameInput, cancellationToken);
+
+    public Task<ServerHotkeyHandle> RegisterHotkeyAsync(string id, string displayName, string defaultChord, Func<IClientSession, ClientHotkeyTriggeredEvent, CancellationToken, Task> onTriggered, bool allowWhenTextInputFocused = false, bool suppressGameInput = false, CancellationToken cancellationToken = default) =>
+        _phase1.RegisterHotkeyAsync(id, displayName, defaultChord, onTriggered, allowWhenTextInputFocused, suppressGameInput, cancellationToken);
+
+    public Task<IDisposable> OnHotkeyAsync(string id, Action<IClientSession, ClientHotkeyTriggeredEvent> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnHotkeyAsync(id, handler, cancellationToken);
+
+    public Task<IDisposable> OnHotkeyAsync(string id, Func<IClientSession, ClientHotkeyTriggeredEvent, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnHotkeyAsync(id, handler, cancellationToken);
+
+    public Task<IDisposable> OnHotkeyAsync(string id, Func<IClientSession, ClientHotkeyTriggeredEvent, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnHotkeyAsync(id, handler, cancellationToken);
+
+    public Task UnregisterHotkeyAsync(string id, CancellationToken cancellationToken = default) =>
+        _phase1.UnregisterHotkeyAsync(id, cancellationToken);
+
+    public Task<ClientScreenStateSnapshot> QueryScreenStateAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase1.QueryScreenStateAsync(timeout, cancellationToken);
+
+    public Task<ClientHoverStateSnapshot> QueryHoverStateAsync(bool refresh = true, TimeSpan? timeout = null, CancellationToken cancellationToken = default) =>
+        _phase1.QueryHoverStateAsync(refresh, timeout, cancellationToken);
+
+    public Task<IDisposable> OnScreenChangedAsync(Action<IClientSession, ClientScreenChangedEvent> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnScreenChangedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnScreenChangedAsync(Func<IClientSession, ClientScreenChangedEvent, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnScreenChangedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnScreenChangedAsync(Func<IClientSession, ClientScreenChangedEvent, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnScreenChangedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnHoverChangedAsync(Action<IClientSession, ClientHoverStateSnapshot> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnHoverChangedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnHoverChangedAsync(Func<IClientSession, ClientHoverStateSnapshot, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnHoverChangedAsync(handler, cancellationToken);
+
+    public Task<IDisposable> OnHoverChangedAsync(Func<IClientSession, ClientHoverStateSnapshot, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        _phase1.OnHoverChangedAsync(handler, cancellationToken);
 
     private Task<bool> QueueOrSendAsync(ModEnvelope envelope, ServerUiCommand? uiCommand, CancellationToken cancellationToken)
     {
@@ -1388,6 +1546,24 @@ internal sealed class ClientSession : IClientSession
     internal Task DispatchUiEventAsync(ClientUiEventNotification uiEvent, CancellationToken cancellationToken) =>
         _ui.DispatchEventAsync(uiEvent, cancellationToken);
 
+    internal Task DispatchTier1SlotButtonClickAsync(Tier1SlotButtonClickPayload payload, CancellationToken cancellationToken) =>
+        _phase1.DispatchSlotButtonClickAsync(payload, cancellationToken);
+
+    internal Task DispatchTier1HotkeyTriggeredAsync(ClientHotkeyTriggeredEvent evt, CancellationToken cancellationToken) =>
+        _phase1.DispatchHotkeyTriggeredAsync(evt, cancellationToken);
+
+    internal void HandleTier1ScreenStateResponse(Tier1ScreenStateResponsePayload payload) =>
+        _phase1.HandleScreenStateResponse(payload);
+
+    internal void HandleTier1HoverStateResponse(Tier1HoverStateResponsePayload payload) =>
+        _phase1.HandleHoverStateResponse(payload);
+
+    internal Task DispatchTier1ScreenChangedAsync(ClientScreenChangedEvent evt, CancellationToken cancellationToken) =>
+        _phase1.DispatchScreenChangedAsync(evt, cancellationToken);
+
+    internal Task DispatchTier1HoverChangedAsync(ClientHoverStateSnapshot snapshot, CancellationToken cancellationToken) =>
+        _phase1.DispatchHoverChangedAsync(snapshot, cancellationToken);
+
     internal async Task CloseSessionAsync(CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _closed, 1);
@@ -1402,6 +1578,7 @@ internal sealed class ClientSession : IClientSession
             _batchDepth = 0;
         }
 
+        _phase1.CloseSession();
         await _ui.CloseAllWindowsAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -1419,6 +1596,7 @@ internal sealed class ClientSession : IClientSession
             _batchDepth = 0;
         }
 
+        _phase1.CloseSession();
         _ui.CloseAllWindowsNonBlocking();
     }
 
@@ -1736,6 +1914,33 @@ internal sealed class ClientUiSession(ClientSession session, ClientBridgeHost ho
 
     public Task PlayEffectAsync(uint objectId, string effectPath, CancellationToken cancellationToken = default) =>
         session.QueueOrSendUiCommandAsync(new ServerUiCommand(ServerUiCommandKind.PlayEffect, string.Empty, ControlPath: objectId.ToString(System.Globalization.CultureInfo.InvariantCulture), Value: effectPath), cancellationToken);
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        session.Phase1.RegisterSlotButtonAsync(slot, id, text, options, cancellationToken);
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, Action<IClientSession> onClick, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        session.Phase1.RegisterSlotButtonAsync(slot, id, text, onClick, options, cancellationToken);
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, Func<IClientSession, Task> onClick, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        session.Phase1.RegisterSlotButtonAsync(slot, id, text, onClick, options, cancellationToken);
+
+    public Task<ServerSlotButtonHandle> RegisterSlotButtonAsync(ScreenSlot slot, string id, string text, Func<IClientSession, CancellationToken, Task> onClick, SlotAttachmentOptions? options = null, CancellationToken cancellationToken = default) =>
+        session.Phase1.RegisterSlotButtonAsync(slot, id, text, onClick, options, cancellationToken);
+
+    public Task RemoveSlotButtonAsync(ScreenSlot slot, string id, CancellationToken cancellationToken = default) =>
+        session.Phase1.RemoveSlotButtonAsync(slot, id, cancellationToken);
+
+    public Task<IDisposable> OnSlotButtonClickAsync(ScreenSlot slot, string id, Action<IClientSession> handler, CancellationToken cancellationToken = default) =>
+        session.Phase1.OnSlotButtonClickAsync(slot, id, handler, cancellationToken);
+
+    public Task<IDisposable> OnSlotButtonClickAsync(ScreenSlot slot, string id, Func<IClientSession, Task> handler, CancellationToken cancellationToken = default) =>
+        session.Phase1.OnSlotButtonClickAsync(slot, id, handler, cancellationToken);
+
+    public Task<IDisposable> OnSlotButtonClickAsync(ScreenSlot slot, string id, Func<IClientSession, CancellationToken, Task> handler, CancellationToken cancellationToken = default) =>
+        session.Phase1.OnSlotButtonClickAsync(slot, id, handler, cancellationToken);
+
+    public Task ShowToastAsync(string title, string message, ToastSeverity severity = ToastSeverity.Info, int durationMs = 4000, CancellationToken cancellationToken = default) =>
+        session.Phase1.ShowToastAsync(title, message, severity, durationMs, cancellationToken);
 
     public IClientCommandBatch BeginBatch() => session.BeginBatch();
 
