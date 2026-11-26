@@ -99,7 +99,12 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly Dictionary<int, (string PathOrEvent, bool IsFmod, float Volume, bool Loop, bool Active)> _audioChannels = [];
     private readonly Dictionary<string, int> _stats = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, WorldObjectInfo> _worldObjects = [];
+    private readonly Dictionary<uint, (float RotationRadians, float Scale)> _clientObjectTransforms = [];
     private readonly List<(uint ObjectId, string EffectPath)> _playedEffects = [];
+    private readonly Dictionary<uint, uint> _simulatedEntityStackOverrides = [];
+    private bool _simulatedExtendedU32StacksEnabled;
+    private bool _simulatedFormatMillionsEnabled;
+    private bool _simulatedCompactSocketsEnabled;
     private readonly Dictionary<(uint ObjectId, string EntryName, bool IsEvent), Func<GealArguments, GealValue>> _gealObjectHandlers = [];
     private readonly List<nint> _allocatedBuffers = [];
     private readonly Dictionary<string, nint> _nativeUiWindowsByPath = new(StringComparer.Ordinal);
@@ -251,6 +256,36 @@ public sealed class SimulatedNativeBridge : INativeBridge
     public IReadOnlyList<(uint ObjectId, string EffectPath)> PlayedEffects
     {
         get { lock (_gate) { return [.. _playedEffects]; } }
+    }
+
+    /// <summary>Gets whether extended 32-bit stack deserialization is currently enabled on the simulated bridge.</summary>
+    public bool SimulatedExtendedU32StacksEnabled
+    {
+        get { lock (_gate) { return _simulatedExtendedU32StacksEnabled; } }
+    }
+
+    /// <summary>Gets whether millions stack formatting is currently enabled on the simulated bridge.</summary>
+    public bool SimulatedFormatMillionsEnabled
+    {
+        get { lock (_gate) { return _simulatedFormatMillionsEnabled; } }
+    }
+
+    /// <summary>Gets whether 6-socket compact icon layout is currently enabled on the simulated bridge.</summary>
+    public bool SimulatedCompactSocketsEnabled
+    {
+        get { lock (_gate) { return _simulatedCompactSocketsEnabled; } }
+    }
+
+    /// <summary>Snapshot of sideband per-entity stack size overrides applied via <see cref="SetEntityStackOverride"/>.</summary>
+    public IReadOnlyDictionary<uint, uint> SimulatedEntityStackOverrides
+    {
+        get { lock (_gate) { return new Dictionary<uint, uint>(_simulatedEntityStackOverrides); } }
+    }
+
+    /// <summary>Snapshot of yaw rotation and scale transforms for spawned client objects.</summary>
+    public IReadOnlyDictionary<uint, (float RotationRadians, float Scale)> SimulatedClientObjectTransforms
+    {
+        get { lock (_gate) { return new Dictionary<uint, (float RotationRadians, float Scale)>(_clientObjectTransforms); } }
     }
 
     /// <summary>Recorded outgoing chat lines sent by the client.</summary>
@@ -2476,12 +2511,22 @@ public sealed class SimulatedNativeBridge : INativeBridge
     }
 
     /// <inheritdoc/>
-    public uint SpawnClientObject(string metadataPath, float x, float y, float z)
+    public uint SpawnClientObject(string metadataPath, float x, float y, float z) =>
+        SpawnClientObject(metadataPath, x, y, z, rotationRadians: 0f, scale: 1f);
+
+    /// <inheritdoc/>
+    public uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale)
     {
         lock (_gate)
         {
             uint id = _nextClientObjectId++;
-            _worldObjects[id] = new WorldObjectInfo(id, metadataPath, x, y, z, true, new Dictionary<string, string>());
+            var components = new Dictionary<string, string>
+            {
+                ["rotationRadians"] = rotationRadians.ToString(CultureInfo.InvariantCulture),
+                ["scale"] = scale.ToString(CultureInfo.InvariantCulture),
+            };
+            _worldObjects[id] = new WorldObjectInfo(id, metadataPath, x, y, z, true, components);
+            _clientObjectTransforms[id] = (rotationRadians, scale);
             _simulatedEntities[id] = new WorldEntitySnapshot(
                 EntityId: id,
                 EntityHandle: unchecked((nint)(0x7000_0000L + id)),
@@ -2503,6 +2548,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
             if (removed)
             {
                 _simulatedEntities.Remove(objectId);
+                _clientObjectTransforms.Remove(objectId);
             }
 
             return removed;
@@ -2515,6 +2561,48 @@ public sealed class SimulatedNativeBridge : INativeBridge
         lock (_gate)
         {
             _playedEffects.Add((targetObjectId, effectPath));
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetExtendedU32StacksEnabled(bool enabled)
+    {
+        lock (_gate)
+        {
+            _simulatedExtendedU32StacksEnabled = enabled;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetFormatMillionsEnabled(bool enabled)
+    {
+        lock (_gate)
+        {
+            _simulatedFormatMillionsEnabled = enabled;
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SetEntityStackOverride(uint entityId, uint stackSize)
+    {
+        if (entityId == 0)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            _simulatedEntityStackOverrides[entityId] = stackSize;
+            return true;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetCompactSocketsEnabled(bool enabled)
+    {
+        lock (_gate)
+        {
+            _simulatedCompactSocketsEnabled = enabled;
         }
     }
 

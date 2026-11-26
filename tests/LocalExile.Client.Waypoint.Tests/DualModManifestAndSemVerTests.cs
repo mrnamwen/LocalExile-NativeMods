@@ -205,6 +205,14 @@ public sealed class DualModManifestAndSemVerTests
     [InlineData("modtype")]
     [InlineData("BuffDefinitions")]
     [InlineData("buffdefinitions")]
+    [InlineData("MinimapIcons")]
+    [InlineData("minimapicons")]
+    [InlineData("BuffVisuals")]
+    [InlineData("buffvisuals")]
+    [InlineData("NPCTalk")]
+    [InlineData("npctalk")]
+    [InlineData("Words")]
+    [InlineData("words")]
     [InlineData("currencyitems")]
     [InlineData("itemvisualidentity")]
     public void ValidateManifest_AcceptsAllVerifiedAppendableRegistryTablesWithoutNc018(string tableName)
@@ -229,7 +237,7 @@ public sealed class DualModManifestAndSemVerTests
     }
 
     [Fact]
-    public void AppendableRegistryTables_ContainsAll18LiveVerifiedTables_AndClosesStats()
+    public void AppendableRegistryTables_ContainsAll22LiveVerifiedTables_AndClosesStats()
     {
         string[] expected =
         [
@@ -250,10 +258,14 @@ public sealed class DualModManifestAndSemVerTests
             "ClientStrings",
             "Mods",
             "ModType",
-            "BuffDefinitions"
+            "BuffDefinitions",
+            "MinimapIcons",
+            "BuffVisuals",
+            "NPCTalk",
+            "Words"
         ];
 
-        Assert.Equal(18, DualModPackageValidator.AppendableRegistryTables.Count);
+        Assert.Equal(22, DualModPackageValidator.AppendableRegistryTables.Count);
         foreach (string table in expected)
         {
             Assert.Contains(table, DualModPackageValidator.AppendableRegistryTables, StringComparer.OrdinalIgnoreCase);

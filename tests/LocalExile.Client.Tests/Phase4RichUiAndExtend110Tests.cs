@@ -44,10 +44,10 @@ public sealed class Phase4RichUiAndExtend110Tests
     [Fact]
     public void Sdk110Versioning_PreservesProtocol1AndBackwardCompatibility()
     {
-        Assert.Equal("1.1.0", SdkVersion.Current);
-        Assert.Equal(new Version(1, 1, 0), SdkVersion.Parsed);
+        Assert.Equal("1.2.0", SdkVersion.Current);
+        Assert.Equal(new Version(1, 2, 0), SdkVersion.Parsed);
         Assert.Equal(1, SdkVersion.ProtocolVersion);
-        Assert.Equal(0x00000500u, NativeShimConstants.AbiVersion);
+        Assert.Equal(0x00000600u, NativeShimConstants.AbiVersion);
         Assert.Equal(0xA0, IRulesetRegistry.DefaultHostChannelRulesetId);
         Assert.Equal(0xAE, IRulesetRegistry.FirstFreeNativeRulesetId);
 
@@ -56,10 +56,13 @@ public sealed class Phase4RichUiAndExtend110Tests
         Assert.True(SdkVersion.IsCompatible(">=0.4.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=1.0.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=1.1.0 <2.0.0"));
+        Assert.True(SdkVersion.IsCompatible(">=1.2.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible("^1.0.0"));
         Assert.True(SdkVersion.IsCompatible("^1.1.0"));
-        Assert.True(SdkVersion.IsCompatible("~1.1.0"));
+        Assert.True(SdkVersion.IsCompatible("^1.2.0"));
+        Assert.True(SdkVersion.IsCompatible("~1.2.0"));
         Assert.False(SdkVersion.IsCompatible("~1.0.0"));
+        Assert.False(SdkVersion.IsCompatible("~1.1.0"));
         Assert.False(SdkVersion.IsCompatible(">=2.0.0"));
     }
 
@@ -615,13 +618,13 @@ public sealed class Phase4RichUiAndExtend110Tests
     [Fact]
     public unsafe void NativeShimBridge_Abi050StructSizesOffsetsAndAllSlots107To138RoundTrip()
     {
-        // Exact C ABI 0.5.0 struct sizes and field offsets matching nativemods_abi.h (x64).
-        Assert.Equal(0x00000500u, NativeShimConstants.AbiVersion);
+        // Exact C ABI 0.5.0/0.6.0 struct sizes and field offsets matching nativemods_abi.h (x64).
+        Assert.Equal(0x00000600u, NativeShimConstants.AbiVersion);
         Assert.Equal(4, sizeof(NmAffinityTarget));
         Assert.Equal(32, sizeof(NmAffinityRouteResult));
         Assert.Equal(64, sizeof(NmNativeRulesetCallbacks));
         Assert.Equal(32, sizeof(NmCustomUiControlCallbacks));
-        Assert.Equal(1120, sizeof(NmAbiTable));
+        Assert.Equal(1168, sizeof(NmAbiTable));
 
         Assert.Equal(16, (int)Marshal.OffsetOf<NmAffinityRouteResult>(nameof(NmAffinityRouteResult.Target0)));
         Assert.Equal(8, (int)Marshal.OffsetOf<NmNativeRulesetCallbacks>(nameof(NmNativeRulesetCallbacks.OnCreated)));

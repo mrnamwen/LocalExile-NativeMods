@@ -125,6 +125,86 @@ public static class Tier1MessageTypes
 
     /// <summary>S→C command setting or clearing the server-owned camera zoom override (auto-restored on disconnect/dispose).</summary>
     public const string SetCameraZoomOverride = "Tier1SetCameraZoomOverride";
+
+    // ---- Phase 4 + 5 (ServerBridge 1.2.0) ----
+
+    /// <summary>S→C command displaying a custom anchored tooltip at screen coordinates.</summary>
+    public const string ShowTooltip = "Tier1ShowTooltip";
+
+    /// <summary>S→C command hiding the server-owned custom anchored tooltip.</summary>
+    public const string HideTooltip = "Tier1HideTooltip";
+
+    /// <summary>S→C command registering or replacing a declarative item tooltip augmentation rule.</summary>
+    public const string RegisterItemTooltipRule = "Tier1RegisterItemTooltipRule";
+
+    /// <summary>S→C command removing a previously registered item tooltip augmentation rule.</summary>
+    public const string RemoveItemTooltipRule = "Tier1RemoveItemTooltipRule";
+
+    /// <summary>S→C command registering or replacing a declarative Ctrl+Click stash affinity route rule.</summary>
+    public const string RegisterStashAffinityRoute = "Tier1RegisterStashAffinityRoute";
+
+    /// <summary>S→C command removing a previously registered stash affinity route rule.</summary>
+    public const string RemoveStashAffinityRoute = "Tier1RemoveStashAffinityRoute";
+
+    /// <summary>S→C command updating the virtual texture path on an <see cref="IPicture"/> control.</summary>
+    public const string SetPictureTexture = "Tier1SetPictureTexture";
+
+    /// <summary>S→C command updating the selected index on an <see cref="IComboBox"/> control.</summary>
+    public const string SetComboBoxSelected = "Tier1SetComboBoxSelected";
+
+    /// <summary>S→C command selecting a tab index on an <see cref="ITabContainer"/> control.</summary>
+    public const string SelectTab = "Tier1SelectTab";
+
+    /// <summary>S→C command creating a slab-safe composite <see cref="IUiItemGrid"/> inside a window control.</summary>
+    public const string CreateItemGrid = "Tier1CreateItemGrid";
+
+    /// <summary>S→C command placing or updating an item inside an <see cref="IUiItemGrid"/>.</summary>
+    public const string SetGridItem = "Tier1SetGridItem";
+
+    /// <summary>S→C command removing an item by id from an <see cref="IUiItemGrid"/>.</summary>
+    public const string RemoveGridItem = "Tier1RemoveGridItem";
+
+    /// <summary>S→C command clearing all items from an <see cref="IUiItemGrid"/>.</summary>
+    public const string ClearGrid = "Tier1ClearGrid";
+
+    /// <summary>S→C command enabling or disabling cell-click callback forwarding for an <see cref="IUiItemGrid"/>.</summary>
+    public const string SetGridClickSubscription = "Tier1SetGridClickSubscription";
+
+    /// <summary>C→S event emitted when a player clicks a cell in a subscribed <see cref="IUiItemGrid"/>.</summary>
+    public const string GridCellClick = "Tier1GridCellClick";
+
+    /// <summary>S→C request playing an FMOD event or <c>.ogg</c> sound with explicit volume/loop and returning its handle.</summary>
+    public const string PlayAudioEx = "Tier1PlayAudioEx";
+
+    /// <summary>C→S response carrying the allocated <see cref="AudioChannelHandle"/> value.</summary>
+    public const string PlayAudioExResponse = "Tier1PlayAudioExResponse";
+
+    /// <summary>S→C command stopping a server-started audio channel.</summary>
+    public const string StopAudio = "Tier1StopAudio";
+
+    /// <summary>S→C request playing a 3D world-positioned sound with camera-distance attenuation and returning its handle.</summary>
+    public const string PlaySoundAtPosition = "Tier1PlaySoundAtPosition";
+
+    /// <summary>S→C command updating the 3D world position and attenuation radius of an active audio channel.</summary>
+    public const string SetAudioPosition = "Tier1SetAudioPosition";
+
+    /// <summary>S→C request spawning a client-only world object with transform and returning its object id.</summary>
+    public const string SpawnClientObject = "Tier1SpawnClientObject";
+
+    /// <summary>C→S response carrying the allocated client-only object id.</summary>
+    public const string SpawnClientObjectResponse = "Tier1SpawnClientObjectResponse";
+
+    /// <summary>S→C command removing a previously spawned client-only world object.</summary>
+    public const string RemoveClientObject = "Tier1RemoveClientObject";
+
+    /// <summary>S→C command enabling or disabling opt-in 32-bit stack deserialization and optional millions formatting.</summary>
+    public const string SetExtendedU32Stacks = "Tier1SetExtendedU32Stacks";
+
+    /// <summary>S→C command applying a sideband 32-bit stack size override to a live item entity.</summary>
+    public const string SetEntityStackOverride = "Tier1SetEntityStackOverride";
+
+    /// <summary>S→C command enabling or disabling 6-socket compact icon scaling on small items.</summary>
+    public const string SetCompactSockets = "Tier1SetCompactSockets";
 }
 
 /// <summary>

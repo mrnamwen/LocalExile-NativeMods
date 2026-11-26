@@ -45,6 +45,28 @@ public sealed class CameraService : ICameraService, IDisposable
         _bridge.TryCameraWorldToScreen(worldX, worldY, worldZ, out screenX, out screenY);
 
     /// <inheritdoc/>
+    public bool TryWorldToScreen(WorldPosition3D worldPosition, out float screenX, out float screenY) =>
+        TryWorldToScreen(worldPosition.X, worldPosition.Y, worldPosition.Z, out screenX, out screenY);
+
+    /// <inheritdoc/>
+    public bool TryWorldToUiPosition(float worldX, float worldY, float worldZ, out float uiX, out float uiY)
+    {
+        if (!_bridge.TryCameraWorldToScreen(worldX, worldY, worldZ, out float screenX, out float screenY))
+        {
+            uiX = 0f;
+            uiY = 0f;
+            return false;
+        }
+
+        CameraState state = _bridge.GetCameraState();
+        return state.TryScreenToUiPosition(screenX, screenY, out uiX, out uiY);
+    }
+
+    /// <inheritdoc/>
+    public bool TryWorldToUiPosition(WorldPosition3D worldPosition, out float uiX, out float uiY) =>
+        TryWorldToUiPosition(worldPosition.X, worldPosition.Y, worldPosition.Z, out uiX, out uiY);
+
+    /// <inheritdoc/>
     public void SetZoomOverride(float? zoomOverride) => SetZoomOverrideForOwner(HostOwnerKey, zoomOverride);
 
     internal void SetZoomOverrideForOwner(string ownerId, float? zoomOverride)

@@ -25,18 +25,19 @@ public sealed class Phase3ContentAndRowMap100Tests
     [Fact]
     public void Sdk100Freeze_PreservesProtocol1Abi040AndBackwardCompatRanges()
     {
-        Assert.Equal("1.1.0", SdkVersion.Current);
-        Assert.Equal(new Version(1, 1, 0), SdkVersion.Parsed);
+        Assert.Equal("1.2.0", SdkVersion.Current);
+        Assert.Equal(new Version(1, 2, 0), SdkVersion.Parsed);
         Assert.Equal(1, SdkVersion.ProtocolVersion);
-        Assert.Equal(0x00000500u, NativeShimConstants.AbiVersion);
+        Assert.Equal(0x00000600u, NativeShimConstants.AbiVersion);
 
         Assert.True(SdkVersion.IsCompatible(">=0.2.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=0.3.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=0.4.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=1.0.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=1.1.0 <2.0.0"));
+        Assert.True(SdkVersion.IsCompatible(">=1.2.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible("^1.0.0"));
-        Assert.True(SdkVersion.IsCompatible("~1.1.0"));
+        Assert.True(SdkVersion.IsCompatible("~1.2.0"));
         Assert.False(SdkVersion.IsCompatible("<1.0.0"));
         Assert.False(SdkVersion.IsCompatible(">=2.0.0"));
         Assert.False(SdkVersion.IsCompatible("=0.1.0-poc"));

@@ -172,7 +172,10 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Custom Ctrl+Click stash affinity router and stock affinity bitset service.</summary>
     public StashAffinityService StashAffinity { get; }
 
-    /// <summary>Client-side Tier 1 ServerBridge 0.3.0/0.4.0 protocol dispatcher (slots, toasts, hotkeys, screen/hover/world/stats/area/filter/camera).</summary>
+    /// <summary>Extended 32-bit stack deserialization, millions stack formatting, and per-entity stack override service.</summary>
+    public StackExtensionService StackExtension { get; }
+
+    /// <summary>Client-side Tier 1 ServerBridge 0.3.0/0.4.0/1.2.0 protocol dispatcher.</summary>
     public ServerBridgeTier1Handler Tier1Handler { get; }
 
     /// <summary>World object &amp; effect service.</summary>
@@ -232,6 +235,7 @@ public sealed class ClientHostRuntime : IDisposable
         Tooltips = new TooltipService(_bridge, Ui, FileOverlayService, Hover);
         Ui.AttachPhase4Services(Tooltips, Input);
         StashAffinity = new StashAffinityService(_bridge);
+        StackExtension = new StackExtensionService(_bridge);
         Toasts = new ToastService(Ui, FileOverlayService, Screens);
         PreGame = new PreGameService(_bridge, Log);
         World = new WorldService(_bridge, Lifecycle);
@@ -260,7 +264,24 @@ public sealed class ClientHostRuntime : IDisposable
         _systemSubs.Add(_systemChannel.On<ServerHandshake>(HandleServerHandshake));
         _systemSubs.Add(_systemChannel.On<ServerUiCommand>(HandleServerUiCommand));
         _systemSubs.Add(_bridge.RegisterAreaLifecycleCallback(HandleNativeAreaEntered, HandleNativeAreaLeft));
-        Tier1Handler = new ServerBridgeTier1Handler(_systemChannel, Scheduler, Screens, Input, Hover, Toasts, World, Stats, Lifecycle, ItemFilter, Camera, Log);
+        Tier1Handler = new ServerBridgeTier1Handler(
+            _systemChannel,
+            Scheduler,
+            Screens,
+            Input,
+            Hover,
+            Toasts,
+            World,
+            Stats,
+            Lifecycle,
+            ItemFilter,
+            Camera,
+            Ui,
+            Tooltips,
+            StashAffinity,
+            Audio,
+            StackExtension,
+            Log);
 
         // Passive S->C ##NM chat fallback listener when HostRuleset is primary so servers
         // sending either 0x2c9 ruleset packets OR ##NM chat lines reach client mods seamlessly.
@@ -383,6 +404,10 @@ public sealed class ClientHostRuntime : IDisposable
                 "geal.native-builtins",
                 "rulesets.native",
                 "ui.custom-controls",
+                "stacks.u32",
+                "ui.compact-sockets",
+                "audio.spatial",
+                "world.play-effect",
             ],
             ContentRowMapDigest: Content.ContentRowMapDigest);
 
@@ -456,6 +481,7 @@ public sealed class ClientHostRuntime : IDisposable
     public void NotifyDisconnected(string? reason = null)
     {
         Tier1Handler.HandleDisconnected();
+        StackExtension.HandleDisconnected();
         Toasts.HandleDisconnected();
         Tooltips.HandleDisconnected();
         Lifecycle.RaiseDisconnected(reason);
@@ -584,6 +610,7 @@ public sealed class ClientHostRuntime : IDisposable
         Screens.Tick();
         Hover.Tick();
         Toasts.Tick(deltaSeconds);
+        Audio.TickSpatialChannels();
         Lifecycle.RaiseFrame(deltaSeconds);
         Loader.TickAllMods(deltaSeconds);
         Ui.TickCustomControls(deltaSeconds);
@@ -730,6 +757,18 @@ public sealed class ClientHostRuntime : IDisposable
             textBox2.TextChanged += OnTextChanged;
             detach = () => textBox2.TextChanged -= OnTextChanged;
         }
+        else if (control is IComboBox comboBox && string.Equals(eventName, "SelectionChanged", StringComparison.OrdinalIgnoreCase))
+        {
+            void OnSelectionChanged(int index) => _systemChannel.Send(new ClientUiEventNotification(windowId, controlPath, "SelectionChanged", index.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            comboBox.SelectionChanged += OnSelectionChanged;
+            detach = () => comboBox.SelectionChanged -= OnSelectionChanged;
+        }
+        else if (control is ITabContainer tabContainer && string.Equals(eventName, "ActiveTabChanged", StringComparison.OrdinalIgnoreCase))
+        {
+            void OnActiveTabChanged(int index) => _systemChannel.Send(new ClientUiEventNotification(windowId, controlPath, "ActiveTabChanged", index.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            tabContainer.ActiveTabChanged += OnActiveTabChanged;
+            detach = () => tabContainer.ActiveTabChanged -= OnActiveTabChanged;
+        }
 
         if (detach is not null)
         {
@@ -807,6 +846,8 @@ public sealed class ClientHostRuntime : IDisposable
         Interlocked.Exchange(ref _mergedCacheOverlayHandle, null)?.Dispose();
         Tier1Handler.Dispose();
         Loader.Dispose();
+        StackExtension.Dispose();
+        Ui.ResetCompactSockets();
         StashAffinity.Dispose();
         Tooltips.Dispose();
         Camera.Dispose();

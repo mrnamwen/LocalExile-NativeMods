@@ -1210,7 +1210,9 @@ internal sealed class ScopedGameServices : IGameServices
         _runtime = runtime;
         _loader = loader;
         _mod = mod;
-        Ui = new TrackedUiService(runtime.Ui, track);
+        var ui = new TrackedUiService(runtime.Ui, mod.Manifest.Id, track);
+        track(ui);
+        Ui = ui;
         Chat = new TrackedChatService(runtime.Chat, loader, mod.Manifest.Id, track);
         Files = new TrackedFileOverlayService(runtime.FileOverlayService, mod.Manifest.Id, track);
         Scripts = new TrackedScriptService(runtime.Scripts, loader, mod.Manifest.Id, track);
@@ -1247,6 +1249,9 @@ internal sealed class ScopedGameServices : IGameServices
         track(tooltips);
         Tooltips = tooltips;
         StashAffinity = new TrackedStashAffinityService(runtime.StashAffinity, loader, mod.Manifest.Id, track);
+        var stackExtension = new TrackedStackExtensionService(runtime.StackExtension, mod.Manifest.Id);
+        track(stackExtension);
+        StackExtension = stackExtension;
         GealBuiltins = new TrackedGealBuiltinRegistry(runtime.GealBuiltins, loader, mod.Manifest.Id, track);
         UiControls = new TrackedUiControlRegistry(runtime.UiControls, loader, mod.Manifest.Id, track);
         Rulesets = new TrackedRulesetRegistry(runtime.Rulesets, loader, mod.Manifest.Id, track);
@@ -1272,6 +1277,7 @@ internal sealed class ScopedGameServices : IGameServices
     public ICameraService Camera { get; }
     public ITooltipService Tooltips { get; }
     public IStashAffinityService StashAffinity { get; }
+    public IStackExtensionService StackExtension { get; }
     public IGealBuiltinRegistry GealBuiltins { get; }
     public IUiControlRegistry UiControls { get; }
     public IRulesetRegistry Rulesets { get; }
@@ -1296,9 +1302,31 @@ internal sealed class ScopedGameServices : IGameServices
         }
     }
 
-    private sealed class TrackedUiService(IUiService inner, Action<IDisposable> track) : IUiService
+    private sealed class TrackedUiService(UiService inner, string modId, Action<IDisposable> track) : IUiService, IDisposable
     {
+        private bool _disposed;
+
         public IReadOnlyCollection<IUiWindow> OpenWindows => inner.OpenWindows;
+        public bool IsCompactSocketsEnabled => inner.IsCompactSocketsEnabled;
+        public void SetCompactSocketsEnabled(bool enabled)
+        {
+            if (Volatile.Read(ref _disposed))
+            {
+                return;
+            }
+
+            inner.SetCompactSocketsEnabledForOwner(modId, enabled);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, true))
+            {
+                return;
+            }
+
+            inner.ClearCompactSocketsForOwner(modId);
+        }
         public IUiControl? GetRootControl() => inner.GetRootControl();
         public IUiControl? WrapControl(nint nativeHandle) => inner.WrapControl(nativeHandle);
         public IUiWindow Load(string virtualPath, string? windowId = null) { IUiWindow w = inner.Load(virtualPath, windowId); track(w); return w; }
@@ -1465,6 +1493,27 @@ internal sealed class ScopedGameServices : IGameServices
             return ch;
         }
 
+        public AudioChannelHandle PlaySoundAtPosition(
+            string pathOrEvent,
+            float x,
+            float y,
+            float z,
+            float volume = 1.0f,
+            float maxDistance = 1200f,
+            bool loop = false)
+        {
+            AudioChannelHandle ch = inner.PlaySoundAtPosition(pathOrEvent, x, y, z, volume, maxDistance, loop);
+            if (ch.IsValid)
+            {
+                lock (_gate) { _ownedChannels.Add(ch.Value); }
+            }
+
+            return ch;
+        }
+
+        public void SetChannelPosition(AudioChannelHandle channel, float x, float y, float z, float maxDistance = 1200f) =>
+            inner.SetChannelPosition(channel, x, y, z, maxDistance);
+
         public void SetChannelVolume(int channelHandle, float volume) => inner.SetChannelVolume(channelHandle, volume);
 
         public bool IsChannelPlaying(int channelHandle) => inner.IsChannelPlaying(channelHandle);
@@ -1504,6 +1553,13 @@ internal sealed class ScopedGameServices : IGameServices
         public uint SpawnClientObject(string metadataPath, float x, float y, float z = 0f)
         {
             uint id = inner.SpawnClientObject(metadataPath, x, y, z);
+            lock (_gate) { _ownedObjects.Add(id); }
+            return id;
+        }
+
+        public uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale = 1.0f)
+        {
+            uint id = inner.SpawnClientObject(metadataPath, x, y, z, rotationRadians, scale);
             lock (_gate) { _ownedObjects.Add(id); }
             return id;
         }
@@ -2536,6 +2592,9 @@ internal sealed class ScopedGameServices : IGameServices
         public bool TryWorldToScreen(float worldX, float worldY, float worldZ, out float screenX, out float screenY) =>
             inner.TryWorldToScreen(worldX, worldY, worldZ, out screenX, out screenY);
 
+        public bool TryWorldToUiPosition(float worldX, float worldY, float worldZ, out float uiX, out float uiY) =>
+            inner.TryWorldToUiPosition(worldX, worldY, worldZ, out uiX, out uiY);
+
         public void SetZoomOverride(float? zoomOverride)
         {
             if (Volatile.Read(ref _disposed))
@@ -2645,5 +2704,53 @@ internal sealed class ScopedGameServices : IGameServices
 
         public IReadOnlyList<StashAffinityRoute> EvaluateRoutes(StashAffinityItemContext context) => inner.EvaluateRoutes(context);
         public uint EvaluateStockAffinityMask(StashAffinityItemContext context) => inner.EvaluateStockAffinityMask(context);
+    }
+
+    private sealed class TrackedStackExtensionService(StackExtensionService inner, string modId) : IStackExtensionService, IDisposable
+    {
+        private bool _disposed;
+
+        public bool IsExtendedU32StacksEnabled => inner.IsExtendedU32StacksEnabled;
+        public bool IsFormatMillionsEnabled => inner.IsFormatMillionsEnabled;
+
+        public void SetExtendedU32StacksEnabled(bool enabled)
+        {
+            if (Volatile.Read(ref _disposed))
+            {
+                return;
+            }
+
+            inner.SetExtendedU32StacksEnabledForOwner(modId, enabled);
+        }
+
+        public void SetFormatMillionsEnabled(bool enabled)
+        {
+            if (Volatile.Read(ref _disposed))
+            {
+                return;
+            }
+
+            inner.SetFormatMillionsEnabledForOwner(modId, enabled);
+        }
+
+        public bool SetEntityStackOverride(uint entityId, uint stackSize)
+        {
+            if (Volatile.Read(ref _disposed))
+            {
+                return false;
+            }
+
+            return inner.SetEntityStackOverrideForOwner(modId, entityId, stackSize);
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, true))
+            {
+                return;
+            }
+
+            inner.ClearForOwner(modId);
+        }
     }
 }

@@ -886,16 +886,31 @@ public sealed class ChatService(INativeBridge bridge) : IChatService
     }
 }
 
-/// <summary>Managed <see cref="IAudioService"/> implementation.</summary>
+/// <summary>Managed <see cref="IAudioService"/> implementation with live 3D camera-distance spatial attenuation.</summary>
 public sealed class AudioService(INativeBridge bridge) : IAudioService
 {
+    private sealed record SpatialChannelState(
+        float X,
+        float Y,
+        float Z,
+        float BaseVolume,
+        float MaxDistance,
+        float LastAppliedVolume);
+
     private readonly HashSet<int> _activeChannels = [];
+    private readonly Dictionary<int, SpatialChannelState> _spatialChannels = [];
     private readonly Lock _gate = new();
 
     /// <inheritdoc/>
     public int ActiveChannelCount
     {
         get { lock (_gate) { return _activeChannels.Count; } }
+    }
+
+    /// <summary>Number of active audio channels currently tracked with 3D spatial attenuation.</summary>
+    public int SpatialChannelCount
+    {
+        get { lock (_gate) { return _spatialChannels.Count; } }
     }
 
     /// <inheritdoc/>
@@ -929,8 +944,90 @@ public sealed class AudioService(INativeBridge bridge) : IAudioService
     }
 
     /// <inheritdoc/>
-    public void SetChannelVolume(int channelHandle, float volume) =>
-        bridge.SetAudioVolume(channelHandle, Math.Clamp(volume, 0f, 1f));
+    public AudioChannelHandle PlaySoundAtPosition(
+        string pathOrEvent,
+        float x,
+        float y,
+        float z,
+        float volume = 1.0f,
+        float maxDistance = 1200f,
+        bool loop = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pathOrEvent);
+        ValidateSpatialParams(x, y, z, maxDistance);
+
+        float baseVolume = Math.Clamp(float.IsNaN(volume) ? 0f : volume, 0f, 1f);
+        float attenuated = ComputeAttenuatedVolume(x, y, z, baseVolume, maxDistance);
+        bool isFmodEvent = !pathOrEvent.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase);
+
+        int handle = bridge.PlayAudio(pathOrEvent, isFmodEvent, attenuated, loop);
+        if (handle > 0)
+        {
+            lock (_gate)
+            {
+                _activeChannels.Add(handle);
+                _spatialChannels[handle] = new SpatialChannelState(x, y, z, baseVolume, maxDistance, attenuated);
+            }
+        }
+
+        return new AudioChannelHandle(handle);
+    }
+
+    /// <inheritdoc/>
+    public void SetChannelPosition(AudioChannelHandle channel, float x, float y, float z, float maxDistance = 1200f)
+    {
+        ValidateSpatialParams(x, y, z, maxDistance);
+        int handle = channel.Value;
+        if (handle <= 0)
+        {
+            return;
+        }
+
+        float baseVolume;
+        lock (_gate)
+        {
+            baseVolume = _spatialChannels.TryGetValue(handle, out SpatialChannelState? existing)
+                ? existing.BaseVolume
+                : 1.0f;
+        }
+
+        float attenuated = ComputeAttenuatedVolume(x, y, z, baseVolume, maxDistance);
+        lock (_gate)
+        {
+            _activeChannels.Add(handle);
+            _spatialChannels[handle] = new SpatialChannelState(x, y, z, baseVolume, maxDistance, attenuated);
+        }
+
+        bridge.SetAudioVolume(handle, attenuated);
+    }
+
+    /// <inheritdoc/>
+    public void SetChannelVolume(int channelHandle, float volume)
+    {
+        float clamped = Math.Clamp(float.IsNaN(volume) ? 0f : volume, 0f, 1f);
+        SpatialChannelState? spatial;
+        lock (_gate)
+        {
+            _spatialChannels.TryGetValue(channelHandle, out spatial);
+        }
+
+        if (spatial is not null)
+        {
+            float attenuated = ComputeAttenuatedVolume(spatial.X, spatial.Y, spatial.Z, clamped, spatial.MaxDistance);
+            lock (_gate)
+            {
+                if (_spatialChannels.ContainsKey(channelHandle))
+                {
+                    _spatialChannels[channelHandle] = spatial with { BaseVolume = clamped, LastAppliedVolume = attenuated };
+                }
+            }
+
+            bridge.SetAudioVolume(channelHandle, attenuated);
+            return;
+        }
+
+        bridge.SetAudioVolume(channelHandle, clamped);
+    }
 
     /// <inheritdoc/>
     public bool IsChannelPlaying(int channelHandle) =>
@@ -943,6 +1040,111 @@ public sealed class AudioService(INativeBridge bridge) : IAudioService
         lock (_gate)
         {
             _activeChannels.Remove(channelHandle);
+            _spatialChannels.Remove(channelHandle);
+        }
+    }
+
+    /// <summary>
+    /// Updates distance attenuation for all active 3D spatial channels on the game thread
+    /// and prunes channels that have finished playing.
+    /// </summary>
+    public void TickSpatialChannels()
+    {
+        KeyValuePair<int, SpatialChannelState>[] snapshot;
+        lock (_gate)
+        {
+            if (_spatialChannels.Count == 0)
+            {
+                return;
+            }
+
+            snapshot = [.. _spatialChannels];
+        }
+
+        WorldPosition3D? listener = TryGetListenerPosition();
+        List<int>? ended = null;
+
+        foreach (var (handle, state) in snapshot)
+        {
+            if (!bridge.IsAudioPlaying(handle))
+            {
+                ended ??= [];
+                ended.Add(handle);
+                continue;
+            }
+
+            float nextVolume = ComputeAttenuatedVolume(state.X, state.Y, state.Z, state.BaseVolume, state.MaxDistance, listener);
+            if (MathF.Abs(nextVolume - state.LastAppliedVolume) >= 1e-4f)
+            {
+                bridge.SetAudioVolume(handle, nextVolume);
+                lock (_gate)
+                {
+                    if (_spatialChannels.ContainsKey(handle))
+                    {
+                        _spatialChannels[handle] = state with { LastAppliedVolume = nextVolume };
+                    }
+                }
+            }
+        }
+
+        if (ended is not null)
+        {
+            lock (_gate)
+            {
+                foreach (int ch in ended)
+                {
+                    _spatialChannels.Remove(ch);
+                    _activeChannels.Remove(ch);
+                }
+            }
+        }
+    }
+
+    private WorldPosition3D? TryGetListenerPosition()
+    {
+        CameraState camera = bridge.GetCameraState();
+        if (camera.IsValid)
+        {
+            return camera.Target;
+        }
+
+        return bridge.GetLocalPlayerEntity()?.Position;
+    }
+
+    private float ComputeAttenuatedVolume(float x, float y, float z, float baseVolume, float maxDistance) =>
+        ComputeAttenuatedVolume(x, y, z, baseVolume, maxDistance, TryGetListenerPosition());
+
+    private static float ComputeAttenuatedVolume(
+        float x,
+        float y,
+        float z,
+        float baseVolume,
+        float maxDistance,
+        WorldPosition3D? listener)
+    {
+        if (listener is null)
+        {
+            return Math.Clamp(baseVolume, 0f, 1f);
+        }
+
+        float dx = x - listener.Value.X;
+        float dy = y - listener.Value.Y;
+        float dz = z - listener.Value.Z;
+        float distance = MathF.Sqrt((dx * dx) + (dy * dy) + (dz * dz));
+        float gain = Math.Clamp(1.0f - (distance / maxDistance), 0f, 1f);
+        return Math.Clamp(baseVolume * gain, 0f, 1f);
+    }
+
+    private static void ValidateSpatialParams(float x, float y, float z, float maxDistance)
+    {
+        if (!float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(z))
+        {
+            throw new ArgumentOutOfRangeException(nameof(x), "Spatial audio coordinates must be finite numbers.");
+        }
+
+        if (!float.IsFinite(maxDistance) || maxDistance <= 0f)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxDistance), "Spatial audio maxDistance must be a finite positive value.");
         }
     }
 }
@@ -1046,6 +1248,23 @@ public sealed class WorldService(INativeBridge bridge, GameLifecycle lifecycle) 
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
         return bridge.SpawnClientObject(metadataPath, x, y, z);
+    }
+
+    /// <inheritdoc/>
+    public uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale = 1.0f)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
+        if (!float.IsFinite(rotationRadians))
+        {
+            throw new ArgumentOutOfRangeException(nameof(rotationRadians), "Rotation must be a finite number.");
+        }
+
+        if (!float.IsFinite(scale) || scale <= 0f)
+        {
+            throw new ArgumentOutOfRangeException(nameof(scale), "Scale must be a finite positive number.");
+        }
+
+        return bridge.SpawnClientObject(metadataPath, x, y, z, rotationRadians, scale);
     }
 
     /// <inheritdoc/>

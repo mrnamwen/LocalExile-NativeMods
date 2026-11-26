@@ -1,7 +1,34 @@
 namespace LocalExile.Client.Sdk.Engine;
 
 /// <summary>
-/// Plays FMOD Studio events and loose/overlaid <c>.ogg</c> audio files through the client's audio manager.
+/// Strongly typed handle identifying an active audio channel returned by <see cref="IAudioService"/>.
+/// Implicitly converts to and from <see cref="int"/> for seamless interoperability with existing <c>int</c> channel APIs.
+/// </summary>
+/// <param name="Value">Underlying native/host channel handle (&gt; 0 when valid).</param>
+public readonly record struct AudioChannelHandle(int Value)
+{
+    /// <summary>Invalid / empty audio channel handle.</summary>
+    public static AudioChannelHandle Invalid => default;
+
+    /// <summary>Gets whether this handle refers to a valid allocated audio channel (<c>Value &gt; 0</c>).</summary>
+    public bool IsValid => Value > 0;
+
+    /// <summary>Returns the raw integer channel handle value.</summary>
+    public int ToInt32() => Value;
+
+    /// <summary>Creates an <see cref="AudioChannelHandle"/> from a raw integer channel handle value.</summary>
+    public static AudioChannelHandle FromInt32(int value) => new(value);
+
+    /// <summary>Implicitly converts an <see cref="AudioChannelHandle"/> to its underlying <see cref="int"/> handle.</summary>
+    public static implicit operator int(AudioChannelHandle handle) => handle.Value;
+
+    /// <summary>Implicitly converts an <see cref="int"/> channel handle to an <see cref="AudioChannelHandle"/>.</summary>
+    public static implicit operator AudioChannelHandle(int value) => new(value);
+}
+
+/// <summary>
+/// Plays FMOD Studio events and loose/overlaid <c>.ogg</c> audio files through the client's audio manager,
+/// including 3D world-positioned audio with live camera-distance attenuation.
 /// </summary>
 public interface IAudioService
 {
@@ -28,6 +55,44 @@ public interface IAudioService
     /// <param name="loop"><c>true</c> to loop continuously until stopped via <see cref="StopChannel"/>.</param>
     /// <returns>An opaque channel handle.</returns>
     int PlaySoundFile(string virtualOggPath, float volume, bool loop) => PlaySoundFile(virtualOggPath, volume);
+
+    /// <summary>
+    /// Plays an FMOD event or <c>.ogg</c> sound anchored at a 3D world coordinate using live camera-distance attenuation.
+    /// Automatically updated each frame on the game thread and stopped when the owning mod unloads.
+    /// </summary>
+    /// <param name="pathOrEvent">Virtual <c>.ogg</c> file path or FMOD Studio event path.</param>
+    /// <param name="x">World X coordinate.</param>
+    /// <param name="y">World Y coordinate.</param>
+    /// <param name="z">World Z coordinate.</param>
+    /// <param name="volume">Base linear volume multiplier (0.0 to 1.0) before distance attenuation.</param>
+    /// <param name="maxDistance">Maximum audible distance in world units (attenuates linearly to 0 at or beyond this distance).</param>
+    /// <param name="loop"><c>true</c> to loop continuously until stopped.</param>
+    /// <returns>A strongly typed <see cref="AudioChannelHandle"/> for the started channel.</returns>
+    AudioChannelHandle PlaySoundAtPosition(
+        string pathOrEvent,
+        float x,
+        float y,
+        float z,
+        float volume = 1.0f,
+        float maxDistance = 1200f,
+        bool loop = false)
+    {
+        int ch = pathOrEvent.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)
+            ? PlaySoundFile(pathOrEvent, volume, loop)
+            : PlayEvent(pathOrEvent, volume);
+        return new AudioChannelHandle(ch);
+    }
+
+    /// <summary>
+    /// Updates (or attaches) the 3D world coordinate and attenuation radius of an active audio channel,
+    /// immediately re-evaluating its distance-attenuated gain against the live camera/listener position.
+    /// </summary>
+    /// <param name="channel">Active channel handle.</param>
+    /// <param name="x">New world X coordinate.</param>
+    /// <param name="y">New world Y coordinate.</param>
+    /// <param name="z">New world Z coordinate.</param>
+    /// <param name="maxDistance">Maximum audible distance in world units.</param>
+    void SetChannelPosition(AudioChannelHandle channel, float x, float y, float z, float maxDistance = 1200f) { }
 
     /// <summary>Updates the linear volume (0.0 to 1.0) of an active audio channel.</summary>
     void SetChannelVolume(int channelHandle, float volume) { }
@@ -287,6 +352,17 @@ public interface IWorldService
     /// <param name="z">World Z coordinate.</param>
     /// <returns>The allocated client-only object id.</returns>
     uint SpawnClientObject(string metadataPath, float x, float y, float z = 0f);
+
+    /// <summary>Spawns a client-only object invisible to the server with explicit rotation and scale transform.</summary>
+    /// <param name="metadataPath">Path to the object's <c>.ot</c> definition.</param>
+    /// <param name="x">World X coordinate.</param>
+    /// <param name="y">World Y coordinate.</param>
+    /// <param name="z">World Z coordinate.</param>
+    /// <param name="rotationRadians">Yaw rotation in radians.</param>
+    /// <param name="scale">Uniform scale multiplier (must be positive; defaults to <c>1.0</c>).</param>
+    /// <returns>The allocated client-only object id.</returns>
+    uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale = 1.0f) =>
+        SpawnClientObject(metadataPath, x, y, z);
 
     /// <summary>Removes a previously spawned client-only object.</summary>
     bool RemoveClientObject(uint objectId);
