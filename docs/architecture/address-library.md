@@ -2,7 +2,7 @@
 
 The **Address Library** (`data/addresses/`) decouples the NativeMods script extender, managed host, and client mods from hardcoded binary addresses. Because Path of Exile 3.29 is compiled with `DYNAMIC_BASE` (ASLR), every runtime address is computed from a verified **RVA** (`runtimeAddress = loadedImageBase + rva`) and checked against expected instruction bytes before any detour is installed.
 
-The repository ships **110 symbols**, **29 struct offsets**, and **18 verified constants** across 15 categories (`frame`, `ui`, `files`, `geal`, `rulesets`, `network`, `allocator`, `runtime`, `audio`, `stats`, `world`, `components`, `skills`, `items`, `patch`).
+The repository ships **`319` symbols**, **`300` struct offsets**, and **`18` verified constants** across `3.29.3d` and `3.29.3c` (single source of truth in `data/addresses/{3.29.3d,3.29.3c}.json`, code-generated into `src/native-shim/src/address_table.cpp` and verified via `python3 scripts/generate-address-table.py --check`).
 
 ---
 
@@ -12,8 +12,8 @@ Official unpatched SHA-256 digests matching LocalExile's `ClientBuilds.cs`:
 
 | Game Version | Build Number | Executable SHA-256 (Unpatched) | Address File | Notes |
 |---|---|---|---|---|
-| **3.29.3d** | `328228` | `e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d` | `data/addresses/3.29.3d.json` | Primary live- and static-verified build (`79,394,136` bytes, `ImageBase = 0x140000000`, 86 verified byte signatures). |
-| **3.29.3c** | `327984` | `cc8aa38345be2a837575215d2ce142ebecf7b007345843265b335ebb8ac5964c` | `data/addresses/3.29.3c.json` | Code RVAs shared with 3.29.3d (`code_shared_3_29_3c`); 23 unverified data/vtable/IAT entries explicitly carry `rva: null` (`unverified_3_29_3c`); `network.hnc_mask` verified at `0x2feaed0`. |
+| **3.29.3d** | `328228` | `e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d` | `data/addresses/3.29.3d.json` | Primary live- and static-verified build (`79,394,136` bytes, `ImageBase = 0x140000000`, `319/319` verified, `238` non-null `expectedBytes`; all `kind: "vtable"` entries store `expectedBytes: null` for `DYNAMIC_BASE` ASLR safety). |
+| **3.29.3c** | `327984` | `cc8aa38345be2a837575215d2ce142ebecf7b007345843265b335ebb8ac5964c` | `data/addresses/3.29.3c.json` | `87` verified/shared code RVAs (`code_shared_3_29_3c`); `232` unverified entries explicitly carry `rva: null` (`unverified_3_29_3c`); `network.hnc_mask` verified at `0x2feaed0`. |
 | **3.29.3c** (3.29.3.5 hotfix) | `328126` | `01a22facf36886b39bca74793c0d8c7295b1495f1625b4ebc7b23c2de32a70cf` | `data/addresses/3.29.3c.json` | Same cross-build rule as 327984. |
 
 > **Critical 3.29.3c Rule:** `.text` code addresses match between 3.29.3c and 3.29.3d, **but `.data` / `.rdata` addresses (globals, vtables, IAT slots, static tables) drift between builds**. Never copy a 3.29.3d data RVA into `3.29.3c.json` without verifying it against the 3.29.3c executable.
@@ -56,7 +56,7 @@ Every Address Library file conforms to `schemaVersion: 1` (`$id: https://localex
 
 ## 3. Core Verified Symbol Table (3.29.3d)
 
-*(Run `dotnet run --project src/LocalExile.Client.Patcher -- dump-addresses --build 3.29.3d --addresses data/addresses` to inspect all 110 symbols and their full expected byte signatures.)*
+*(Run `dotnet run --project src/LocalExile.Client.Patcher -- dump-addresses --build 3.29.3d --addresses data/addresses` to inspect all 319 symbols and their full expected byte signatures.)*
 
 | Symbol Name | Category | 3.29.3d VA | RVA | Kind | Status | Notes |
 |---|---|---|---|---|---|---|

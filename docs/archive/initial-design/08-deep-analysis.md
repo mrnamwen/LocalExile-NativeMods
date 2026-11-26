@@ -130,7 +130,7 @@ The dispatcher itself `0x142150ae0`: early null-message and owner-filter passes,
   per-argument count/type/value [D, L]. A mod that ships `Functions { my_entry = { … } }` in an `.ot` gets a
   server-callable client function with no new machinery [I].
 - **The built-in surface is now measured, not estimated: 1,231 registrations, 1,221 unique names** —
-  [samples/geal-builtins.txt](samples/geal-builtins.txt). They are registered at startup by `0x141ece040` (name
+  [samples/geal-builtins.txt](../../../samples/geal-builtins.txt). They are registered at startup by `0x141ece040` (name
   interning into the global list at `0x1445c81a8`) and `0x14006a5f0` (functor binding), so a host can enumerate
   them at runtime by walking that list [V]. Coverage: control flow (`If`, `While`, `ForEach`, `IfState`),
   math/logic (`ATan2`, `Xor`), object control (`Transition`, `PlayAnimation`, `DisableRendering`,

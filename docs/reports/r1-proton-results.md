@@ -22,7 +22,7 @@
 | Baseline `Game.exe` SHA-256 | `e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d` |
 | Baseline `Game.patched.exe` SHA-256 | `ca8c17956b40a5b43007413695737912d72f5b8319903c6b1bfec6b674b5dcb1` |
 
-Reproducible runner: [`scripts/run-r1-proton.sh`](../scripts/run-r1-proton.sh).
+Reproducible runner: [`scripts/run-r1-proton.sh`](../../scripts/run-r1-proton.sh).
 
 ---
 

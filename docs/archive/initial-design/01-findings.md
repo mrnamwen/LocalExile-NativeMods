@@ -10,7 +10,7 @@ Steam executable. LocalExile's rule is that code addresses are the same in 3.29.
 
 ## 1. The client has its own UI language
 
-- **124 `.ui` files** are in the bundle index under `metadata/ui/` [V]. List: [samples/ui-paths.txt](samples/ui-paths.txt).
+- **124 `.ui` files** are in the bundle index under `metadata/ui/` [V]. List: [samples/ui-paths.txt](../../../samples/ui-paths.txt).
   They cover the login and character screens, loading screens, the escape menu, the confirmation window, the HUD,
   the character panel and about 70 tutorial pages. 16 `uisettings*.xml` files sit beside them.
 - **The format is UTF-16 text** [V]. What the extracted files show:
@@ -49,7 +49,7 @@ Steam executable. LocalExile's rule is that code addresses are the same in 3.29.
   (`size = …, main_layout.tutorial_list_frame:height + 50;`).
 - **Controls are created by name** [V]. The executable has RTTI for
   `UI::Controls::Detail::Register<T>(std::wstring&&)` for 47 control types:
-  [samples/registered-controls.txt](samples/registered-controls.txt). The general ones are `Frame`, `Label`,
+  [samples/registered-controls.txt](../../../samples/registered-controls.txt). The general ones are `Frame`, `Label`,
   `ScalableTextLabel`, `Button`, `BasicButton`, `GreenButton`, `ImageButton`, `IconLabelButton`, `TextBox`,
   `CheckBox`, `ComboBox`, `ProgressBar`, `Picture`, `VideoDisplay`, `StackLayout`, `FlowLayout`, `ScrollableFrame`,
   `CollapsableFrame`, `TabContainer`, `Table`, `ControlListBox`, `ContextMenu`, `Popup`. Game ones include
@@ -78,7 +78,7 @@ Steam executable. LocalExile's rule is that code addresses are the same in 3.29.
 ## 2. League mechanics are "rulesets"
 
 - The executable has **33 `Game::Rulesets::Client*` classes** [V]:
-  [samples/client-rulesets.txt](samples/client-rulesets.txt). Expedition, Legion, Ultimatum, Sanctum, Sentinel,
+  [samples/client-rulesets.txt](../../../samples/client-rulesets.txt). Expedition, Legion, Ultimatum, Sanctum, Sentinel,
   Archnemesis, Heist contract, Lake (Kalandra), Necropolis graveyard, Village (Kingsmarch), Mercenary, Azmeri
   (Affliction), Ancestral trial, Maven fights and more.
 - A ruleset is a class with a vtable; the Harvest one is `0x14347b910` with 24 slots, constructor `0x14168d750`,

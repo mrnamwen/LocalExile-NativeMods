@@ -60,15 +60,18 @@ dump-addresses [--build <3.29.3d|3.29.3c>] [--category <cat>] [--addresses <dir>
 
 ### Public C ABI (`include/nativemods_abi.h`)
 
-- **ABI Version:** `0.1.0` (`NM_ABI_VERSION = 0x00000100`), Win64 / `__cdecl` (`NM_CALL`).
+- **ABI Version:** `0.4.0` (`NM_ABI_VERSION = 0x00000400u`), Win64 / `__cdecl` (`NM_CALL`).
 - **Import Anchor:** `NM_API void NM_CALL LocalExileClientHost_ImportAnchor(void)` — anchor export referenced by the `.nmimp` import descriptor so the Windows/Wine loader eagerly maps `LocalExile.ClientHost.dll`.
-- **Managed Entry Point:** `[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])] public static int LocalExile.Client.Host.NativeEntryPoint.Initialize(nint abiTablePtr)` receives a `const nm_abi_table_t*` (`struct_size`, `abi_version`, and **24** function pointers).
-- **Verified C ABI Struct Sizes (64-bit parity asserted in `AddressLibraryTests`):**
-  - `nm_host_info_t` / `NmHostInfo`: **120 bytes**
-  - `nm_symbol_info_t` / `NmSymbolInfo`: **48 bytes**
-  - `nm_game_alloc_header_t` / `NmGameAllocHeader`: **16 bytes** (packed)
-  - `nm_exception_info_t` / `NmExceptionInfo`: **528 bytes**
-  - `nm_abi_table_t` / `NmAbiTable`: **200 bytes** (`uint32_t struct_size`, `uint32_t abi_version`, 24 function pointers)
+- **Managed Entry Point:** `[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])] public static int LocalExile.Client.Host.NativeEntryPoint.Initialize(nint abiTablePtr)` receives a `const nm_abi_table_t*` (`struct_size = 864`, `abi_version = 0x00000400u`, and **`107` function-pointer slots `0..106`**; **`122` DLL exports** in `src/native-shim/src/LocalExile.ClientHost.def`).
+- **Verified C ABI Struct Sizes (64-bit C++ `static_assert` & C# `LayoutKind.Sequential` parity):**
+  - `nm_abi_table_t` / `NmAbiTable`: **864 bytes** (`107` function pointers, strictly backward-appended across `0.2.0` `0..68`, `0.3.0` `69..88`, `0.4.0` `89..106`)
+  - `nm_host_info_t` / `NmHostInfo`: **120 bytes** · `nm_symbol_info_t`: **48 bytes** · `nm_game_alloc_header_t`: **16 bytes** · `nm_exception_info_t`: **528 bytes**
+  - Phase 1 (`0.3.0`) structs: `nm_screens_state_t` (**280 B**), `nm_input_event_t` (**40 B**), `nm_item_snapshot_t` (**448 B**), `nm_hover_state_t` (**952 B**)
+  - Phase 2 (`0.4.0`) structs: `nm_world_entity_query_t` (**160 B**), `nm_world_entity_snapshot_t` (**760 B**), `nm_stat_entry_t` (**8 B**), `nm_area_info_t` (**352 B**), `nm_item_filter_state_t` (**784 B**), `nm_item_filter_result_t` (**72 B**), `nm_camera_state_t` (**120 B**)
+- **`HookEngine` Safety Rules (`28/28` C++20 shim tests):**
+  - Shared Pre/Post hook chains (`install_inline_chain`) register DWARF `.eh_frame` / Win64 `RUNTIME_FUNCTION`+`UNWIND_INFO` unwind tables and verify multi-chain `expectedBytes` tails beyond `stolen_len` directly against live unpatched memory.
+  - **`> 8`-arg Win64 limit:** `install_inline_chain` forwards at most `8` arguments (`args[0..7]`). Any native target taking `> 8` Win64 arguments — such as 10-arg `world.client_world_init_area` (`0x141653ee0`) — MUST use a typed raw `hooks.install_inline` detour forwarding all parameters (`a0..a9`).
+  - **Slab-pool control teardown:** `ui_destroy_control` calls `Control::ReleaseOrDestroy` (`0x18b6810`) for slab-pooled controls (`[control + 0x08] != 0`) instead of `vtbl[8]`.
 
 #### Exported C API Surface
 

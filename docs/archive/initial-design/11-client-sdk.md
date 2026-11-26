@@ -189,7 +189,7 @@ static class PlotScript
 ```
 
 - The `Geal.*` and `This` surface is generated from the classified built-in table
-  ([samples](samples/geal-builtins-classified.tsv)), so only names the client implements exist; a server-only
+  ([samples](../../../samples/geal-builtins-classified.tsv)), so only names the client implements exist; a server-only
   built-in is a C# compile error.
 - The subset is what GEAL has: numbers, bools, strings, locations, lists, `if`, bounded loops, lambdas, object
   and area variables. The compiler checks the VM's limits (s16 jumps, 256 constants and functions per script).
