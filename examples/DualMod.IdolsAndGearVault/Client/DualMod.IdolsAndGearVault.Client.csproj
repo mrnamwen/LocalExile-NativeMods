@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.IdolsAndGearVault.Client</RootNamespace>
+    <AssemblyName>idolsvault.Client</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile Shared/ records and geometry helpers directly into idolsvault.Client.dll so ClientModLoader
+         loads it as a single self-contained assembly inside a collectible AssemblyLoadContext. -->
+    <Compile Include="..\Shared\*.cs" Link="Shared\%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+  </ItemGroup>
+</Project>

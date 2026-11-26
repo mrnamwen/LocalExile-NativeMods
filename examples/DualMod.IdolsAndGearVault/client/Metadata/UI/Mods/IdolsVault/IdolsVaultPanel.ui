@@ -1,0 +1,196 @@
+// DualMod.IdolsAndGearVault — Native 3.29.3d Idol Board & Gear Vault Panel.
+// Uses stock 3.29.3d controls (Frame, StackLayout, Label, BasicButton) with explicit
+// unique IDs, leading comment before <DEFINITIONS>, and zero UiLayoutLinter diagnostics.
+// Dynamic Phase 4 rich controls (ITabContainer, IUiItemGrid, IComboBox, IScrollableFrame,
+// IListBox) are mounted inside tabs_host at runtime via IUiService.
+
+<DEFINITIONS>
+
+const $w = 720;
+const $pad = 20;
+const $inner = 680;
+
+begin Frame
+	id = idolsvault_panel;
+	aspect_mode = scaley;
+	size = $w, 640;
+	min_size = $w, 600;
+	auto_size = false, true;
+	float = centre;
+	y = 80;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	background_colour = argb( 238, 12, 14, 21 );
+	pixel_border_colour = rgb( 152, 114, 68 );
+
+	begin StackLayout
+		id = body;
+		auto_size = true, true;
+		margin = $pad, 14, $pad, 16;
+		float = centre;
+
+		begin Frame
+			id = title_bar;
+			size = $inner, 42;
+			margin = 0, 0, 0, 8;
+
+			begin Label
+				id = title_label;
+				location = 44, 0;
+				size = $inner - 88, 42;
+				auto_size = false;
+				text_align = MiddleCentre;
+				font = Fonts.LargeSC;
+				foreground_colour = rgb( 236, 202, 142 );
+				outline_colour = rgb( 0, 0, 0 );
+				text = "Idols Board & Gear Vault";
+			end
+
+			begin BasicButton
+				id = close_button;
+				location = $inner - 40, 1;
+				size = 40, 40;
+				mouse_enabled = true;
+				background = "Art/2DArt/UIImages/Common/ButtonCloseNormal", stretch;
+			end
+		end
+
+		begin Frame
+			id = header_divider;
+			float = centre;
+			background = "Art/2DArt/UIImages/InGame/Divider", stretch;
+			size = $inner - 20, 8;
+			margin = 0, 0, 0, 10;
+		end
+
+		begin Frame
+			id = summary_bar;
+			size = $inner, 68;
+			margin = 0, 0, 0, 10;
+			background_colour = argb( 215, 18, 22, 31 );
+			pixel_border_colour = rgb( 104, 84, 58 );
+
+			begin Label
+				id = board_summary_label;
+				location = 12, 6;
+				size = $inner - 24, 20;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.Normal;
+				foreground_colour = rgb( 255, 228, 144 );
+				text = "Idol Board: 0 / 32 active cells (4 corners locked)";
+			end
+
+			begin Label
+				id = vault_summary_label;
+				location = 12, 26;
+				size = $inner - 24, 18;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormal;
+				foreground_colour = rgb( 166, 224, 188 );
+				text = "Gear Vault: Helmets -> Tab 4 (Stock Affinity: On)";
+			end
+
+			begin Label
+				id = extend_summary_label;
+				location = 12, 46;
+				size = $inner - 24, 18;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormal;
+				foreground_colour = rgb( 170, 198, 232 );
+				text = "Extend: GEAL IdolBoardCount | Ruleset 0xAE | Control IdolVault.StatusBadge";
+			end
+		end
+
+		begin Frame
+			id = tabs_host;
+			size = $inner, 410;
+			margin = 0, 0, 0, 10;
+			background_colour = argb( 205, 14, 17, 24 );
+			pixel_border_colour = rgb( 92, 74, 54 );
+		end
+
+		begin Frame
+			id = footer_bar;
+			size = $inner, 42;
+			margin = 0, 2, 0, 8;
+
+			begin BasicButton
+				id = sync_state_button;
+				location = 0, 0;
+				size = 216, 40;
+				mouse_enabled = true;
+				background_colour = argb( 232, 36, 62, 82 );
+				pixel_border_colour = rgb( 122, 168, 214 );
+
+				begin Label
+					id = sync_state_label;
+					location = 0, 0;
+					size = 216, 40;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 228, 242, 255 );
+					mouse_enabled = false;
+					text = "Sync Board & Vault";
+				end
+			end
+
+			begin BasicButton
+				id = apply_vault_button;
+				location = 232, 0;
+				size = 216, 40;
+				mouse_enabled = true;
+				background_colour = argb( 232, 38, 72, 48 );
+				pixel_border_colour = rgb( 124, 198, 142 );
+
+				begin Label
+					id = apply_vault_label;
+					location = 0, 0;
+					size = 216, 40;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 232, 255, 236 );
+					mouse_enabled = false;
+					text = "Apply Gear Affinity";
+				end
+			end
+
+			begin BasicButton
+				id = close_footer_button;
+				location = 464, 0;
+				size = 216, 40;
+				mouse_enabled = true;
+				background_colour = argb( 230, 64, 30, 30 );
+				pixel_border_colour = rgb( 172, 98, 88 );
+
+				begin Label
+					id = close_footer_label;
+					location = 0, 0;
+					size = 216, 40;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 248, 224, 218 );
+					mouse_enabled = false;
+					text = "Close";
+				end
+			end
+		end
+
+		begin Label
+			id = status_label;
+			size = $inner, 28;
+			auto_size = false;
+			text_align = MiddleLeft;
+			font = Fonts.SmallNormal;
+			foreground_colour = rgb( 198, 206, 218 );
+			text = "Ready. Hold Alt over items for affix tags; Alt+I toggles panel.";
+		end
+	end
+end

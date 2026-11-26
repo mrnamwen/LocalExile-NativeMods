@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.IdolsAndGearVault.Server</RootNamespace>
+    <AssemblyName>idolsvault</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- IdolsVaultLocalExileEntry.cs is a ready-to-drop LocalExile Gateway IMod entry point compiled
+         by LocalExile's ModHost Roslyn loader against the live Gateway assemblies in Mods/Binaries/idolsvault/. -->
+    <Compile Remove="IdolsVaultLocalExileEntry.cs" />
+    <None Include="IdolsVaultLocalExileEntry.cs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\DualMod.IdolsAndGearVault.Shared.csproj" />
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
+  </ItemGroup>
+</Project>

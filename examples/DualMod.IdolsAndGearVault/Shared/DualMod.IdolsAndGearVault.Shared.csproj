@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.IdolsAndGearVault.Shared</RootNamespace>
+    <AssemblyName>DualMod.IdolsAndGearVault.Shared</AssemblyName>
+  </PropertyGroup>
+</Project>
