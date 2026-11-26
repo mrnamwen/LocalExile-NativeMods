@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.StashQol.Server</RootNamespace>
+    <AssemblyName>stashqol</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- StashQolLocalExileEntry.cs is a ready-to-drop LocalExile Gateway IMod entry point compiled
+         by LocalExile's ModHost Roslyn loader against the live Gateway assemblies in Mods/Binaries/stashqol/. -->
+    <Compile Remove="StashQolLocalExileEntry.cs" />
+    <None Include="StashQolLocalExileEntry.cs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\DualMod.StashQol.Shared.csproj" />
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "settings": {
+    "maxRegexRolls": {
+      "type": "number",
+      "default": 500,
+      "min": 1,
+      "max": 2000,
+      "label": "Max Regex Roll Attempts",
+      "description": "Hard upper limit on currency rolls executed in a single Roll Until Regex Match request."
+    },
+    "vendorAllRequiresConfirmation": {
+      "type": "bool",
+      "default": true,
+      "label": "Confirm Before Vendor All",
+      "description": "When true, clicking Vendor All once prompts for confirmation before selling eligible items in the active stash tab."
+    },
+    "bulkUseMaxActions": {
+      "type": "number",
+      "default": 200,
+      "min": 1,
+      "max": 500,
+      "label": "Max Bulk Stack Actions",
+      "description": "Maximum number of item uses executed per Ctrl+Shift+RMB bulk stack trigger."
+    },
+    "pobAutoApplyOnLevelUp": {
+      "type": "bool",
+      "default": true,
+      "label": "Auto-Apply PoB Passives On Level Up",
+      "description": "Automatically allocates the next connected planned passive skill nodes whenever the character levels up."
+    },
+    "upgradeCorruptedMaps": {
+      "type": "bool",
+      "default": false,
+      "label": "Include Corrupted Maps In 3-to-1 Upgrade",
+      "description": "When false (default), corrupted maps are skipped during Map Stash 3-to-1 tier upgrades."
+    }
+  }
+}

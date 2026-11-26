@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.StashQol.Shared</RootNamespace>
+    <AssemblyName>DualMod.StashQol.Shared</AssemblyName>
+  </PropertyGroup>
+</Project>
