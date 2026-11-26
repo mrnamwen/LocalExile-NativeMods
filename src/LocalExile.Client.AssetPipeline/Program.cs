@@ -32,6 +32,9 @@ public static class Program
                 "build-currency" => RunBuildCurrency(opts),
                 "convert-dds" => RunConvertDds(opts),
                 "convert-glb" => RunConvertGlb(opts),
+                "convert-glb-fmt" => RunConvertGlbFmt(opts),
+                "convert-glb-smd" => RunConvertGlbSmd(opts),
+                "inspect-mesh" => RunInspectMesh(opts),
                 "convert-audio" => RunConvertAudio(opts),
                 "patch-dat" => RunPatchDat(opts),
                 "merge-dat-patches" => RunMergeDatPatches(opts),
@@ -479,6 +482,166 @@ public static class Program
         return 0;
     }
 
+    private static int RunConvertGlbFmt(Dictionary<string, string> opts)
+    {
+        string input = RequireOption(opts, "--in");
+        string outDir = RequireOption(opts, "--out");
+        string modelName = opts.GetValueOrDefault("--name", Path.GetFileNameWithoutExtension(input));
+        string artBase = opts.GetValueOrDefault("--art-base", $"Art/Models/Mods/{modelName}");
+        string metaBase = opts.GetValueOrDefault("--meta-base", $"Metadata/Props/Mods/{modelName}");
+        string objectName = opts.GetValueOrDefault("--object-name", modelName);
+        float? span = opts.TryGetValue("--span", out string? spanStr)
+            ? float.Parse(spanStr, System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+        bool emitAo = !opts.ContainsKey("--no-ao");
+        bool centerBase = opts.ContainsKey("--center") || span.HasValue;
+
+        GlbScene scene = GlbParser.ParseFile(input);
+        PoeFmtAssetBundle bundle = GlbToFmtConverter.Convert(scene, new PoeFmtMeshOptions
+        {
+            ArtBasePath = artBase,
+            MetadataBasePath = metaBase,
+            ModelBaseName = modelName,
+            ObjectBaseName = objectName,
+            TargetLongestHorizontalSpan = span,
+            CenterBase = centerBase,
+            EmitAoWrapper = emitAo,
+        });
+
+        foreach (var (vp, data) in bundle.Files)
+        {
+            WriteVirtualFile(outDir, vp, data);
+        }
+
+        Console.WriteLine(
+            $"Converted '{input}' -> {bundle.Files.Count} static mesh file(s) in '{outDir}': " +
+            $"{bundle.FmtVirtualPath} ({bundle.VertexCount} verts, {bundle.TriangleCount} tris, {bundle.Shapes.Count} shape(s)).");
+        return 0;
+    }
+
+    private static int RunConvertGlbSmd(Dictionary<string, string> opts)
+    {
+        string input = RequireOption(opts, "--in");
+        string outDir = RequireOption(opts, "--out");
+        string modelName = opts.GetValueOrDefault("--name", Path.GetFileNameWithoutExtension(input));
+        string artBase = opts.GetValueOrDefault("--art-base", $"Art/Models/Mods/{modelName}");
+        string metaBase = opts.GetValueOrDefault("--meta-base", $"Metadata/Models/Mods/{modelName}");
+        string objectName = opts.GetValueOrDefault("--object-name", modelName);
+        byte fps = opts.TryGetValue("--fps", out string? fpsStr)
+            ? byte.Parse(fpsStr, System.Globalization.CultureInfo.InvariantCulture)
+            : (byte)30;
+        float? span = opts.TryGetValue("--span", out string? spanStr)
+            ? float.Parse(spanStr, System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+        bool emitAo = !opts.ContainsKey("--no-ao");
+        bool centerBase = opts.ContainsKey("--center") || span.HasValue;
+
+        GlbScene scene = GlbParser.ParseFile(input);
+        PoeSmdAssetBundle bundle = GlbToSmdConverter.Convert(scene, new PoeSmdMeshOptions
+        {
+            ArtBasePath = artBase,
+            MetadataBasePath = metaBase,
+            ModelBaseName = modelName,
+            ObjectBaseName = objectName,
+            AnimationFps = fps,
+            TargetLongestHorizontalSpan = span,
+            CenterBase = centerBase,
+            EmitAoWrapper = emitAo,
+        });
+
+        foreach (var (vp, data) in bundle.Files)
+        {
+            WriteVirtualFile(outDir, vp, data);
+        }
+
+        Console.WriteLine(
+            $"Converted '{input}' -> {bundle.Files.Count} skinned mesh file(s) in '{outDir}': " +
+            $"{bundle.SmdVirtualPath} ({bundle.VertexCount} verts, {bundle.TriangleCount} tris, {bundle.BoneCount} bone(s), {bundle.AnimationNames.Count} clip(s)).");
+        return 0;
+    }
+
+    private static int RunInspectMesh(Dictionary<string, string> opts)
+    {
+        string input = RequireOption(opts, "--in");
+        if (!File.Exists(input))
+        {
+            throw new FileNotFoundException($"Mesh/skeleton file not found: '{input}'.", input);
+        }
+
+        string ext = Path.GetExtension(input).ToLowerInvariant();
+        byte[] data = File.ReadAllBytes(input);
+        string? headerPath = opts.GetValueOrDefault("--header");
+        if (string.IsNullOrWhiteSpace(headerPath) && File.Exists(input + ".header"))
+        {
+            headerPath = input + ".header";
+        }
+
+        switch (ext)
+        {
+            case ".fmt":
+                {
+                    FmtValidationInfo info = !string.IsNullOrWhiteSpace(headerPath) && data.Length > 0 && data[0] == PoeFmtWriter.FmtVersion
+                        ? PoeFmtWriter.Validate(data, File.ReadAllBytes(headerPath))
+                        : PoeFmtWriter.Inspect(data);
+                    Console.WriteLine(
+                        $"FMT v{info.Version} (lver={info.LodVersion}, flags=0x{info.Flags:X}): " +
+                        $"{info.VertexCount} verts, {info.TriangleCount} tris, {info.Shapes.Count} shape(s), {info.AttachmentCount} attachment(s)");
+                    Console.WriteLine(
+                        $"  Bounds: X[{info.Bounds.MinX:0.###}, {info.Bounds.MaxX:0.###}] " +
+                        $"Y[{info.Bounds.MinY:0.###}, {info.Bounds.MaxY:0.###}] " +
+                        $"Z[{info.Bounds.MinZ:0.###}, {info.Bounds.MaxZ:0.###}]");
+                    foreach (PoeFmtShape s in info.Shapes)
+                    {
+                        Console.WriteLine($"  Shape '{s.Name}': [{s.FirstIndex}..+{s.IndexCount}) mat='{s.MaterialPath}'");
+                    }
+
+                    return 0;
+                }
+
+            case ".smd":
+                {
+                    SmdValidationInfo info = !string.IsNullOrWhiteSpace(headerPath) && data.Length > 0 && data[0] == 3
+                        ? PoeSmdWriter.Validate(data, File.ReadAllBytes(headerPath))
+                        : PoeSmdWriter.Inspect(data);
+                    Console.WriteLine(
+                        $"SMD v{info.Version}: {info.VertexCount} verts, {info.TriangleCount} tris, {info.Shapes.Count} shape(s)");
+                    Console.WriteLine(
+                        $"  Bounds: X[{info.Bounds.MinX:0.###}, {info.Bounds.MaxX:0.###}] " +
+                        $"Y[{info.Bounds.MinY:0.###}, {info.Bounds.MaxY:0.###}] " +
+                        $"Z[{info.Bounds.MinZ:0.###}, {info.Bounds.MaxZ:0.###}]");
+                    foreach (PoeShapeRange s in info.Shapes)
+                    {
+                        Console.WriteLine($"  Shape '{s.Name}': [{s.FirstIndex}..+{s.IndexCount})");
+                    }
+
+                    return 0;
+                }
+
+            case ".ast":
+                {
+                    AstSkeleton skel = PoeAstWriter.Read(data);
+                    Console.WriteLine(
+                        $"AST v{skel.Version}: {skel.Bones.Count} bone(s), {skel.Animations.Count} animation(s), {skel.LightCount} light(s)");
+                    for (int i = 0; i < skel.Bones.Count; i++)
+                    {
+                        AstBone b = skel.Bones[i];
+                        Console.WriteLine($"  Bone[{i}] '{b.Name}' parent={b.ParentIndex}");
+                    }
+
+                    foreach (AstAnimationClip anim in skel.Animations)
+                    {
+                        Console.WriteLine(
+                            $"  Anim '{anim.Name}': fps={anim.Fps} playback='{(char)anim.Playback}' tracks={anim.Tracks.Count}");
+                    }
+
+                    return 0;
+                }
+
+            default:
+                throw new ArgumentException($"Unsupported mesh/skeleton extension '{ext}' (expected .fmt, .smd, or .ast).");
+        }
+    }
+
     private static int RunConvertAudio(Dictionary<string, string> opts)
     {
         string input = RequireOption(opts, "--in");
@@ -714,10 +877,17 @@ public static class Program
         var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i].StartsWith("--", StringComparison.Ordinal) && i + 1 < args.Length)
+            if (args[i].StartsWith("--", StringComparison.Ordinal))
             {
-                dict[args[i]] = args[i + 1];
-                i++;
+                if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+                    dict[args[i]] = args[i + 1];
+                    i++;
+                }
+                else
+                {
+                    dict[args[i]] = "true";
+                }
             }
         }
 
@@ -747,8 +917,11 @@ public static class Program
         Console.WriteLine("  build-currency --spec <currency-specs.json> --client <PoE Client or Dat dir> --out <outDir> [--base-overlay <dir>] [--icon-size 78]");
         Console.WriteLine("  patch-dat          --client <PoE Client or Dat dir> --out <outDir>");
         Console.WriteLine("  merge-dat-patches  --client <PoE Client or Dat dir> --patches <dir-or-files> --out <outDir> [--schema <schema.min.json>]");
-        Console.WriteLine("  convert-glb    --in <model.glb> --out <outDir>");
-        Console.WriteLine("  convert-dds    --in <image> --out <file.dds> [--format bc1|bc3|rgba8]");
-        Console.WriteLine("  convert-audio  --in <audio> --out <file.ogg>");
+        Console.WriteLine("  convert-glb        --in <model.glb> --out <outDir>");
+        Console.WriteLine("  convert-glb-fmt    --in <model.glb> --out <outDir> [--name <id>] [--art-base <path>] [--meta-base <path>] [--span <units>] [--center] [--no-ao]");
+        Console.WriteLine("  convert-glb-smd    --in <rigged.glb> --out <outDir> [--name <id>] [--art-base <path>] [--meta-base <path>] [--fps 30] [--span <units>] [--center] [--no-ao]");
+        Console.WriteLine("  inspect-mesh       --in <file.fmt|file.smd|file.ast> [--header <file.header>]");
+        Console.WriteLine("  convert-dds        --in <image> --out <file.dds> [--format bc1|bc3|rgba8]");
+        Console.WriteLine("  convert-audio      --in <audio> --out <file.ogg>");
     }
 }

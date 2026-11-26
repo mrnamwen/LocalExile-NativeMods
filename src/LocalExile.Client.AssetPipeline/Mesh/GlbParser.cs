@@ -15,22 +15,69 @@ public sealed record GlbImage(
     string MimeType,
     byte[] Data);
 
+public readonly record struct GlbSkinInfluence(
+    ushort Joint0,
+    ushort Joint1,
+    ushort Joint2,
+    ushort Joint3,
+    float Weight0,
+    float Weight1,
+    float Weight2,
+    float Weight3);
+
+public sealed record GlbNode(
+    int Index,
+    string Name,
+    int ParentIndex,
+    Vector3 Translation,
+    Quaternion Rotation,
+    Vector3 Scale,
+    Matrix4x4 LocalMatrix,
+    Matrix4x4 WorldMatrix,
+    int? MeshIndex,
+    int? SkinIndex,
+    IReadOnlyList<int> Children);
+
+public sealed record GlbSkin(
+    string Name,
+    IReadOnlyList<int> JointNodeIndices,
+    IReadOnlyList<Matrix4x4> InverseBindMatrices,
+    int? SkeletonRootNodeIndex);
+
+public sealed record GlbAnimationChannel(
+    int TargetNodeIndex,
+    string Path,
+    string Interpolation,
+    IReadOnlyList<float> InputTimes,
+    IReadOnlyList<float> OutputValues);
+
+public sealed record GlbAnimationClip(
+    string Name,
+    float DurationSeconds,
+    IReadOnlyList<GlbAnimationChannel> Channels);
+
 public sealed record GlbPrimitive(
     string Name,
     int MaterialIndex,
     Vector3[] Positions,
     Vector3[] Normals,
     Vector2[] Uvs,
-    uint[] Indices);
+    uint[] Indices,
+    GlbSkinInfluence[]? SkinInfluences = null,
+    int? SkinIndex = null);
 
 public sealed record GlbScene(
     IReadOnlyList<GlbPrimitive> Primitives,
     IReadOnlyList<GlbMaterial> Materials,
-    IReadOnlyList<GlbImage> Images);
+    IReadOnlyList<GlbImage> Images,
+    IReadOnlyList<GlbNode>? Nodes = null,
+    IReadOnlyList<GlbSkin>? Skins = null,
+    IReadOnlyList<GlbAnimationClip>? Animations = null);
 
 /// <summary>
 /// Pure-C# glTF 2.0 binary (<c>.glb</c>) parser supporting JSON + BIN chunks, hierarchical node transforms
-/// (both <c>matrix</c> and <c>translation</c>/<c>rotation</c>/<c>scale</c>), meshes, materials, and embedded images.
+/// (both <c>matrix</c> and <c>translation</c>/<c>rotation</c>/<c>scale</c>), meshes, materials, embedded images,
+/// skeletal <c>skins</c> (<c>JOINTS_0</c>, <c>WEIGHTS_0</c>, <c>inverseBindMatrices</c>), and keyframe <c>animations</c>.
 /// </summary>
 public static class GlbParser
 {
@@ -108,8 +155,10 @@ public static class GlbParser
         var images = ParseImages(root, bufferViews, binChunk);
         var textureSources = ParseTextureSources(root);
         var materials = ParseMaterials(root, textureSources);
+        var nodes = ParseNodes(root);
+        var skins = ParseSkins(root, accessors, bufferViews, binChunk);
+        var animations = ParseAnimations(root, accessors, bufferViews, binChunk);
 
-        Matrix4x4[] worldTransforms = ComputeNodeWorldTransforms(root);
         var primitives = new List<GlbPrimitive>();
 
         if (root.TryGetProperty("nodes", out JsonElement nodesEl) &&
@@ -121,12 +170,18 @@ public static class GlbParser
                 if (node.TryGetProperty("mesh", out JsonElement meshIdxEl))
                 {
                     int meshIdx = meshIdxEl.GetInt32();
+                    int? skinIdx = node.TryGetProperty("skin", out JsonElement skinIdxEl)
+                        ? skinIdxEl.GetInt32()
+                        : null;
                     JsonElement meshEl = meshesEl[meshIdx];
                     string meshName = meshEl.TryGetProperty("name", out JsonElement nEl)
                         ? nEl.GetString() ?? $"mesh_{meshIdx}"
                         : $"mesh_{meshIdx}";
-                    Matrix4x4 world = worldTransforms[nodeIdx];
-                    Matrix4x4 normalMatrix = ComputeNormalMatrix(world);
+
+                    // Per glTF 2.0 spec 3.7.3.1: for skinned meshes, the mesh node's own transform is ignored
+                    // (vertices are already in mesh space bound to joint transforms via inverseBindMatrices).
+                    Matrix4x4 world = skinIdx.HasValue ? Matrix4x4.Identity : nodes[nodeIdx].WorldMatrix;
+                    Matrix4x4 normalMatrix = skinIdx.HasValue ? Matrix4x4.Identity : ComputeNormalMatrix(world);
 
                     int primIdx = 0;
                     foreach (JsonElement primEl in meshEl.GetProperty("primitives").EnumerateArray())
@@ -139,7 +194,7 @@ public static class GlbParser
                         Vector3[] positions = new Vector3[rawPos.Length];
                         for (int i = 0; i < rawPos.Length; i++)
                         {
-                            positions[i] = TransformColumnMajor(world, rawPos[i]);
+                            positions[i] = skinIdx.HasValue ? rawPos[i] : TransformColumnMajor(world, rawPos[i]);
                         }
 
                         uint[] indices;
@@ -163,7 +218,7 @@ public static class GlbParser
                             normals = new Vector3[rawNorm.Length];
                             for (int i = 0; i < rawNorm.Length; i++)
                             {
-                                Vector3 n = TransformDirectionColumnMajor(normalMatrix, rawNorm[i]);
+                                Vector3 n = skinIdx.HasValue ? rawNorm[i] : TransformDirectionColumnMajor(normalMatrix, rawNorm[i]);
                                 normals[i] = n.LengthSquared() > 1e-12f ? Vector3.Normalize(n) : Vector3.UnitY;
                             }
                         }
@@ -182,7 +237,34 @@ public static class GlbParser
                             uvs = new Vector2[positions.Length];
                         }
 
-                        primitives.Add(new GlbPrimitive(primName, matIdx, positions, normals, uvs, indices));
+                        GlbSkinInfluence[]? skinInfluences = null;
+                        if (attrs.TryGetProperty("JOINTS_0", out JsonElement jointsAccEl) &&
+                            attrs.TryGetProperty("WEIGHTS_0", out JsonElement weightsAccEl))
+                        {
+                            (ushort, ushort, ushort, ushort)[] joints = ReadUShort4Accessor(accessors[jointsAccEl.GetInt32()], bufferViews, binChunk);
+                            (float, float, float, float)[] weights = ReadVec4NormalizedAccessor(accessors[weightsAccEl.GetInt32()], bufferViews, binChunk);
+                            int count = Math.Min(positions.Length, Math.Min(joints.Length, weights.Length));
+                            skinInfluences = new GlbSkinInfluence[positions.Length];
+                            for (int i = 0; i < count; i++)
+                            {
+                                skinInfluences[i] = new GlbSkinInfluence(
+                                    joints[i].Item1,
+                                    joints[i].Item2,
+                                    joints[i].Item3,
+                                    joints[i].Item4,
+                                    weights[i].Item1,
+                                    weights[i].Item2,
+                                    weights[i].Item3,
+                                    weights[i].Item4);
+                            }
+
+                            for (int i = count; i < positions.Length; i++)
+                            {
+                                skinInfluences[i] = new GlbSkinInfluence(0, 0, 0, 0, 1f, 0f, 0f, 0f);
+                            }
+                        }
+
+                        primitives.Add(new GlbPrimitive(primName, matIdx, positions, normals, uvs, indices, skinInfluences, skinIdx));
                         primIdx++;
                     }
                 }
@@ -196,7 +278,7 @@ public static class GlbParser
             throw new InvalidDataException("GLB contains no mesh primitives.");
         }
 
-        return new GlbScene(primitives, materials, images);
+        return new GlbScene(primitives, materials, images, nodes, skins, animations);
     }
 
     private sealed record BufferViewInfo(int ByteOffset, int ByteLength, int ByteStride);
@@ -318,7 +400,7 @@ public static class GlbParser
         return list.Count > 0 ? [.. list] : [new GlbMaterial("default", "OPAQUE", false, null)];
     }
 
-    private static Matrix4x4[] ComputeNodeWorldTransforms(JsonElement root)
+    private static GlbNode[] ParseNodes(JsonElement root)
     {
         if (!root.TryGetProperty("nodes", out JsonElement nodesEl))
         {
@@ -326,14 +408,28 @@ public static class GlbParser
         }
 
         int count = nodesEl.GetArrayLength();
+        string[] names = new string[count];
+        Vector3[] translations = new Vector3[count];
+        Quaternion[] rotations = new Quaternion[count];
+        Vector3[] scales = new Vector3[count];
         Matrix4x4[] locals = new Matrix4x4[count];
+        int?[] meshIndices = new int?[count];
+        int?[] skinIndices = new int?[count];
         List<int>[] children = new List<int>[count];
-        bool[] hasParent = new bool[count];
+        int[] parents = new int[count];
+        Array.Fill(parents, -1);
 
         for (int i = 0; i < count; i++)
         {
             JsonElement n = nodesEl[i];
-            locals[i] = ReadNodeLocalMatrix(n);
+            names[i] = n.TryGetProperty("name", out JsonElement nameEl)
+                ? nameEl.GetString() ?? $"node_{i}"
+                : $"node_{i}";
+            meshIndices[i] = n.TryGetProperty("mesh", out JsonElement mEl) ? mEl.GetInt32() : null;
+            skinIndices[i] = n.TryGetProperty("skin", out JsonElement sEl) ? sEl.GetInt32() : null;
+
+            (translations[i], rotations[i], scales[i], locals[i]) = ReadNodeLocalTransform(n);
+
             children[i] = [];
             if (n.TryGetProperty("children", out JsonElement ch))
             {
@@ -341,7 +437,7 @@ public static class GlbParser
                 {
                     int ci = c.GetInt32();
                     children[i].Add(ci);
-                    hasParent[ci] = true;
+                    parents[ci] = i;
                 }
             }
         }
@@ -354,9 +450,6 @@ public static class GlbParser
 
         void Walk(int idx, Matrix4x4 parentWorld)
         {
-            // glTF column-major composition: world = parent * local.
-            // Because we store glTF column-major entries directly into Matrix4x4 fields,
-            // MultiplyColumnMajor(parentWorld, locals[idx]) matches glTF exactly.
             Matrix4x4 world = MultiplyColumnMajor(parentWorld, locals[idx]);
             worlds[idx] = world;
             foreach (int child in children[idx])
@@ -367,16 +460,152 @@ public static class GlbParser
 
         for (int i = 0; i < count; i++)
         {
-            if (!hasParent[i])
+            if (parents[i] < 0)
             {
                 Walk(i, Matrix4x4.Identity);
             }
         }
 
-        return worlds;
+        var result = new GlbNode[count];
+        for (int i = 0; i < count; i++)
+        {
+            result[i] = new GlbNode(
+                i,
+                names[i],
+                parents[i],
+                translations[i],
+                rotations[i],
+                scales[i],
+                locals[i],
+                worlds[i],
+                meshIndices[i],
+                skinIndices[i],
+                children[i]);
+        }
+
+        return result;
     }
 
-    private static Matrix4x4 ReadNodeLocalMatrix(JsonElement node)
+    private static GlbSkin[] ParseSkins(
+        JsonElement root,
+        AccessorInfo[] accessors,
+        BufferViewInfo[] bufferViews,
+        ReadOnlySpan<byte> binChunk)
+    {
+        if (!root.TryGetProperty("skins", out JsonElement skinsEl))
+        {
+            return [];
+        }
+
+        var list = new List<GlbSkin>();
+        int idx = 0;
+        foreach (JsonElement skinEl in skinsEl.EnumerateArray())
+        {
+            string name = skinEl.TryGetProperty("name", out JsonElement nEl)
+                ? nEl.GetString() ?? $"skin_{idx}"
+                : $"skin_{idx}";
+            int? skeletonRoot = skinEl.TryGetProperty("skeleton", out JsonElement skEl)
+                ? skEl.GetInt32()
+                : null;
+
+            var joints = new List<int>();
+            foreach (JsonElement jEl in skinEl.GetProperty("joints").EnumerateArray())
+            {
+                joints.Add(jEl.GetInt32());
+            }
+
+            Matrix4x4[] ibm;
+            if (skinEl.TryGetProperty("inverseBindMatrices", out JsonElement ibmAccEl))
+            {
+                ibm = ReadMat4Accessor(accessors[ibmAccEl.GetInt32()], bufferViews, binChunk);
+            }
+            else
+            {
+                ibm = new Matrix4x4[joints.Count];
+                Array.Fill(ibm, Matrix4x4.Identity);
+            }
+
+            list.Add(new GlbSkin(name, joints, ibm, skeletonRoot));
+            idx++;
+        }
+
+        return [.. list];
+    }
+
+    private static GlbAnimationClip[] ParseAnimations(
+        JsonElement root,
+        AccessorInfo[] accessors,
+        BufferViewInfo[] bufferViews,
+        ReadOnlySpan<byte> binChunk)
+    {
+        if (!root.TryGetProperty("animations", out JsonElement animsEl))
+        {
+            return [];
+        }
+
+        var list = new List<GlbAnimationClip>();
+        int idx = 0;
+        foreach (JsonElement animEl in animsEl.EnumerateArray())
+        {
+            string name = animEl.TryGetProperty("name", out JsonElement nEl)
+                ? nEl.GetString() ?? $"clip_{idx}"
+                : $"clip_{idx}";
+
+            var samplers = new List<(int InputAcc, int OutputAcc, string Interpolation)>();
+            if (animEl.TryGetProperty("samplers", out JsonElement samplersEl))
+            {
+                foreach (JsonElement sEl in samplersEl.EnumerateArray())
+                {
+                    int inputAcc = sEl.GetProperty("input").GetInt32();
+                    int outputAcc = sEl.GetProperty("output").GetInt32();
+                    string interp = sEl.TryGetProperty("interpolation", out JsonElement iEl)
+                        ? iEl.GetString() ?? "LINEAR"
+                        : "LINEAR";
+                    samplers.Add((inputAcc, outputAcc, interp));
+                }
+            }
+
+            var channels = new List<GlbAnimationChannel>();
+            float maxTime = 0f;
+            if (animEl.TryGetProperty("channels", out JsonElement channelsEl))
+            {
+                foreach (JsonElement chEl in channelsEl.EnumerateArray())
+                {
+                    int samplerIdx = chEl.GetProperty("sampler").GetInt32();
+                    if ((uint)samplerIdx >= (uint)samplers.Count)
+                    {
+                        continue;
+                    }
+
+                    JsonElement targetEl = chEl.GetProperty("target");
+                    if (!targetEl.TryGetProperty("node", out JsonElement nodeEl))
+                    {
+                        continue;
+                    }
+
+                    int targetNode = nodeEl.GetInt32();
+                    string path = targetEl.GetProperty("path").GetString() ?? string.Empty;
+                    var (inputAcc, outputAcc, interp) = samplers[samplerIdx];
+
+                    float[] times = ReadFloatArrayAccessor(accessors[inputAcc], bufferViews, binChunk);
+                    float[] values = ReadFloatArrayAccessor(accessors[outputAcc], bufferViews, binChunk);
+                    if (times.Length > 0)
+                    {
+                        maxTime = MathF.Max(maxTime, times[^1]);
+                    }
+
+                    channels.Add(new GlbAnimationChannel(targetNode, path, interp, times, values));
+                }
+            }
+
+            list.Add(new GlbAnimationClip(name, maxTime, channels));
+            idx++;
+        }
+
+        return [.. list];
+    }
+
+    private static (Vector3 Translation, Quaternion Rotation, Vector3 Scale, Matrix4x4 LocalMatrix) ReadNodeLocalTransform(JsonElement node)
     {
         if (node.TryGetProperty("matrix", out JsonElement matEl))
         {
@@ -388,37 +617,48 @@ public static class GlbParser
             }
 
             // Store column-major entries directly: M11..M14 = col0, M21..M24 = col1, M31..M34 = col2, M41..M44 = col3.
-            return new Matrix4x4(
+            // This matches System.Numerics row-vector layout (S * R * T) identically!
+            var local = new Matrix4x4(
                 m[0], m[1], m[2], m[3],
                 m[4], m[5], m[6], m[7],
                 m[8], m[9], m[10], m[11],
                 m[12], m[13], m[14], m[15]);
+
+            if (!Matrix4x4.Decompose(local, out Vector3 s, out Quaternion r, out Vector3 t))
+            {
+                s = Vector3.One;
+                r = Quaternion.Identity;
+                t = new Vector3(local.M41, local.M42, local.M43);
+            }
+
+            return (t, Quaternion.Normalize(r), s, local);
         }
 
-        Vector3 t = Vector3.Zero;
+        Vector3 trans = Vector3.Zero;
         if (node.TryGetProperty("translation", out JsonElement tEl))
         {
-            t = new Vector3((float)tEl[0].GetDouble(), (float)tEl[1].GetDouble(), (float)tEl[2].GetDouble());
+            trans = new Vector3((float)tEl[0].GetDouble(), (float)tEl[1].GetDouble(), (float)tEl[2].GetDouble());
         }
 
-        Quaternion r = Quaternion.Identity;
+        Quaternion rot = Quaternion.Identity;
         if (node.TryGetProperty("rotation", out JsonElement rEl))
         {
-            r = Quaternion.Normalize(new Quaternion(
+            rot = Quaternion.Normalize(new Quaternion(
                 (float)rEl[0].GetDouble(),
                 (float)rEl[1].GetDouble(),
                 (float)rEl[2].GetDouble(),
                 (float)rEl[3].GetDouble()));
         }
 
-        Vector3 s = Vector3.One;
+        Vector3 scale = Vector3.One;
         if (node.TryGetProperty("scale", out JsonElement sEl))
         {
-            s = new Vector3((float)sEl[0].GetDouble(), (float)sEl[1].GetDouble(), (float)sEl[2].GetDouble());
+            scale = new Vector3((float)sEl[0].GetDouble(), (float)sEl[1].GetDouble(), (float)sEl[2].GetDouble());
         }
 
         // System.Numerics row-vector S * R * T has its memory layout identical to glTF column-major T * R * S!
-        return Matrix4x4.CreateScale(s) * Matrix4x4.CreateFromQuaternion(r) * Matrix4x4.CreateTranslation(t);
+        Matrix4x4 mat = Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rot) * Matrix4x4.CreateTranslation(trans);
+        return (trans, rot, scale, mat);
     }
 
     private static Matrix4x4 MultiplyColumnMajor(Matrix4x4 a, Matrix4x4 b) =>
@@ -495,6 +735,153 @@ public static class GlbParser
                 5121 => new Vector2(bin[o] / 255f, bin[o + 1] / 255f),
                 _ => Vector2.Zero,
             };
+        }
+
+        return result;
+    }
+
+    private static (ushort, ushort, ushort, ushort)[] ReadUShort4Accessor(AccessorInfo acc, BufferViewInfo[] bvs, ReadOnlySpan<byte> bin)
+    {
+        BufferViewInfo bv = bvs[acc.BufferView];
+        int elemSize = acc.ComponentType switch
+        {
+            5121 => 4, // UNSIGNED_BYTE
+            5123 => 8, // UNSIGNED_SHORT
+            _ => throw new InvalidDataException($"Unsupported JOINTS_0 componentType {acc.ComponentType}."),
+        };
+        int stride = bv.ByteStride > 0 ? bv.ByteStride : elemSize;
+        int start = bv.ByteOffset + acc.ByteOffset;
+        var result = new (ushort, ushort, ushort, ushort)[acc.Count];
+
+        for (int i = 0; i < acc.Count; i++)
+        {
+            int o = start + (i * stride);
+            result[i] = acc.ComponentType switch
+            {
+                5121 => (bin[o], bin[o + 1], bin[o + 2], bin[o + 3]),
+                5123 => (
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o, 2)),
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o + 2, 2)),
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o + 4, 2)),
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o + 6, 2))),
+                _ => (0, 0, 0, 0),
+            };
+        }
+
+        return result;
+    }
+
+    private static (float, float, float, float)[] ReadVec4NormalizedAccessor(AccessorInfo acc, BufferViewInfo[] bvs, ReadOnlySpan<byte> bin)
+    {
+        BufferViewInfo bv = bvs[acc.BufferView];
+        int elemSize = acc.ComponentType switch
+        {
+            5126 => 16, // FLOAT
+            5123 => 8,  // UNSIGNED_SHORT
+            5121 => 4,  // UNSIGNED_BYTE
+            _ => throw new InvalidDataException($"Unsupported WEIGHTS_0 componentType {acc.ComponentType}."),
+        };
+        int stride = bv.ByteStride > 0 ? bv.ByteStride : elemSize;
+        int start = bv.ByteOffset + acc.ByteOffset;
+        var result = new (float, float, float, float)[acc.Count];
+
+        for (int i = 0; i < acc.Count; i++)
+        {
+            int o = start + (i * stride);
+            result[i] = acc.ComponentType switch
+            {
+                5126 => (
+                    BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o, 4)),
+                    BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 4, 4)),
+                    BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 8, 4)),
+                    BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 12, 4))),
+                5123 => (
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o, 2)) / 65535f,
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o + 2, 2)) / 65535f,
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o + 4, 2)) / 65535f,
+                    BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(o + 6, 2)) / 65535f),
+                5121 => (bin[o] / 255f, bin[o + 1] / 255f, bin[o + 2] / 255f, bin[o + 3] / 255f),
+                _ => (1f, 0f, 0f, 0f),
+            };
+        }
+
+        return result;
+    }
+
+    private static Matrix4x4[] ReadMat4Accessor(AccessorInfo acc, BufferViewInfo[] bvs, ReadOnlySpan<byte> bin)
+    {
+        BufferViewInfo bv = bvs[acc.BufferView];
+        int stride = bv.ByteStride > 0 ? bv.ByteStride : 64;
+        int start = bv.ByteOffset + acc.ByteOffset;
+        var result = new Matrix4x4[acc.Count];
+        for (int i = 0; i < acc.Count; i++)
+        {
+            int o = start + (i * stride);
+            result[i] = new Matrix4x4(
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 0, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 4, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 8, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 12, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 16, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 20, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 24, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 28, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 32, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 36, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 40, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 44, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 48, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 52, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 56, 4)),
+                BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(o + 60, 4)));
+        }
+
+        return result;
+    }
+
+    private static float[] ReadFloatArrayAccessor(AccessorInfo acc, BufferViewInfo[] bvs, ReadOnlySpan<byte> bin)
+    {
+        int comps = acc.Type switch
+        {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            "MAT4" => 16,
+            _ => throw new InvalidDataException($"Unsupported animation accessor type '{acc.Type}'."),
+        };
+
+        int compBytes = acc.ComponentType switch
+        {
+            5126 => 4, // FLOAT
+            5120 => 1, // BYTE
+            5121 => 1, // UNSIGNED_BYTE
+            5122 => 2, // SHORT
+            5123 => 2, // UNSIGNED_SHORT
+            _ => throw new InvalidDataException($"Unsupported animation componentType {acc.ComponentType}."),
+        };
+
+        BufferViewInfo bv = bvs[acc.BufferView];
+        int stride = bv.ByteStride > 0 ? bv.ByteStride : comps * compBytes;
+        int start = bv.ByteOffset + acc.ByteOffset;
+        float[] result = new float[acc.Count * comps];
+
+        for (int i = 0; i < acc.Count; i++)
+        {
+            int o = start + (i * stride);
+            for (int c = 0; c < comps; c++)
+            {
+                int co = o + (c * compBytes);
+                result[(i * comps) + c] = acc.ComponentType switch
+                {
+                    5126 => BinaryPrimitives.ReadSingleLittleEndian(bin.Slice(co, 4)),
+                    5120 => Math.Max(unchecked((sbyte)bin[co]) / 127f, -1f),
+                    5121 => bin[co] / 255f,
+                    5122 => Math.Max(BinaryPrimitives.ReadInt16LittleEndian(bin.Slice(co, 2)) / 32767f, -1f),
+                    5123 => BinaryPrimitives.ReadUInt16LittleEndian(bin.Slice(co, 2)) / 65535f,
+                    _ => 0f,
+                };
+            }
         }
 
         return result;
