@@ -1224,6 +1224,19 @@ internal sealed class ScopedGameServices : IGameServices
         var lifecycle = new TrackedGameLifecycle(runtime.Lifecycle, loader, mod.Manifest.Id);
         track(lifecycle);
         Lifecycle = lifecycle;
+        var screens = new TrackedScreensService(runtime.Screens, loader, mod.Manifest.Id, track);
+        track(screens);
+        Screens = screens;
+        Input = new TrackedInputService(runtime.Input, loader, mod.Manifest.Id, track);
+        var hover = new TrackedHoverService(runtime.Hover, loader, mod.Manifest.Id);
+        track(hover);
+        Hover = hover;
+        var toasts = new TrackedToastService(runtime.Toasts, mod.Manifest.Id);
+        track(toasts);
+        Toasts = toasts;
+        var preGame = new TrackedPreGameService(runtime.PreGame, loader, mod.Manifest.Id);
+        track(preGame);
+        PreGame = preGame;
         GealBuiltins = new TrackedGealBuiltinRegistry(runtime.GealBuiltins, track);
         UiControls = new TrackedUiControlRegistry(runtime.UiControls, track);
         Rulesets = new TrackedRulesetRegistry(runtime.Rulesets, loader, mod.Manifest.Id, track);
@@ -1240,6 +1253,11 @@ internal sealed class ScopedGameServices : IGameServices
     public IStatsService Stats { get; }
     public IWorldService World { get; }
     public IGameLifecycle Lifecycle { get; }
+    public IScreensService Screens { get; }
+    public IInputService Input { get; }
+    public IHoverService Hover { get; }
+    public IToastService Toasts { get; }
+    public IPreGameService PreGame { get; }
     public IGealBuiltinRegistry GealBuiltins { get; }
     public IUiControlRegistry UiControls { get; }
     public IRulesetRegistry Rulesets { get; }
@@ -1268,6 +1286,7 @@ internal sealed class ScopedGameServices : IGameServices
     {
         public IReadOnlyCollection<IUiWindow> OpenWindows => inner.OpenWindows;
         public IUiControl? GetRootControl() => inner.GetRootControl();
+        public IUiControl? WrapControl(nint nativeHandle) => inner.WrapControl(nativeHandle);
         public IUiWindow Load(string virtualPath, string? windowId = null) { IUiWindow w = inner.Load(virtualPath, windowId); track(w); return w; }
         public IUiWindow CreateWindowInto(IUiControl parent, string virtualPath, string? windowId = null) { IUiWindow w = inner.CreateWindowInto(parent, virtualPath, windowId); track(w); return w; }
         public IUiWindow? GetWindow(string windowId) => inner.GetWindow(windowId);
@@ -1747,5 +1766,524 @@ internal sealed class ScopedGameServices : IGameServices
         public IDisposable DeclareWorldObject(WorldObjectDeclaration worldObject) { IDisposable d = inner.DeclareWorldObject(worldObject); track(d); return d; }
         public IDisposable DeclareOverlay(ObjectOverlayDeclaration overlay) { IDisposable d = inner.DeclareOverlay(overlay); track(d); return d; }
         public uint ComputeDeterministicId(string modId, string entryKey) => inner.ComputeDeterministicId(modId, entryKey);
+    }
+
+    private sealed class TrackedScreensService(ScreensService inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IScreensService, IDisposable
+    {
+        private enum ScreenEventKind : byte { ScreenChanged, PreGameScreenChanged, ActiveStashTabChanged, LeagueOverlayFilled }
+
+        private readonly List<(ScreenEventKind Kind, Delegate Original, Delegate Wrapped)> _subscriptions = [];
+        private readonly Lock _gate = new();
+        private bool _disposed;
+
+        public PreGameScreen CurrentPreGameScreen => inner.CurrentPreGameScreen;
+        public GamePanel ActivePanels => inner.ActivePanels;
+        public bool IsPanelOpen(GamePanel panel) => inner.IsPanelOpen(panel);
+        public IUiControl? GetPanelControl(GamePanel panel) => inner.GetPanelControl(panel);
+        public StashTabInfo? ActiveStashTab => inner.ActiveStashTab;
+        public IReadOnlyList<LeagueCardInfo> ActiveLeagueCards => inner.ActiveLeagueCards;
+        public IReadOnlyList<ISlotAttachment> GetSlotAttachments(ScreenSlot slot) => inner.GetSlotAttachments(slot);
+
+        public ISlotAttachment RegisterSlot(ScreenSlot slot, string id, string virtualUiPath, SlotAttachmentOptions? options = null)
+        {
+            ISlotAttachment attachment = inner.RegisterSlot(slot, id, virtualUiPath, options);
+            track(attachment);
+            return attachment;
+        }
+
+        public ISlotAttachment RegisterSlotButton(ScreenSlot slot, string id, string text, Action onClick, SlotAttachmentOptions? options = null)
+        {
+            ArgumentNullException.ThrowIfNull(onClick);
+            ISlotAttachment attachment = inner.RegisterSlotButton(slot, id, text, () => loader.ExecuteFaultIsolated(modId, onClick), options);
+            track(attachment);
+            return attachment;
+        }
+
+        public ILeagueModeRegistration RegisterLeagueCardMode(LeagueModeCheckboxOptions options, Action<string, bool>? onChanged = null)
+        {
+            Action<string, bool>? wrapped = onChanged is null
+                ? null
+                : (leagueId, isChecked) => loader.ExecuteFaultIsolated(modId, () => onChanged(leagueId, isChecked));
+            ILeagueModeRegistration reg = inner.RegisterLeagueCardMode(options, wrapped);
+            track(reg);
+            return reg;
+        }
+
+        public ISlotAttachment AttachToControl(nint parentHandle, string virtualUiPath, string? id = null, float x = 0f, float y = 0f)
+        {
+            ISlotAttachment attachment = inner.AttachToControl(parentHandle, virtualUiPath, id, x, y);
+            track(attachment);
+            return attachment;
+        }
+
+        public event Action<ScreenChangedEventArgs>? ScreenChanged
+        {
+            add
+            {
+                if (value is null) return;
+                Action<ScreenChangedEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((ScreenEventKind.ScreenChanged, value, wrapped));
+                }
+
+                inner.ScreenChanged += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(ScreenEventKind.ScreenChanged, value) is Action<ScreenChangedEventArgs> wrapped)
+                {
+                    inner.ScreenChanged -= wrapped;
+                }
+            }
+        }
+
+        public event Action<PreGameScreenChangedEventArgs>? PreGameScreenChanged
+        {
+            add
+            {
+                if (value is null) return;
+                Action<PreGameScreenChangedEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((ScreenEventKind.PreGameScreenChanged, value, wrapped));
+                }
+
+                inner.PreGameScreenChanged += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(ScreenEventKind.PreGameScreenChanged, value) is Action<PreGameScreenChangedEventArgs> wrapped)
+                {
+                    inner.PreGameScreenChanged -= wrapped;
+                }
+            }
+        }
+
+        public event Action<ActiveStashTabChangedEventArgs>? ActiveStashTabChanged
+        {
+            add
+            {
+                if (value is null) return;
+                Action<ActiveStashTabChangedEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((ScreenEventKind.ActiveStashTabChanged, value, wrapped));
+                }
+
+                inner.ActiveStashTabChanged += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(ScreenEventKind.ActiveStashTabChanged, value) is Action<ActiveStashTabChangedEventArgs> wrapped)
+                {
+                    inner.ActiveStashTabChanged -= wrapped;
+                }
+            }
+        }
+
+        public event Action<LeagueOverlayFilledEventArgs>? LeagueOverlayFilled
+        {
+            add
+            {
+                if (value is null) return;
+                Action<LeagueOverlayFilledEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((ScreenEventKind.LeagueOverlayFilled, value, wrapped));
+                }
+
+                inner.LeagueOverlayFilled += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                if (RemoveSubscription(ScreenEventKind.LeagueOverlayFilled, value) is Action<LeagueOverlayFilledEventArgs> wrapped)
+                {
+                    inner.LeagueOverlayFilled -= wrapped;
+                }
+            }
+        }
+
+        private Delegate? RemoveSubscription(ScreenEventKind kind, Delegate original)
+        {
+            lock (_gate)
+            {
+                for (int i = _subscriptions.Count - 1; i >= 0; i--)
+                {
+                    var entry = _subscriptions[i];
+                    if (entry.Kind == kind && entry.Original.Equals(original))
+                    {
+                        _subscriptions.RemoveAt(i);
+                        return entry.Wrapped;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        public void Dispose()
+        {
+            (ScreenEventKind Kind, Delegate Original, Delegate Wrapped)[] snapshot;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                snapshot = [.. _subscriptions];
+                _subscriptions.Clear();
+            }
+
+            foreach (var entry in snapshot)
+            {
+                switch (entry.Kind)
+                {
+                    case ScreenEventKind.ScreenChanged:
+                        inner.ScreenChanged -= (Action<ScreenChangedEventArgs>)entry.Wrapped;
+                        break;
+                    case ScreenEventKind.PreGameScreenChanged:
+                        inner.PreGameScreenChanged -= (Action<PreGameScreenChangedEventArgs>)entry.Wrapped;
+                        break;
+                    case ScreenEventKind.ActiveStashTabChanged:
+                        inner.ActiveStashTabChanged -= (Action<ActiveStashTabChangedEventArgs>)entry.Wrapped;
+                        break;
+                    case ScreenEventKind.LeagueOverlayFilled:
+                        inner.LeagueOverlayFilled -= (Action<LeagueOverlayFilledEventArgs>)entry.Wrapped;
+                        break;
+                }
+            }
+        }
+    }
+
+    private sealed class TrackedInputService : IInputService
+    {
+        private readonly InputService _inner;
+        private readonly ClientModLoader _loader;
+        private readonly string _modId;
+        private readonly Action<IDisposable> _track;
+
+        public TrackedInputService(InputService inner, ClientModLoader loader, string modId, Action<IDisposable> track)
+        {
+            _inner = inner;
+            _loader = loader;
+            _modId = modId;
+            _track = track;
+            var keybinds = new TrackedKeybindRegistry(inner.KeybindRegistry, loader, modId, track);
+            track(keybinds);
+            Keybinds = keybinds;
+        }
+
+        public bool IsTextInputFocused => _inner.IsTextInputFocused;
+        public KeyModifiers ActiveModifiers => _inner.ActiveModifiers;
+        public (int X, int Y) MousePosition => _inner.MousePosition;
+        public IKeybindRegistry Keybinds { get; }
+
+        public IDisposable OnKey(Action<KeyEventArgs> handler, int priority = 0, bool allowWhenTextInputFocused = false)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            IDisposable sub = _inner.OnKey(args => _loader.ExecuteFaultIsolated(_modId, () => handler(args)), priority, allowWhenTextInputFocused);
+            _track(sub);
+            return sub;
+        }
+
+        public IDisposable OnMouse(Action<MouseEventArgs> handler, int priority = 0, bool allowWhenTextInputFocused = false)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            IDisposable sub = _inner.OnMouse(args => _loader.ExecuteFaultIsolated(_modId, () => handler(args)), priority, allowWhenTextInputFocused);
+            _track(sub);
+            return sub;
+        }
+    }
+
+    private sealed class TrackedKeybindRegistry(KeybindRegistry inner, ClientModLoader loader, string modId, Action<IDisposable> track) : IKeybindRegistry, IDisposable
+    {
+        private readonly List<(Action<KeybindConflict> Original, Action<KeybindConflict> Wrapped)> _conflictSubs = [];
+        private readonly Lock _gate = new();
+        private bool _disposed;
+
+        public string ConfigPath => inner.ConfigPath;
+        public IReadOnlyList<KeybindEntry> Entries => inner.Entries;
+        public IReadOnlyList<KeybindConflict> Conflicts => inner.Conflicts;
+
+        public IDisposable Register(
+            string id,
+            string displayName,
+            KeyChord defaultChord,
+            Action onTriggered,
+            bool allowWhenTextInputFocused = false,
+            bool suppressGameInput = false)
+        {
+            ArgumentNullException.ThrowIfNull(onTriggered);
+            IDisposable sub = inner.RegisterForMod(
+                modId,
+                id,
+                displayName,
+                defaultChord,
+                () => loader.ExecuteFaultIsolated(modId, onTriggered),
+                allowWhenTextInputFocused,
+                suppressGameInput);
+            track(sub);
+            return sub;
+        }
+
+        public KeyChord? GetBinding(string id) => inner.GetBinding(id);
+        public bool Rebind(string id, KeyChord newChord, out IReadOnlyList<KeybindConflict> conflicts) => inner.Rebind(id, newChord, out conflicts);
+        public bool ResetBinding(string id) => inner.ResetBinding(id);
+        public void Save() => inner.Save();
+        public void Reload() => inner.Reload();
+
+        public event Action<KeybindConflict>? ConflictDetected
+        {
+            add
+            {
+                if (value is null) return;
+                Action<KeybindConflict> wrapped = c => loader.ExecuteFaultIsolated(modId, () => value(c));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _conflictSubs.Add((value, wrapped));
+                }
+
+                inner.ConflictDetected += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                Action<KeybindConflict>? wrapped = null;
+                lock (_gate)
+                {
+                    for (int i = _conflictSubs.Count - 1; i >= 0; i--)
+                    {
+                        if (_conflictSubs[i].Original.Equals(value))
+                        {
+                            wrapped = _conflictSubs[i].Wrapped;
+                            _conflictSubs.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+
+                if (wrapped is not null)
+                {
+                    inner.ConflictDetected -= wrapped;
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            (Action<KeybindConflict> Original, Action<KeybindConflict> Wrapped)[] snapshot;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                snapshot = [.. _conflictSubs];
+                _conflictSubs.Clear();
+            }
+
+            foreach (var item in snapshot)
+            {
+                inner.ConflictDetected -= item.Wrapped;
+            }
+        }
+    }
+
+    private sealed class TrackedHoverService(HoverService inner, ClientModLoader loader, string modId) : IHoverService, IDisposable
+    {
+        private readonly List<(Action<HoverChangedEventArgs> Original, Action<HoverChangedEventArgs> Wrapped)> _subscriptions = [];
+        private readonly Lock _gate = new();
+        private bool _disposed;
+
+        public IUiControl? HoveredControl => inner.HoveredControl;
+        public HoveredItemInfo? HoveredItem => inner.HoveredItem;
+        public CursorItemInfo? CursorItem => inner.CursorItem;
+        public HoveredItemInfo? RefreshHoveredItem() => inner.RefreshHoveredItem();
+        public CursorItemInfo? RefreshCursorItem() => inner.RefreshCursorItem();
+
+        public event Action<HoverChangedEventArgs>? HoverChanged
+        {
+            add
+            {
+                if (value is null) return;
+                Action<HoverChangedEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _subscriptions.Add((value, wrapped));
+                }
+
+                inner.HoverChanged += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                Action<HoverChangedEventArgs>? wrapped = null;
+                lock (_gate)
+                {
+                    for (int i = _subscriptions.Count - 1; i >= 0; i--)
+                    {
+                        if (_subscriptions[i].Original.Equals(value))
+                        {
+                            wrapped = _subscriptions[i].Wrapped;
+                            _subscriptions.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+
+                if (wrapped is not null)
+                {
+                    inner.HoverChanged -= wrapped;
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            (Action<HoverChangedEventArgs> Original, Action<HoverChangedEventArgs> Wrapped)[] snapshot;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                snapshot = [.. _subscriptions];
+                _subscriptions.Clear();
+            }
+
+            foreach (var item in snapshot)
+            {
+                inner.HoverChanged -= item.Wrapped;
+            }
+        }
+    }
+
+    private sealed class TrackedToastService(ToastService inner, string modId) : IToastService, IDisposable
+    {
+        public IReadOnlyList<ToastMessage> ActiveToasts => inner.ActiveToasts;
+        public int QueuedCount => inner.QueuedCount;
+        public int MaxVisibleToasts { get => inner.MaxVisibleToasts; set => inner.MaxVisibleToasts = value; }
+        public TimeSpan DefaultDuration { get => inner.DefaultDuration; set => inner.DefaultDuration = value; }
+
+        public ulong Show(string title, string message, ToastSeverity severity = ToastSeverity.Info, TimeSpan? duration = null) =>
+            inner.ShowForMod(modId, title, message, severity, duration);
+
+        public bool Dismiss(ulong toastId) => inner.Dismiss(toastId);
+        public void Clear() => inner.ClearForMod(modId);
+        public void Dispose() => inner.ClearForMod(modId);
+    }
+
+    private sealed class TrackedPreGameService(PreGameService inner, ClientModLoader loader, string modId) : IPreGameService, IDisposable
+    {
+        private readonly List<(Action<CharacterCreateContext> Original, Action<CharacterCreateContext> Wrapped)> _creatingSubs = [];
+        private readonly List<(Action<CharacterCreatedEventArgs> Original, Action<CharacterCreatedEventArgs> Wrapped)> _createdSubs = [];
+        private readonly Lock _gate = new();
+        private bool _disposed;
+
+        public event Action<CharacterCreateContext>? CharacterCreating
+        {
+            add
+            {
+                if (value is null) return;
+                Action<CharacterCreateContext> wrapped = ctx => loader.ExecuteFaultIsolated(modId, () => value(ctx));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _creatingSubs.Add((value, wrapped));
+                }
+
+                inner.CharacterCreating += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                Action<CharacterCreateContext>? wrapped = null;
+                lock (_gate)
+                {
+                    for (int i = _creatingSubs.Count - 1; i >= 0; i--)
+                    {
+                        if (_creatingSubs[i].Original.Equals(value))
+                        {
+                            wrapped = _creatingSubs[i].Wrapped;
+                            _creatingSubs.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+
+                if (wrapped is not null)
+                {
+                    inner.CharacterCreating -= wrapped;
+                }
+            }
+        }
+
+        public event Action<CharacterCreatedEventArgs>? CharacterCreated
+        {
+            add
+            {
+                if (value is null) return;
+                Action<CharacterCreatedEventArgs> wrapped = args => loader.ExecuteFaultIsolated(modId, () => value(args));
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _createdSubs.Add((value, wrapped));
+                }
+
+                inner.CharacterCreated += wrapped;
+            }
+            remove
+            {
+                if (value is null) return;
+                Action<CharacterCreatedEventArgs>? wrapped = null;
+                lock (_gate)
+                {
+                    for (int i = _createdSubs.Count - 1; i >= 0; i--)
+                    {
+                        if (_createdSubs[i].Original.Equals(value))
+                        {
+                            wrapped = _createdSubs[i].Wrapped;
+                            _createdSubs.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+
+                if (wrapped is not null)
+                {
+                    inner.CharacterCreated -= wrapped;
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            (Action<CharacterCreateContext> Original, Action<CharacterCreateContext> Wrapped)[] creating;
+            (Action<CharacterCreatedEventArgs> Original, Action<CharacterCreatedEventArgs> Wrapped)[] created;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                creating = [.. _creatingSubs];
+                created = [.. _createdSubs];
+                _creatingSubs.Clear();
+                _createdSubs.Clear();
+            }
+
+            foreach (var item in creating)
+            {
+                inner.CharacterCreating -= item.Wrapped;
+            }
+
+            foreach (var item in created)
+            {
+                inner.CharacterCreated -= item.Wrapped;
+            }
+        }
     }
 }

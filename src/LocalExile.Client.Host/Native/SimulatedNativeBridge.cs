@@ -105,9 +105,26 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly Dictionary<string, nint> _nativeUiWindowsByPath = new(StringComparer.Ordinal);
     private readonly Dictionary<(nint Parent, string Key), nint> _nativeUiChildren = [];
     private readonly Dictionary<nint, SimulatedNativeUiControl> _nativeUiControls = [];
+    private readonly Dictionary<GamePanel, nint> _simulatedPanelHandles = [];
+    private readonly Dictionary<ScreenSlot, nint> _simulatedSlotParentHandles = [];
+    private readonly List<Action<nint, IReadOnlyList<LeagueCardInfo>>> _leagueFillCallbacks = [];
+    private readonly List<Func<KeyEventArgs, bool>> _keyCallbacks = [];
+    private readonly List<Func<MouseEventArgs, bool>> _mouseCallbacks = [];
+    private readonly List<Func<string, string, string, string?>> _charCreatingCallbacks = [];
+    private readonly List<Action<string, string, ushort>> _charCreatedCallbacks = [];
     private readonly nint _simulatedUiRootHandle = 0x0F00;
     private readonly Lock _gate = new();
 
+    private PreGameScreen _simulatedPreGameScreen = PreGameScreen.Unknown;
+    private nint _simulatedInGameUiHandle;
+    private GamePanel _simulatedActivePanels = GamePanel.None;
+    private StashTabInfo? _simulatedActiveStashTab;
+    private bool _simulatedMinimapVisible;
+    private bool _simulatedRightSidePanelOpen;
+    private bool _simulatedTextInputFocused;
+    private nint _simulatedHoveredControlHandle;
+    private HoveredItemInfo? _simulatedHoveredItem;
+    private CursorItemInfo? _simulatedCursorItem;
     private string? _clipboardText;
     private int _gameThreadId;
     private ulong _nextHookHandle = 1;
@@ -122,6 +139,15 @@ public sealed class SimulatedNativeBridge : INativeBridge
         public required nint Handle { get; init; }
         public nint ParentHandle { get; set; }
         public required string Key { get; init; }
+        public ulong VtableAddress { get; set; }
+        public uint Tag { get; set; }
+        public bool IsStockControl { get; set; }
+        public bool AutoWidth { get; set; }
+        public byte XAnchor { get; set; }
+        public float XAnchorOffset { get; set; }
+        public byte YAnchor { get; set; }
+        public float YAnchorOffset { get; set; }
+        public int LayoutUpdateCount { get; set; }
         public bool Visible { get; set; } = true;
         public bool Enabled { get; set; } = true;
         public UiRect Rect { get; set; }
@@ -1195,6 +1221,38 @@ public sealed class SimulatedNativeBridge : INativeBridge
                 return existing;
             }
 
+            // Walk dotted segments across existing native stock children first.
+            string[] segments = key.Item2.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (segments.Length > 0)
+            {
+                nint cur = parentControl;
+                bool matchedAll = true;
+                foreach (string seg in segments)
+                {
+                    SimulatedNativeUiControl? nextCtrl = _nativeUiControls.Values
+                        .FirstOrDefault(c => !c.Destroyed && c.ParentHandle == cur && string.Equals(c.Key, seg, StringComparison.OrdinalIgnoreCase));
+                    if (nextCtrl is null)
+                    {
+                        matchedAll = false;
+                        break;
+                    }
+
+                    cur = nextCtrl.Handle;
+                }
+
+                if (matchedAll)
+                {
+                    return cur;
+                }
+            }
+
+            // Stock controls (and root) do not hallucinate missing children.
+            if (parentControl == _simulatedUiRootHandle ||
+                (_nativeUiControls.TryGetValue(parentControl, out SimulatedNativeUiControl? parentCtrl) && parentCtrl.IsStockControl))
+            {
+                return nint.Zero;
+            }
+
             nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
             _nativeUiChildren[key] = handle;
             _nativeUiControls[handle] = new SimulatedNativeUiControl
@@ -1622,6 +1680,577 @@ public sealed class SimulatedNativeBridge : INativeBridge
                 }
             }
         });
+    }
+
+    /// <summary>Registers a simulated stock native UI control under <paramref name="parentHandle"/> (defaults to UI root).</summary>
+    public SimulatedNativeUiControl RegisterSimulatedStockControl(
+        string id,
+        nint parentHandle = 0,
+        ulong vtableAddress = 0,
+        uint tag = 0,
+        UiRect rect = default,
+        bool visible = true)
+    {
+        lock (_gate)
+        {
+            nint parent = parentHandle != nint.Zero ? parentHandle : _simulatedUiRootHandle;
+            nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            var ctrl = new SimulatedNativeUiControl
+            {
+                Handle = handle,
+                ParentHandle = parent,
+                Key = id ?? string.Empty,
+                VtableAddress = vtableAddress,
+                Tag = tag,
+                Rect = rect,
+                Visible = visible,
+                IsStockControl = true,
+            };
+            _nativeUiControls[handle] = ctrl;
+            return ctrl;
+        }
+    }
+
+    /// <summary>Gets a simulated native UI control directly by handle, or <c>null</c>.</summary>
+    public SimulatedNativeUiControl? GetSimulatedNativeUiControlByHandle(nint handle)
+    {
+        lock (_gate)
+        {
+            return _nativeUiControls.TryGetValue(handle, out SimulatedNativeUiControl? ctrl) ? ctrl : null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiVisible(nint control, out bool visible)
+    {
+        visible = false;
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) || ctrl.Destroyed)
+            {
+                return false;
+            }
+
+            nint cur = control;
+            while (cur != nint.Zero && _nativeUiControls.TryGetValue(cur, out SimulatedNativeUiControl? node))
+            {
+                if (node.Destroyed || !node.Visible)
+                {
+                    visible = false;
+                    return true;
+                }
+
+                cur = node.ParentHandle;
+            }
+
+            visible = true;
+            return true;
+        }
+    }
+
+    /// <inheritdoc/>
+    public string? GetNativeUiId(nint control)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return null;
+        }
+
+        lock (_gate)
+        {
+            return _nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed
+                ? ctrl.Key
+                : null;
+        }
+    }
+
+    /// <inheritdoc/>
+    public ulong GetNativeUiVtable(nint control)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return 0;
+        }
+
+        lock (_gate)
+        {
+            return _nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed
+                ? ctrl.VtableAddress
+                : 0;
+        }
+    }
+
+    /// <inheritdoc/>
+    public uint GetNativeUiTag(nint control)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return 0;
+        }
+
+        lock (_gate)
+        {
+            return _nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed
+                ? ctrl.Tag
+                : 0;
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint GetNativeUiParent(nint control)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return nint.Zero;
+        }
+
+        lock (_gate)
+        {
+            return _nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed
+                ? ctrl.ParentHandle
+                : nint.Zero;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<nint> GetNativeUiChildren(nint control)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return [];
+        }
+
+        lock (_gate)
+        {
+            return [.. _nativeUiControls.Values
+                .Where(c => !c.Destroyed && c.ParentHandle == control)
+                .OrderBy(c => c.Handle)
+                .Select(c => c.Handle)];
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiWidth(nint control, float width)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.Rect = ctrl.Rect with { Width = width };
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiHeight(nint control, float height)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.Rect = ctrl.Rect with { Height = height };
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiAnchor(nint control, byte xAnchor, float xOffset, byte yAnchor, float yOffset)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.XAnchor = xAnchor;
+                ctrl.XAnchorOffset = xOffset;
+                ctrl.YAnchor = yAnchor;
+                ctrl.YAnchorOffset = yOffset;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiAutoWidth(nint control, bool enabled)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.AutoWidth = enabled;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void UpdateNativeUiLayout(nint control)
+    {
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                ctrl.LayoutUpdateCount++;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint CreateNativeUiCheckBoxChild(nint parentControl, string caption, bool initialChecked)
+    {
+        if (!EnableSimulatedNativeUi || parentControl == nint.Zero)
+        {
+            return nint.Zero;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.ContainsKey(parentControl))
+            {
+                return nint.Zero;
+            }
+
+            nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            _nativeUiControls[handle] = new SimulatedNativeUiControl
+            {
+                Handle = handle,
+                ParentHandle = parentControl,
+                Key = $"cb_{handle}",
+                Text = caption ?? string.Empty,
+                IsChecked = initialChecked,
+                Visible = true,
+                Rect = new UiRect(0f, 0f, Math.Max(140f, (caption?.Length ?? 0) * 11f + 44f), 59f),
+                IsStockControl = true,
+            };
+            return handle;
+        }
+    }
+
+    /// <summary>Gets or sets the simulated active <see cref="PreGameScreen"/>.</summary>
+    public PreGameScreen SimulatedPreGameScreen
+    {
+        get { lock (_gate) { return _simulatedPreGameScreen; } }
+        set { lock (_gate) { _simulatedPreGameScreen = value; } }
+    }
+
+    /// <summary>Gets or sets the simulated <c>InGameUI*</c> pointer (change to simulate zone transition rebuild).</summary>
+    public nint SimulatedInGameUiHandle
+    {
+        get { lock (_gate) { return _simulatedInGameUiHandle; } }
+        set { lock (_gate) { _simulatedInGameUiHandle = value; } }
+    }
+
+    /// <summary>Gets or sets the simulated visible in-game panels bitmask.</summary>
+    public GamePanel SimulatedActivePanels
+    {
+        get { lock (_gate) { return _simulatedActivePanels; } }
+        set { lock (_gate) { _simulatedActivePanels = value; } }
+    }
+
+    /// <summary>Gets or sets the simulated active stash tab metadata.</summary>
+    public StashTabInfo? SimulatedActiveStashTab
+    {
+        get { lock (_gate) { return _simulatedActiveStashTab; } }
+        set { lock (_gate) { _simulatedActiveStashTab = value; } }
+    }
+
+    /// <summary>Gets or sets whether the simulated corner minimap is visible.</summary>
+    public bool SimulatedMinimapVisible
+    {
+        get { lock (_gate) { return _simulatedMinimapVisible; } }
+        set { lock (_gate) { _simulatedMinimapVisible = value; } }
+    }
+
+    /// <summary>Gets or sets whether a simulated right side panel is open.</summary>
+    public bool SimulatedRightSidePanelOpen
+    {
+        get { lock (_gate) { return _simulatedRightSidePanelOpen; } }
+        set { lock (_gate) { _simulatedRightSidePanelOpen = value; } }
+    }
+
+    /// <summary>Gets or sets whether a simulated PoE <c>TextBox</c>/chat input has keyboard focus.</summary>
+    public bool SimulatedTextInputFocused
+    {
+        get { lock (_gate) { return _simulatedTextInputFocused; } }
+        set { lock (_gate) { _simulatedTextInputFocused = value; } }
+    }
+
+    /// <summary>Gets or sets the simulated hovered control handle.</summary>
+    public nint SimulatedHoveredControlHandle
+    {
+        get { lock (_gate) { return _simulatedHoveredControlHandle; } }
+        set { lock (_gate) { _simulatedHoveredControlHandle = value; } }
+    }
+
+    /// <summary>Gets or sets the simulated hovered inventory/stash item.</summary>
+    public HoveredItemInfo? SimulatedHoveredItem
+    {
+        get { lock (_gate) { return _simulatedHoveredItem; } }
+        set { lock (_gate) { _simulatedHoveredItem = value; } }
+    }
+
+    /// <summary>Gets or sets the simulated cursor-held or use-mode item.</summary>
+    public CursorItemInfo? SimulatedCursorItem
+    {
+        get { lock (_gate) { return _simulatedCursorItem; } }
+        set { lock (_gate) { _simulatedCursorItem = value; } }
+    }
+
+    /// <summary>Associates a simulated stock panel with a control handle.</summary>
+    public void SetSimulatedPanelHandle(GamePanel panel, nint handle)
+    {
+        lock (_gate)
+        {
+            if (handle == nint.Zero)
+            {
+                _simulatedPanelHandles.Remove(panel);
+            }
+            else
+            {
+                _simulatedPanelHandles[panel] = handle;
+            }
+        }
+    }
+
+    /// <summary>Associates a managed <see cref="ScreenSlot"/> with a direct simulated parent handle.</summary>
+    public void SetSimulatedSlotParentHandle(ScreenSlot slot, nint handle)
+    {
+        lock (_gate)
+        {
+            if (handle == nint.Zero)
+            {
+                _simulatedSlotParentHandles.Remove(slot);
+            }
+            else
+            {
+                _simulatedSlotParentHandles[slot] = handle;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public PreGameScreen GetPreGameScreen() { lock (_gate) { return _simulatedPreGameScreen; } }
+
+    /// <inheritdoc/>
+    public nint GetInGameUiHandle() { lock (_gate) { return _simulatedInGameUiHandle; } }
+
+    /// <inheritdoc/>
+    public GamePanel GetActivePanels() { lock (_gate) { return _simulatedActivePanels; } }
+
+    /// <inheritdoc/>
+    public nint GetPanelControlHandle(GamePanel panel)
+    {
+        lock (_gate)
+        {
+            return _simulatedPanelHandles.TryGetValue(panel, out nint handle) ? handle : nint.Zero;
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint GetSlotParentHandle(ScreenSlot slot)
+    {
+        lock (_gate)
+        {
+            return _simulatedSlotParentHandles.TryGetValue(slot, out nint handle) ? handle : nint.Zero;
+        }
+    }
+
+    /// <inheritdoc/>
+    public StashTabInfo? GetActiveStashTab() { lock (_gate) { return _simulatedActiveStashTab; } }
+
+    /// <inheritdoc/>
+    public bool IsMinimapVisible() { lock (_gate) { return _simulatedMinimapVisible; } }
+
+    /// <inheritdoc/>
+    public bool IsRightSidePanelOpen() { lock (_gate) { return _simulatedRightSidePanelOpen; } }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterLeagueOverlayFilledCallback(Action<nint, IReadOnlyList<LeagueCardInfo>> onFilled)
+    {
+        ArgumentNullException.ThrowIfNull(onFilled);
+        lock (_gate) { _leagueFillCallbacks.Add(onFilled); }
+        return new ActionDisposable(() => { lock (_gate) { _leagueFillCallbacks.Remove(onFilled); } });
+    }
+
+    /// <summary>Simulates a native <c>LeagueOverlay::Fill</c> pass firing registered callbacks on the game thread.</summary>
+    public void SimulateLeagueOverlayFilled(nint overlayHandle, IReadOnlyList<LeagueCardInfo> cards)
+    {
+        Action<nint, IReadOnlyList<LeagueCardInfo>>[] callbacks;
+        lock (_gate)
+        {
+            _simulatedPreGameScreen = PreGameScreen.LeagueOverlay;
+            callbacks = [.. _leagueFillCallbacks];
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Action<nint, IReadOnlyList<LeagueCardInfo>> cb in callbacks)
+        {
+            cb(overlayHandle, cards);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool IsTextInputFocused() { lock (_gate) { return _simulatedTextInputFocused; } }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterKeyCallback(Func<KeyEventArgs, bool> onKey)
+    {
+        ArgumentNullException.ThrowIfNull(onKey);
+        lock (_gate) { _keyCallbacks.Add(onKey); }
+        return new ActionDisposable(() => { lock (_gate) { _keyCallbacks.Remove(onKey); } });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterMouseCallback(Func<MouseEventArgs, bool> onMouse)
+    {
+        ArgumentNullException.ThrowIfNull(onMouse);
+        lock (_gate) { _mouseCallbacks.Add(onMouse); }
+        return new ActionDisposable(() => { lock (_gate) { _mouseCallbacks.Remove(onMouse); } });
+    }
+
+    /// <summary>Simulates a native key event through <c>StateStack::OnWindowMessage</c>. Returns <c>true</c> if suppressed.</summary>
+    public bool SimulateKeyEvent(int virtualKey, KeyModifiers modifiers, bool isDown, bool isRepeat = false)
+    {
+        Func<KeyEventArgs, bool>[] handlers;
+        bool textFocused;
+        lock (_gate)
+        {
+            handlers = [.. _keyCallbacks];
+            textFocused = _simulatedTextInputFocused;
+        }
+
+        var args = new KeyEventArgs(virtualKey, modifiers, isDown, isRepeat, textFocused);
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Func<KeyEventArgs, bool> h in handlers)
+        {
+            if (h(args))
+            {
+                args.Handled = true;
+            }
+        }
+
+        return args.Handled;
+    }
+
+    /// <summary>Simulates a native mouse event through <c>StateStack::OnWindowMessage</c>. Returns <c>true</c> if suppressed.</summary>
+    public bool SimulateMouseEvent(
+        MouseButton button,
+        InputEventKind kind,
+        int x,
+        int y,
+        KeyModifiers modifiers = KeyModifiers.None,
+        int wheelDelta = 0)
+    {
+        Func<MouseEventArgs, bool>[] handlers;
+        bool textFocused;
+        lock (_gate)
+        {
+            handlers = [.. _mouseCallbacks];
+            textFocused = _simulatedTextInputFocused;
+        }
+
+        var args = new MouseEventArgs(button, kind, x, y, modifiers, wheelDelta, textFocused);
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Func<MouseEventArgs, bool> h in handlers)
+        {
+            if (h(args))
+            {
+                args.Handled = true;
+            }
+        }
+
+        return args.Handled;
+    }
+
+    /// <inheritdoc/>
+    public nint GetHoveredControlHandle() { lock (_gate) { return _simulatedHoveredControlHandle; } }
+
+    /// <inheritdoc/>
+    public HoveredItemInfo? GetHoveredItem() { lock (_gate) { return _simulatedHoveredItem; } }
+
+    /// <inheritdoc/>
+    public CursorItemInfo? GetCursorItem() { lock (_gate) { return _simulatedCursorItem; } }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterCharacterCreatingCallback(Func<string, string, string, string?> onCreating)
+    {
+        ArgumentNullException.ThrowIfNull(onCreating);
+        lock (_gate) { _charCreatingCallbacks.Add(onCreating); }
+        return new ActionDisposable(() => { lock (_gate) { _charCreatingCallbacks.Remove(onCreating); } });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterCharacterCreatedCallback(Action<string, string, ushort> onCreated)
+    {
+        ArgumentNullException.ThrowIfNull(onCreated);
+        lock (_gate) { _charCreatedCallbacks.Add(onCreated); }
+        return new ActionDisposable(() => { lock (_gate) { _charCreatedCallbacks.Remove(onCreated); } });
+    }
+
+    /// <summary>Simulates an outgoing <c>C→S 0x12</c> (<c>WriteCreateCharacter_0x12</c>) and returns the final wire <c>S78</c> string.</summary>
+    public string SimulateCharacterCreating(string name, string league, string baseStartState)
+    {
+        Func<string, string, string, string?>[] handlers;
+        lock (_gate)
+        {
+            handlers = [.. _charCreatingCallbacks];
+        }
+
+        string current = baseStartState;
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Func<string, string, string, string?> h in handlers)
+        {
+            string? next = h(name, league, current);
+            if (!string.IsNullOrEmpty(next))
+            {
+                current = next;
+            }
+        }
+
+        return current;
+    }
+
+    /// <summary>Simulates an incoming <c>S→C 0x13</c> (<c>CreateCharacterState::OnCreateResult</c>).</summary>
+    public void SimulateCharacterCreated(string name, string league, ushort resultCode)
+    {
+        Action<string, string, ushort>[] handlers;
+        lock (_gate)
+        {
+            handlers = [.. _charCreatedCallbacks];
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Action<string, string, ushort> h in handlers)
+        {
+            h(name, league, resultCode);
+        }
     }
 
     /// <summary>Gets the simulated native UI control state for a control id under the given window path, or <c>null</c>.</summary>

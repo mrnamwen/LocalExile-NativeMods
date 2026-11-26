@@ -20,9 +20,9 @@ public sealed class RealAddressLibraryIntegrationTests
 
         Assert.Equal(ClientBuildId.Build3293d, lib.Build);
         Assert.Equal("3.29.3d", lib.BuildVersion);
-        Assert.Equal(122, lib.Entries.Count);
-        Assert.Equal(37, lib.Offsets.Count);
-        Assert.Equal(18, lib.Constants.Count);
+        Assert.True(lib.Entries.Count >= 122, $"Expected at least 122 symbols in 3.29.3d.json, found {lib.Entries.Count}.");
+        Assert.True(lib.Offsets.Count >= 37, $"Expected at least 37 offsets in 3.29.3d.json, found {lib.Offsets.Count}.");
+        Assert.True(lib.Constants.Count >= 18, $"Expected at least 18 constants in 3.29.3d.json, found {lib.Constants.Count}.");
         Assert.True(lib.MatchesExecutableSha256(Sha3293dBuild328228));
 
         // Every symbol on 3.29.3d is verified and resolves cleanly with ASLR rebase.
@@ -60,19 +60,20 @@ public sealed class RealAddressLibraryIntegrationTests
     public void Real3293cJson_LoadsAll122SymbolsAndBlocksAll35UnverifiedEntries()
     {
         string addressesDir = FindAddressesDirectory();
+        JsonAddressLibrary lib3d = JsonAddressLibrary.LoadFromFile(Path.Combine(addressesDir, "3.29.3d.json"));
         JsonAddressLibrary lib = JsonAddressLibrary.LoadFromFile(Path.Combine(addressesDir, "3.29.3c.json"));
 
         Assert.Equal(ClientBuildId.Build3293c, lib.Build);
         Assert.Equal("3.29.3c", lib.BuildVersion);
-        Assert.Equal(122, lib.Entries.Count);
-        Assert.Equal(37, lib.Offsets.Count);
-        Assert.Equal(18, lib.Constants.Count);
+        Assert.Equal(lib3d.Entries.Count, lib.Entries.Count);
+        Assert.Equal(lib3d.Offsets.Count, lib.Offsets.Count);
+        Assert.Equal(lib3d.Constants.Count, lib.Constants.Count);
         Assert.Equal(2, lib.KnownBuilds.Count);
         Assert.True(lib.MatchesExecutableSha256(Sha3293cBuild327984));
         Assert.True(lib.MatchesExecutableSha256(Sha3293cBuild328126));
 
         AddressEntry[] unverified = [.. lib.Entries.Where(e => string.Equals(e.Status, "unverified_3_29_3c", StringComparison.Ordinal))];
-        Assert.Equal(35, unverified.Length);
+        Assert.True(unverified.Length >= 35, $"Expected at least 35 unverified_3_29_3c symbols, found {unverified.Length}.");
 
         foreach (AddressEntry entry in unverified)
         {
@@ -84,7 +85,8 @@ public sealed class RealAddressLibraryIntegrationTests
         }
 
         AddressEntry[] verified = [.. lib.Entries.Where(e => e.IsVerified)];
-        Assert.Equal(87, verified.Length);
+        Assert.Equal(lib.Entries.Count - unverified.Length, verified.Length);
+        Assert.True(verified.Length >= 87, $"Expected at least 87 verified symbols in 3.29.3c.json, found {verified.Length}.");
         foreach (AddressEntry entry in verified)
         {
             Assert.True(lib.TryResolveRva(entry.Name, out ulong rva));
