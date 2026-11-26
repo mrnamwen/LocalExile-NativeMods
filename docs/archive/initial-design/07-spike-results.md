@@ -1,7 +1,7 @@
 # Spike results
 
 Run on 2026-11-18 against the **3.29.3d** client (build 328228) under Proton on Linux, with a LocalExile stack from
-`main` (`b061880c6`). Nothing was run on 3.29.3c or on Windows. The test code is in [spikes/](spikes/).
+`main` (`b061880c6`). Nothing was run on 3.29.3c or on Windows. The test code is in [spikes/](../../../spikes/).
 
 ## Summary
 
@@ -44,7 +44,7 @@ child  = 0x1418b6420(control + 0xb8, &"a.b.c")  find a child by id path
 The first try loaded the stock `ConfirmationWindow.ui` into the root control of the login screen, found its labels
 and buttons by id, set their text and made the buttons visible:
 
-![A confirmation window created by injected code](screenshots/s2-window-from-stock-ui.png)
+![A confirmation window created by injected code](../../../screenshots/s2-window-from-stock-ui.png)
 
 It is the game's own window: its border art, fonts, layout and scaling, drawn by the game.
 
@@ -54,7 +54,7 @@ A control's events are lists of small handler records, looked up by the event's 
 (`0x14019b2b0(button + 0x2a0, &out, create)`). Appending a record `{vtable, context}` whose vtable points at our own
 functions makes the game call us when the button is clicked. Two clicks on "It works":
 
-![The label changes when the button is clicked](screenshots/s5-click-updates-label.png)
+![The label changes when the button is clicked](../../../screenshots/s5-click-updates-label.png)
 
 ## S3: files from disk
 
@@ -66,13 +66,13 @@ after the call serves any content for any path, whether the game has the path or
 edit made no visible difference, because the window sizes itself to its content, so the sentence in the window
 about it being wider is wrong:
 
-![A stock layout served from an edited copy on disk](screenshots/s3a-stock-file-served-from-disk.png)
+![A stock layout served from an edited copy on disk](../../../screenshots/s3a-stock-file-served-from-disk.png)
 
 **S3b**, `Metadata/UI/Mods/Spike/Garden.ui`, a path that does not exist in the game, written by hand
-([the file](spikes/overlay-src/metadata/ui/mods/spike/garden.ui)): a framed window with a title, a divider image, a
+([the file](../../../spikes/overlay-src/metadata/ui/mods/spike/garden.ui)): a framed window with a title, a divider image, a
 label, a text box, a check box and three buttons. Typing, ticking and clicking all work:
 
-![A new window from a mod's text file, with text typed into it](screenshots/s3b-new-window-text-input.png)
+![A new window from a mod's text file, with text typed into it](../../../screenshots/s3b-new-window-text-input.png)
 
 Binary files (images, tables, models) go through a different read path and were not tested.
 
@@ -85,14 +85,14 @@ To avoid any Gateway change, the first transport is the chat the game already ha
 - **Client to server:** an ordinary chat command (C→S `0x15`), written with the client's own socket writer under
   the socket lock, as LocalExile's `client-control.js` already does.
 
-The server half is a 40-line script mod, [spikes/server-mod/nmspike.cs](spikes/server-mod/nmspike.cs), dropped into
+The server half is a 40-line script mod, [spikes/server-mod/nmspike.cs](../../../spikes/server-mod/nmspike.cs), dropped into
 `Mods/Binaries/` while the Gateway ran (it hot-loaded). Typing `/garden` in the game's chat:
 
-![The window opened by a server mod, greeting the character by name](screenshots/s4-server-mod-opens-window.png)
+![The window opened by a server mod, greeting the character by name](../../../screenshots/s4-server-mod-opens-window.png)
 
 Typing a seed name and clicking Plant sends `/nm plant <name>`; the mod keeps the list and answers:
 
-![The server mod's answer after two Plant clicks](screenshots/s4-button-reaches-server-mod.png)
+![The server mod's answer after two Plant clicks](../../../screenshots/s4-button-reaches-server-mod.png)
 
 The Gateway's log shows the two messages arriving as normal chat
 (`<= 0x0015 chat "/nm plant Wild Thornfruit"`).
@@ -100,7 +100,7 @@ The Gateway's log shows the two messages arriving as normal chat
 After `/goto 1_1_town` (a new area, so a new connection on the server) the window was still attached to the same
 in-game root, kept its state, and `/garden` reached the new connection's mod instance:
 
-![The same window after an area change](screenshots/s4-after-area-change.png)
+![The same window after an area change](../../../screenshots/s4-after-area-change.png)
 
 Chat is good enough for a first version and for anything a player triggers. It is not a final channel: it is text
 only, it is as slow as chat, and it shares the chat command namespace. The dedicated message id in
@@ -111,7 +111,7 @@ only, it is as slow as chat, and it shares the chat command namespace. The dedic
 **1. A parse error closes the client.** Loading a layout whose top-level id already exists under the same parent
 made the parser throw, and with nobody catching it the client showed this and exited:
 
-![The parser's error for a duplicate id](screenshots/parser-error-duplicate-id.png)
+![The parser's error for a duplicate id](../../../screenshots/parser-error-duplicate-id.png)
 
 - The parser reports file, line and column. Other messages seen: `error: ":" expected` for an unknown property
   name, and `Syntax error. You must have a space before <DEFINITIONS>` for a file that starts with that line.

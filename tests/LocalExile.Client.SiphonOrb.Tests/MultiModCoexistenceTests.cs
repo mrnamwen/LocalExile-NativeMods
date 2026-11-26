@@ -673,7 +673,7 @@ public sealed class MultiModCoexistenceTests
         string? dir = AppContext.BaseDirectory;
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir, "02-architecture.md")))
+            if (File.Exists(Path.Combine(dir, "NativeMods.slnx")))
                 return dir;
             dir = Path.GetDirectoryName(dir);
         }

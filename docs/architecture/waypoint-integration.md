@@ -82,7 +82,7 @@ Actual example from `examples/DualMod.HarvestGarden/mod.json`:
 | `customOpcodes` | `IReadOnlyList<CustomOpcodeDeclaration>` | `{ id: ushort, name: string, direction: OpcodeDirection }` (`ClientToServer`, `ServerToClient`, `Bidirectional`). ID `0` is rejected (`NC012`); cross-mod duplicates trigger `CNF003`. |
 | `gealBuiltins` | `IReadOnlyList<string>` | Custom GEAL built-in names (`CNF004` on cross-mod collision). |
 | `customControls` | `IReadOnlyList<string>` | Custom `.ui` control type names (`CNF005` on cross-mod collision; whitelisted during `.ui` linting). |
-| `contentRegistries` | `IReadOnlyList<ContentRegistryDeclaration>` | `{ table, entryId, mode = "append" }`. Closed tables (`ItemClasses`) fail with `NC016`; `Stats` emits warning `NC017`; non-`"append"` fails with `NC019`. |
+| `contentRegistries` | `IReadOnlyList<ContentRegistryDeclaration>` | `{ table, entryId, mode = "append" }`. Accepts **18 verified appendable tables**; closed tables (`ItemClasses` and `Stats` — fixed `23,362` / `0x5b42` rows) fail with `NC016`; non-`"append"` fails with `NC019`. |
 | `serverHalf` | `ServerHalfMetadata?` | `{ id, minVersion, supportsGracefulFallback, channelName }`. |
 | `integrity` | `PackageIntegrity?` | `{ packageSha256, files: Dictionary<string, string> }` verified on package validation (`INT001`–`INT005`). |
 
@@ -104,7 +104,7 @@ Actual example from `examples/DualMod.HarvestGarden/mod.json`:
 
 ### `.ui` Linter Rules (`UiLayoutLinter`)
 
-Prevents known 3.29.3d crashes and infinite layout loops discovered in [`07-spike-results.md`](../07-spike-results.md):
+Prevents known 3.29.3d crashes and infinite layout loops discovered in [`07-spike-results.md`](../archive/initial-design/07-spike-results.md):
 
 | Code | Rule |
 |---|---|
@@ -136,7 +136,7 @@ Prevents known 3.29.3d crashes and infinite layout loops discovered in [`07-spik
 - **Binary container (`<modId>-<shortHash12>.bundle.bin`):**
   - 16-byte header: `Magic` (`"NMB1"`), `FormatVersion` (`int32 = 1`), `EntryCount` (`int32`), `StoredBlockSize` (`int32 = 0x40000`).
   - Per-file payload split into `0x40000`-byte (256 KiB) chunks, each written as `[u32 chunkRawLen][0xCC 0x06][raw bytes...]` — compatible with Path of Exile's `OodleLZ_Decompress` (`0x142c9d520`) stored-block marker without requiring an Oodle compressor.
-  - Client text extensions (`.ui`, `.ot`, `.otc`, `.ao`, `.aoc`, `.it`, `.itc`, `.act`, `.epk`, `.mat`, `.sm`, `.txt`, `.xml`) are automatically normalized to **UTF-16LE with BOM (`FF FE`) and CRLF (`\r\n`)** (`ModBundlePacker.EncodeClientText`).
+  - Client text extensions are encoded according to the verified **12 BOM+CRLF vs. 3 + 1 No-BOM** contract: `.ui`, `.ot`, `.otc`, `.it`, `.itc`, `.ao`, `.aoc`, `.act`, `.epk`, `.ddt`, `.pet`, `.trl` use **UTF-16LE with BOM (`FF FE`) + CRLF** (`ModBundlePacker.EncodeClientText`); `.sm`, `.mat`, `.amd`, and `art/uiimages1.txt` (case-insensitive) use **UTF-16LE without BOM + CRLF** (`ModBundlePacker.EncodeClientTextNoBom`; stray BOMs in loose `.sm`/`.mat`/`.amd` fail validation with `ENC001`).
 - **Companion `manifest.json` (`ModBundleManifest`):** Records `formatVersion`, `modId`, `modVersion`, `bundleFile`, `bundleSha256`, `blockSize`, and `files[]` (`virtualPath`, `offset`, `uncompressedSize`, `storedSize`, `blockCount`, `sha256`, `encoding`).
 
 ### On-Disk Installation Layout

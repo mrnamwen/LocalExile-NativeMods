@@ -89,7 +89,7 @@ virtual path as given, relative to the working directory (`<cwd>/Metadata/UI/x.u
 The registrar interns names with a kind: 227 client, 505 server, 499 shared. Only client and shared names have an
 implementation in this binary; a server-only name outside a skipped `server { }` block is the compile error
 `Function X does not exist.` The classified table is
-[samples/geal-builtins-classified.tsv](samples/geal-builtins-classified.tsv).
+[samples/geal-builtins-classified.tsv](../../../samples/geal-builtins-classified.tsv).
 
 | A client script can | A client script cannot |
 |---|---|
