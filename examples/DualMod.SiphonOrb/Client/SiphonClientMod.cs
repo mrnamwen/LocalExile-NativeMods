@@ -411,12 +411,14 @@ public sealed class SiphonClientMod : IClientMod
         {
             if (_activePicker.Mode == SiphonPickerMode.Steal)
             {
-                UpdateStatusText($"Siphon [{selected.SlotTag}] {selected.StatText}  ->  Charged Orb of Siphoning");
+                string chosenShort = TruncateStatusText(selected.StatText, 54);
+                UpdateStatusText($"Siphon [{selected.SlotTag}] {chosenShort}  ->  Charged Orb");
             }
             else
             {
-                string storedText = _activePicker.StoredAffix?.StatText ?? "stored modifier";
-                UpdateStatusText($"Replace [{selected.SlotTag}] {selected.StatText}  ->  {storedText}");
+                string chosenShort = TruncateStatusText(selected.StatText, 36);
+                string storedShort = TruncateStatusText(_activePicker.StoredAffix?.StatText ?? "stored modifier", 36);
+                UpdateStatusText($"Replace {chosenShort}  ->  {storedShort}");
             }
         }
         else
@@ -497,5 +499,12 @@ public sealed class SiphonClientMod : IClientMod
     {
         string namePart = string.IsNullOrWhiteSpace(stored.DisplayName) ? string.Empty : $"  ({stored.DisplayName})";
         return $"{stored.StatText}{namePart}";
+    }
+
+    private static string TruncateStatusText(string text, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length <= maxChars)
+            return text;
+        return text[..(maxChars - 3)].TrimEnd() + "...";
     }
 }
