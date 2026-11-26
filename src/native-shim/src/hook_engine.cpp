@@ -1446,18 +1446,42 @@ HookEngine::TargetChain* HookEngine::get_or_create_inline_chain_locked(
     auto it = chains_.find(key);
     if (it != chains_.end()) {
         if (expected_bytes_hex != nullptr && expected_bytes_hex[0] != '\0') {
-            // Verify against saved original bytes since target prologue is already patched
+            // Verify bytes [0 .. min(N, S)-1] against saved original_bytes (since the
+            // stolen prologue at target_address is already patched) and any tail bytes
+            // [S .. N-1] directly against live unpatched memory at target_address + S.
             const size_t hex_len = std::strlen(expected_bytes_hex);
-            if (hex_len == 0 || (hex_len % 2) != 0 ||
-                (hex_len / 2) > it->second->original_bytes.size()) {
-                out_status = NM_ERR_BYTE_MISMATCH;
+            if (hex_len == 0 || (hex_len % 2) != 0) {
+                out_status = NM_ERR_INVALID_ARG;
                 return nullptr;
             }
-            if (verify_memory_bytes(
-                    reinterpret_cast<uint64_t>(it->second->original_bytes.data()),
-                    expected_bytes_hex) != NM_OK) {
-                out_status = NM_ERR_BYTE_MISMATCH;
-                return nullptr;
+            const size_t expected_len = hex_len / 2;
+            const size_t stolen_len = it->second->original_bytes.size();
+            const size_t prefix_len = std::min(expected_len, stolen_len);
+
+            if (prefix_len > 0) {
+                std::string prefix_hex;
+                const char* prefix_pattern = expected_bytes_hex;
+                if (expected_len > stolen_len) {
+                    prefix_hex.assign(expected_bytes_hex, prefix_len * 2);
+                    prefix_pattern = prefix_hex.c_str();
+                }
+                const nm_status_t prefix_st = verify_memory_bytes(
+                    static_cast<uint64_t>(reinterpret_cast<uintptr_t>(it->second->original_bytes.data())),
+                    prefix_pattern);
+                if (prefix_st != NM_OK) {
+                    out_status = prefix_st;
+                    return nullptr;
+                }
+            }
+
+            if (expected_len > stolen_len) {
+                const nm_status_t tail_st = verify_memory_bytes(
+                    target_address + stolen_len,
+                    expected_bytes_hex + (stolen_len * 2));
+                if (tail_st != NM_OK) {
+                    out_status = tail_st;
+                    return nullptr;
+                }
             }
         }
         return it->second;

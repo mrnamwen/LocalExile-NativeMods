@@ -132,6 +132,8 @@ private:
     uint64_t                      image_base_ = 0;
     GameAllocator*                allocator_ = nullptr;
     bool                          zoom_override_modified_ = false;
+    nm_hook_handle_t              init_area_hook_handle_ = NM_HOOK_INVALID;
+    void*                         init_area_trampoline_ = nullptr;
     std::vector<nm_hook_handle_t> installed_handles_;
 };
 

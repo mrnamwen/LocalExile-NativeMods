@@ -649,10 +649,41 @@ bool find_ground_label_rect_unguarded(
     return false;
 }
 
-// --- Live HookEngine Chain Callbacks ---
+// --- Live HookEngine Detour & Chain Callbacks ---
 
-void NM_CALL hook_client_world_init_area_post(nm_hook_context_t* /*ctx*/, void* /*ud*/) {
-    g_area_enter_pending.store(true, std::memory_order_release);
+// ClientWorld::InitArea takes 10 Win64 arguments (rcx, rdx, r8, r9 + 6 stack args a4..a9),
+// which exceeds HookEngine's generic 8-arg chain dispatcher. Use a typed raw inline detour
+// so all 10 arguments and the 64-bit return value are forwarded verbatim to the trampoline.
+using ClientWorldInitAreaFn = uint64_t(NM_CALL*)(
+    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+    uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+    uint64_t a8, uint64_t a9);
+
+std::atomic<ClientWorldInitAreaFn> g_orig_client_world_init_area{nullptr};
+thread_local bool                  t_in_init_area_hook = false;
+
+uint64_t NM_CALL detour_client_world_init_area(
+    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+    uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+    uint64_t a8, uint64_t a9) {
+    const auto orig = g_orig_client_world_init_area.load(std::memory_order_acquire);
+    const uint64_t ret = orig ? orig(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9) : 0ull;
+
+    if (!t_in_init_area_hook) {
+        struct ScopedInitAreaGuard {
+            ScopedInitAreaGuard() noexcept { t_in_init_area_hook = true; }
+            ~ScopedInitAreaGuard() noexcept { t_in_init_area_hook = false; }
+        } guard;
+
+        auto post_fn = [](void*) -> int64_t {
+            g_area_enter_pending.store(true, std::memory_order_release);
+            return 0;
+        };
+        nm_exception_info_t ex{};
+        (void)invoke_guarded(post_fn, nullptr, nullptr, &ex);
+    }
+
+    return ret;
 }
 
 void NM_CALL hook_area_loading_leave_post(nm_hook_context_t* /*ctx*/, void* /*ud*/) {
@@ -765,6 +796,25 @@ void Phase2Services::install_live_hooks(
         return;
     }
 
+    auto arm_inline_detour = [&](const char* sym_name, void* detour, void** out_tramp, nm_hook_handle_t* out_handle) -> bool {
+        const EmbeddedSymbol* sym = find_symbol(build_id, sym_name);
+        if (!sym || sym->rva == 0 || sym->status == NM_SYM_STATUS_UNVERIFIED) return false;
+        const uint64_t addr = image_base + sym->rva;
+        if (!ptr_readable_safe(reinterpret_cast<const void*>(static_cast<uintptr_t>(addr)), 24)) return false;
+
+        void* tramp = nullptr;
+        nm_hook_handle_t handle = NM_HOOK_INVALID;
+        const nm_status_t st = hooks.install_inline(addr, sym->expected_bytes_hex, detour, &tramp, &handle);
+        if (st == NM_OK && tramp != nullptr && handle != NM_HOOK_INVALID) {
+            if (out_tramp) *out_tramp = tramp;
+            if (out_handle) *out_handle = handle;
+            return true;
+        }
+        logger_logf("WARN", "[PHASE2] Failed to arm inline detour '%s' at 0x%llX (st=%d)",
+                    sym_name, static_cast<unsigned long long>(addr), static_cast<int>(st));
+        return false;
+    };
+
     auto arm_chain = [&](const char* sym_name, nm_hook_phase_t phase, nm_hook_chain_callback_t cb) -> bool {
         const EmbeddedSymbol* sym = find_symbol(build_id, sym_name);
         if (!sym || sym->rva == 0 || sym->status == NM_SYM_STATUS_UNVERIFIED) return false;
@@ -782,7 +832,16 @@ void Phase2Services::install_live_hooks(
         return false;
     };
 
-    const bool ok_init_area = arm_chain("world.client_world_init_area", NM_HOOK_PHASE_POST, &hook_client_world_init_area_post);
+    const bool ok_init_area = arm_inline_detour(
+        "world.client_world_init_area",
+        reinterpret_cast<void*>(&detour_client_world_init_area),
+        &init_area_trampoline_,
+        &init_area_hook_handle_);
+    if (ok_init_area) {
+        g_orig_client_world_init_area.store(
+            reinterpret_cast<ClientWorldInitAreaFn>(init_area_trampoline_),
+            std::memory_order_release);
+    }
     const bool ok_load_lv   = arm_chain("frame.area_loading_leave",     NM_HOOK_PHASE_POST, &hook_area_loading_leave_post);
     const bool ok_ig_leave  = arm_chain("frame.ingame_state_leave",     NM_HOOK_PHASE_PRE,  &hook_ingame_state_leave_pre_area);
     const bool ok_flt_load  = arm_chain("items.filter_notify_loaded",   NM_HOOK_PHASE_POST, &hook_filter_notify_loaded_post);
@@ -806,11 +865,19 @@ void Phase2Services::reset(HookEngine* hooks) {
     }
 
     if (hooks) {
+        if (init_area_hook_handle_ != NM_HOOK_INVALID) {
+            (void)hooks->remove(init_area_hook_handle_);
+        }
         for (nm_hook_handle_t h : installed_handles_) {
             (void)hooks->remove(h);
         }
     }
+    init_area_hook_handle_ = NM_HOOK_INVALID;
+    init_area_trampoline_ = nullptr;
     installed_handles_.clear();
+#if defined(_WIN32)
+    g_orig_client_world_init_area.store(nullptr, std::memory_order_release);
+#endif
     build_id_ = NM_BUILD_UNKNOWN;
     image_base_ = 0;
     allocator_ = nullptr;
