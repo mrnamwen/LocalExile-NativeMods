@@ -217,7 +217,7 @@ public sealed class StashQolServerMod : IDisposable
                 RequiresConfirmation: true);
         }
 
-        QolVendorQuote quote = _backend.QuoteVendor(connectionId, eligible);
+        QolVendorQuote quote = _backend.QuoteVendor(connectionId, tab.TabIndex, eligible);
         if (!string.IsNullOrWhiteSpace(quote.Error))
         {
             return new VendorAllOutcome(false, 0, 0, $"Vendor quote refused: {quote.Error}");
@@ -577,7 +577,7 @@ public sealed class StashQolServerMod : IDisposable
         {
             for (int i = 1; i <= budget; i++)
             {
-                QolItemRecord? next = _backend.SimulateCurrencyRoll(connectionId, current, request.CurrencyMetadataPath, i);
+                QolItemRecord? next = _backend.SimulateCurrencyRoll(connectionId, request.TargetInventoryId, current, request.CurrencyMetadataPath, i);
                 if (next is null)
                 {
                     break;

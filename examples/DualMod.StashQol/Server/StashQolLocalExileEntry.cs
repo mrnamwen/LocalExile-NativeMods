@@ -8,6 +8,7 @@
 // - GameEvents.LevelUp + Program.WorldOf(player).AllocatePassivesAsync (PoB Auto-Apply + HUD Toast)
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -23,6 +24,7 @@ using LocalExile.Client.ServerBridge;
 public sealed class StashQolLocalExileEntry : IMod, IDisposable
 {
     private LocalExileGatewayHost? _gatewayHost;
+    private LocalExileStashQolBackend? _backend;
     private StashQolServerMod? _serverMod;
     private IDisposable? _levelUpSub;
     private StatDescriptions? _statDescriptions;
@@ -46,14 +48,15 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
             {
                 if (((Player)ctx.Player).Closed)
                 {
+                    _backend?.ClearPlayerCache(ctx.ConnectionId);
                     _serverMod?.OnPlayerLeft(ctx.ConnectionId);
                 }
 
                 return Task.CompletedTask;
             }));
 
-        var backend = new LocalExileStashQolBackend(_gatewayHost, _statDescriptions, mod.Log);
-        _serverMod = new StashQolServerMod(_gatewayHost.Bridge, backend, settings);
+        _backend = new LocalExileStashQolBackend(_gatewayHost, _statDescriptions, mod.Log);
+        _serverMod = new StashQolServerMod(_gatewayHost.Bridge, _backend, settings);
         _serverMod.Attach();
 
         // Hook GameEvents.LevelUp (Part 1/2a) to auto-allocate connected PoB frontier passives and toast the client.
@@ -109,6 +112,21 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
         StatDescriptions? statDescriptions,
         Action<string> log) : IStashQolWorldBackend
     {
+        private readonly ConcurrentDictionary<(string ConnectionId, uint InventoryId, uint ItemId), Item> _workingRolledItems = new();
+        private Dictionary<uint, (string TargetMetadata, string TargetName)>? _mapUpgradeCache;
+        private ItemCatalog? _mapUpgradeCatalog;
+
+        public void ClearPlayerCache(string connectionId)
+        {
+            foreach (var key in _workingRolledItems.Keys)
+            {
+                if (string.Equals(key.ConnectionId, connectionId, StringComparison.Ordinal))
+                {
+                    _workingRolledItems.TryRemove(key, out _);
+                }
+            }
+        }
+
         private bool TryGetPlayer(string connectionId, out Player player)
         {
             if (gatewayHost.TryGetPlayer(connectionId, out object? obj) && obj is Player p && !p.Closed)
@@ -197,20 +215,14 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
             return true;
         }
 
-        public QolVendorQuote QuoteVendor(string connectionId, IReadOnlyList<QolItemRecord> offered)
+        public QolVendorQuote QuoteVendor(string connectionId, int sourceTabIndex, IReadOnlyList<QolItemRecord> offered)
         {
             if (!TryGetPlayer(connectionId, out Player p)) return new QolVendorQuote([], [], "Player disconnected.");
             var stash = Game.PersonalStashOf(p);
+            if (sourceTabIndex < 0 || sourceTabIndex >= stash.Count) return new QolVendorQuote([], [], "Source stash tab not found.");
             var catalog = Game.ItemsFor(p);
             HashSet<uint> wanted = [.. offered.Select(o => o.Id)];
-            List<InventoryItem> liveItems = [];
-            for (int t = 0; t < stash.Count && liveItems.Count < wanted.Count; t++)
-            {
-                foreach (var it in stash.Inventory(t).Items)
-                {
-                    if (wanted.Contains(it.Id)) liveItems.Add(it);
-                }
-            }
+            List<InventoryItem> liveItems = [.. stash.Inventory(sourceTabIndex).Items.Where(it => wanted.Contains(it.Id))];
 
             VendorQuoteResult? quote = GameEvents.QuoteVendor(p, liveItems);
             if (quote is null) return new QolVendorQuote([], [], "Vendors module is not active.");
@@ -396,69 +408,312 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
             return Game.ItemsOf(p).Count(PlayerInventories.MainInventory, type.Hash) + Game.PersonalStashOf(p).CountOf(type.Hash);
         }
 
-        public QolItemRecord? SimulateCurrencyRoll(string connectionId, QolItemRecord target, string currencyMetadataPath, int rollIndex)
+        public QolItemRecord? SimulateCurrencyRoll(string connectionId, uint targetInventoryId, QolItemRecord target, string currencyMetadataPath, int rollIndex)
         {
             if (!TryGetPlayer(connectionId, out Player p)) return null;
             var catalog = Game.ItemsFor(p);
-            var (_, live) = Game.Locate(Game.ItemsOf(p), Game.PersonalStashOf(p), 1, target.Id);
+            var (_, live) = Game.Locate(Game.ItemsOf(p), Game.PersonalStashOf(p), targetInventoryId, target.Id);
             if (live is null) return null;
+
+            var rollKey = (connectionId, targetInventoryId, target.Id);
+            Item working = rollIndex <= 1
+                ? live.Item
+                : _workingRolledItems.TryGetValue(rollKey, out Item? prior) ? prior : live.Item;
 
             Random rng = Game.AreaRng(p);
             Item? rolled = currencyMetadataPath switch
             {
-                CurrencyEffects.ChaosOrb => CurrencyEffects.Chaos(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.OrbOfAlteration => CurrencyEffects.Alteration(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.OrbOfAlchemy => CurrencyEffects.Alchemy(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.OrbOfTransmutation => CurrencyEffects.Transmutation(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.OrbOfAugmentation => CurrencyEffects.Augmentation(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.OrbOfScouring => CurrencyEffects.Scouring(live.Item, Game.RollsFor(p)),
-                CurrencyEffects.RegalOrb => CurrencyEffects.Regal(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.ExaltedOrb => CurrencyEffects.Exalted(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.OrbOfAnnulment => CurrencyEffects.Annulment(live.Item, Game.RollsFor(p), rng),
-                CurrencyEffects.ChromaticOrb => catalog.ByHash(live.Item.TypeHash) is { } reqType
-                    ? CurrencyEffects.Chromatic(live.Item, catalog.Requirements(reqType), rng) : null,
-                CurrencyEffects.JewellersOrb => catalog.ByHash(live.Item.TypeHash) is { } sockType
-                    ? CurrencyEffects.Jewellers(live.Item, sockType, rng) : null,
-                CurrencyEffects.OrbOfFusing => catalog.ByHash(live.Item.TypeHash) is { } linkType
-                    ? CurrencyEffects.Fusing(live.Item, linkType, rng) : null,
+                CurrencyEffects.ChaosOrb => CurrencyEffects.Chaos(working, Game.RollsFor(p), rng),
+                CurrencyEffects.OrbOfAlteration => CurrencyEffects.Alteration(working, Game.RollsFor(p), rng),
+                CurrencyEffects.OrbOfAlchemy => CurrencyEffects.Alchemy(working, Game.RollsFor(p), rng),
+                CurrencyEffects.OrbOfTransmutation => CurrencyEffects.Transmutation(working, Game.RollsFor(p), rng),
+                CurrencyEffects.OrbOfAugmentation => CurrencyEffects.Augmentation(working, Game.RollsFor(p), rng),
+                CurrencyEffects.OrbOfScouring => CurrencyEffects.Scouring(working, Game.RollsFor(p)),
+                CurrencyEffects.RegalOrb => CurrencyEffects.Regal(working, Game.RollsFor(p), rng),
+                CurrencyEffects.ExaltedOrb => CurrencyEffects.Exalted(working, Game.RollsFor(p), rng),
+                CurrencyEffects.OrbOfAnnulment => CurrencyEffects.Annulment(working, Game.RollsFor(p), rng),
+                CurrencyEffects.ChromaticOrb => catalog.ByHash(working.TypeHash) is { } reqType
+                    ? CurrencyEffects.Chromatic(working, catalog.Requirements(reqType), rng) : null,
+                CurrencyEffects.JewellersOrb => catalog.ByHash(working.TypeHash) is { } sockType
+                    ? CurrencyEffects.Jewellers(working, sockType, rng) : null,
+                CurrencyEffects.OrbOfFusing => catalog.ByHash(working.TypeHash) is { } linkType
+                    ? CurrencyEffects.Fusing(working, linkType, rng) : null,
                 _ => null,
             };
 
-            return rolled is null ? null : MapItem(live with { Item = rolled }, catalog, false, false);
+            if (rolled is null)
+            {
+                return null;
+            }
+
+            _workingRolledItems[rollKey] = rolled;
+            return MapItem(live with { Item = rolled }, catalog, false, false);
         }
 
         public bool CommitRegexRoll(string connectionId, uint targetInventoryId, uint targetItemId, string currencyMetadataPath, int orbsConsumed, QolItemRecord finalItem, out string error)
         {
             error = string.Empty;
-            log($"[stashqol] Committed regex roll ({orbsConsumed}x {currencyMetadataPath}) on item {targetItemId}.");
+            var rollKey = (connectionId, targetInventoryId, targetItemId);
+            if (!_workingRolledItems.TryRemove(rollKey, out Item? finalLiveItem))
+            {
+                error = "No rolled item state available to commit.";
+                return false;
+            }
+
+            if (!TryGetPlayer(connectionId, out Player p))
+            {
+                error = "Player disconnected.";
+                return false;
+            }
+
+            var items = Game.ItemsOf(p);
+            var stash = Game.PersonalStashOf(p);
+            var catalog = Game.ItemsFor(p);
+            if (catalog.Find(currencyMetadataPath) is not { } orbType)
+            {
+                error = $"Unknown currency '{currencyMetadataPath}'.";
+                return false;
+            }
+
+            var (spot, liveTarget) = Game.Locate(items, stash, targetInventoryId, targetItemId);
+            if (liveTarget is null)
+            {
+                error = "Target item no longer exists.";
+                return false;
+            }
+
+            if (Game.Worn(spot))
+            {
+                error = "Cannot commit regex roll on an equipped item.";
+                return false;
+            }
+
+            if (spot.Tab is int publicCheckTab && stash.IsPublic(publicCheckTab))
+            {
+                error = "Cannot commit regex roll on an item in a public stash tab.";
+                return false;
+            }
+
+            PlayerInventories.Payment? invPayment = null;
+            AccountStash.Payment? stashPayment = null;
+            InventoryItem? updatedTarget = null;
+            string failureReason = string.Empty;
+
+            bool committed = Saves.Atomically(() =>
+            {
+                int inInv = items.Count(PlayerInventories.MainInventory, orbType.Hash);
+                int inStash = stash.CountOf(orbType.Hash);
+                if (inInv + inStash < orbsConsumed)
+                {
+                    failureReason = "Insufficient currency.";
+                    return false;
+                }
+
+                int fromInv = Math.Min(inInv, orbsConsumed);
+                int fromStash = orbsConsumed - fromInv;
+                if (fromInv > 0)
+                {
+                    invPayment = items.Pay(PlayerInventories.MainInventory, orbType.Hash, fromInv);
+                    if (invPayment is null)
+                    {
+                        failureReason = "Failed to deduct currency from inventory.";
+                        return false;
+                    }
+                }
+
+                if (fromStash > 0)
+                {
+                    stashPayment = stash.Pay(orbType.Hash, fromStash);
+                    if (stashPayment is null)
+                    {
+                        failureReason = "Failed to deduct currency from stash.";
+                        return false;
+                    }
+                }
+
+                if (spot.Row is byte targetRow)
+                {
+                    updatedTarget = items.Change(targetRow, targetItemId, _ => finalLiveItem);
+                }
+                else if (spot.Tab is int targetTab)
+                {
+                    updatedTarget = stash.Change(targetTab, targetItemId, _ => finalLiveItem);
+                }
+
+                if (updatedTarget is null)
+                {
+                    failureReason = "Failed to replace target item.";
+                    return false;
+                }
+
+                return true;
+            });
+
+            if (!committed)
+            {
+                error = string.IsNullOrEmpty(failureReason) ? "Regex roll commit failed." : failureReason;
+                return false;
+            }
+
+            // Emit 0x00BF inventory diff(s) for deducted currency and updated target item.
+            if (invPayment is not null || (spot.Row is byte r && r == PlayerInventories.MainInventory && updatedTarget is not null))
+            {
+                List<uint> removed = [];
+                List<InventoryItem> changed = [];
+                if (invPayment is not null)
+                {
+                    removed.AddRange(invPayment.Removed);
+                    removed.AddRange(invPayment.Changed.Select(c => c.Id));
+                    changed.AddRange(invPayment.Changed);
+                }
+
+                if (spot.Row is byte targetRow && targetRow == PlayerInventories.MainInventory && updatedTarget is not null)
+                {
+                    removed.Add(updatedTarget.Id);
+                    changed.Add(updatedTarget);
+                }
+
+                _ = Program.Send(p, InstanceItems.InventoryChange(
+                    PlayerInventories.InventoryId(PlayerInventories.MainInventory),
+                    items.NextRevision(PlayerInventories.MainInventory),
+                    removed,
+                    changed), "0x00bf regex roll inventory");
+            }
+            else if (spot.Row is byte otherRow && updatedTarget is not null)
+            {
+                _ = Program.Send(p, InstanceItems.InventoryChange(
+                    PlayerInventories.InventoryId(otherRow),
+                    items.NextRevision(otherRow),
+                    [updatedTarget.Id],
+                    [updatedTarget]), "0x00bf regex roll target");
+            }
+
+            // Emit 0x00BF stash tab diff(s) for deducted stash currency and/or stash target item.
+            Dictionary<int, (List<uint> Removed, List<InventoryItem> Changed)> tabDiffs = [];
+            if (stashPayment is not null)
+            {
+                foreach (var (tabIdx, (rem, chg)) in stashPayment.Tabs)
+                {
+                    List<uint> tabRem = [.. rem, .. chg.Select(c => c.Id)];
+                    tabDiffs[tabIdx] = (tabRem, [.. chg]);
+                }
+            }
+
+            if (spot.Tab is int updatedTab && updatedTarget is not null)
+            {
+                if (!tabDiffs.TryGetValue(updatedTab, out var diff))
+                {
+                    diff = ([], []);
+                    tabDiffs[updatedTab] = diff;
+                }
+
+                diff.Removed.Add(updatedTarget.Id);
+                diff.Changed.Add(updatedTarget);
+            }
+
+            foreach (var (tabIdx, (rem, chg)) in tabDiffs)
+            {
+                _ = Game.SendTabChange(p, stash, tabIdx, rem, chg, $"0x00bf regex roll tab {tabIdx}");
+            }
+
+            log($"[stashqol] Committed regex roll ({orbsConsumed}x {currencyMetadataPath}) on item {targetItemId} (inv {targetInventoryId}).");
             return true;
         }
 
         public async Task<BulkStackedDeckResult> BulkOpenStackedDecksAsync(string connectionId, uint inventoryId, uint itemId, int maxCount, CancellationToken cancellationToken = default)
         {
             if (!TryGetPlayer(connectionId, out Player p)) return new BulkStackedDeckResult(false, 0, false, "Player disconnected.");
+            var items = Game.ItemsOf(p);
+            var stash = Game.PersonalStashOf(p);
+
+            var (initialSpot, initialItem) = Game.Locate(items, stash, inventoryId, itemId);
+            if (initialItem is null) return new BulkStackedDeckResult(false, 0, false, "Stacked Deck not found.");
+            if (initialSpot.Tab is int pubTab && stash.IsPublic(pubTab)) return new BulkStackedDeckResult(false, 0, false, "Cannot use items from a public stash tab.");
+
             int opened = 0;
+            bool stoppedFull = false;
+            var useReq = new InstanceItems.UseItemRequest(inventoryId, itemId);
+
             for (int i = 0; i < maxCount && !cancellationToken.IsCancellationRequested; i++)
             {
-                await Game.UseItem(p, new InstanceItems.UseItemRequest(inventoryId, itemId), "stashqol-bulk");
+                var (_, before) = Game.Locate(items, stash, inventoryId, itemId);
+                if (before is null || before.Item.StackSize == 0)
+                {
+                    break;
+                }
+
+                if (items.FreeCell(PlayerInventories.MainInventory, 1, 1, Game.ShapeOf) is null)
+                {
+                    stoppedFull = true;
+                    break;
+                }
+
+                ushort beforeStack = before.Item.StackSize;
+                await Game.UseItem(p, useReq, "stashqol-bulk");
+
+                var (_, after) = Game.Locate(items, stash, inventoryId, itemId);
+                ushort afterStack = after?.Item.StackSize ?? 0;
+                if (afterStack >= beforeStack)
+                {
+                    if (items.FreeCell(PlayerInventories.MainInventory, 1, 1, Game.ShapeOf) is null)
+                    {
+                        stoppedFull = true;
+                    }
+
+                    break;
+                }
+
                 opened++;
             }
 
-            return new BulkStackedDeckResult(opened > 0, opened, false);
+            if (opened == 0)
+            {
+                return new BulkStackedDeckResult(false, 0, stoppedFull, stoppedFull ? "Main inventory is full." : "Could not open Stacked Deck.");
+            }
+
+            return new BulkStackedDeckResult(true, opened, stoppedFull);
         }
 
         public async Task<BulkRefundOrbResult> BulkUseRefundOrbAsync(string connectionId, uint inventoryId, uint itemId, bool isAtlasUnmaking, int maxCount, CancellationToken cancellationToken = default)
         {
             if (!TryGetPlayer(connectionId, out Player p)) return new BulkRefundOrbResult(false, 0, 0, "Player disconnected.");
+            var items = Game.ItemsOf(p);
+            var stash = Game.PersonalStashOf(p);
+
+            var (initialSpot, initialItem) = Game.Locate(items, stash, inventoryId, itemId);
+            if (initialItem is null) return new BulkRefundOrbResult(false, 0, 0, "Orb stack not found.");
+            if (initialSpot.Tab is int pubTab && stash.IsPublic(pubTab)) return new BulkRefundOrbResult(false, 0, 0, "Cannot use orbs from a public stash tab.");
+
             int used = 0;
+            var useReq = new InstanceItems.UseItemRequest(inventoryId, itemId);
+
             for (int i = 0; i < maxCount && !cancellationToken.IsCancellationRequested; i++)
             {
-                await Game.UseItem(p, new InstanceItems.UseItemRequest(inventoryId, itemId), "stashqol-bulk");
+                var (_, before) = Game.Locate(items, stash, inventoryId, itemId);
+                if (before is null || before.Item.StackSize == 0)
+                {
+                    break;
+                }
+
+                ushort beforeStack = before.Item.StackSize;
+                int beforeBalance = isAtlasUnmaking ? Game.AtlasRespecPoints(p) : Program.WorldOf(p).RefundPoints;
+                await Game.UseItem(p, useReq, "stashqol-bulk");
+
+                var (_, after) = Game.Locate(items, stash, inventoryId, itemId);
+                ushort afterStack = after?.Item.StackSize ?? 0;
+                int afterBalance = isAtlasUnmaking ? Game.AtlasRespecPoints(p) : Program.WorldOf(p).RefundPoints;
+                if (afterStack >= beforeStack && afterBalance <= beforeBalance)
+                {
+                    break;
+                }
+
                 used++;
             }
 
-            int balance = isAtlasUnmaking ? Game.AtlasRespecPoints(p) : Program.WorldOf(p).RefundPoints;
-            return new BulkRefundOrbResult(used > 0, used, balance);
+            int finalBalance = isAtlasUnmaking ? Game.AtlasRespecPoints(p) : Program.WorldOf(p).RefundPoints;
+            return used > 0
+                ? new BulkRefundOrbResult(true, used, finalBalance)
+                : new BulkRefundOrbResult(false, 0, finalBalance, "Could not consume refund orb stack.");
         }
 
         public async Task<BulkTargetedCurrencyResult> BulkApplyTargetedCurrencyAsync(
@@ -472,15 +727,83 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
             CancellationToken cancellationToken = default)
         {
             if (!TryGetPlayer(connectionId, out Player p)) return new BulkTargetedCurrencyResult(false, 0, string.Empty, "Player disconnected.");
-            var request = new InstanceItems.UseItemOn(currencyInventoryId, currencyItemId, targetInventoryId, targetItemId);
-            int applied = 0;
-            for (int i = 0; i < maxCount && !cancellationToken.IsCancellationRequested; i++)
+            var items = Game.ItemsOf(p);
+            var stash = Game.PersonalStashOf(p);
+
+            var (curSpot, curInit) = Game.Locate(items, stash, currencyInventoryId, currencyItemId);
+            if (curInit is null) return new BulkTargetedCurrencyResult(false, 0, string.Empty, "Currency stack not found.");
+            if (curSpot.Tab is int curPub && stash.IsPublic(curPub)) return new BulkTargetedCurrencyResult(false, 0, string.Empty, "Cannot consume currency from a public stash tab.");
+
+            var (tgtSpot, tgtInit) = Game.Locate(items, stash, targetInventoryId, targetItemId);
+            if (tgtInit is null) return new BulkTargetedCurrencyResult(false, 0, string.Empty, "Target item not found.");
+            if (tgtSpot.Tab is int tgtPub && stash.IsPublic(tgtPub)) return new BulkTargetedCurrencyResult(false, 0, string.Empty, "Cannot modify an item in a public stash tab.");
+
+            bool isQualityOrb = currencyMetadataPath.Contains("Quality", StringComparison.OrdinalIgnoreCase);
+            if (Game.Worn(tgtSpot) && !isQualityOrb)
             {
-                await Game.UseItemOn(p, request, "stashqol-bulk");
-                applied++;
+                return new BulkTargetedCurrencyResult(false, 0, string.Empty, "Cannot use this currency on an equipped item.");
             }
 
-            return new BulkTargetedCurrencyResult(applied > 0, applied, "completed");
+            var request = new InstanceItems.UseItemOn(currencyInventoryId, currencyItemId, targetInventoryId, targetItemId);
+            int applied = 0;
+            string stopReason = string.Empty;
+
+            for (int i = 0; i < maxCount && !cancellationToken.IsCancellationRequested; i++)
+            {
+                var (_, curBefore) = Game.Locate(items, stash, currencyInventoryId, currencyItemId);
+                var (_, tgtBefore) = Game.Locate(items, stash, targetInventoryId, targetItemId);
+                if (curBefore is null || curBefore.Item.StackSize == 0)
+                {
+                    stopReason = "stack exhausted";
+                    break;
+                }
+
+                if (tgtBefore is null)
+                {
+                    stopReason = "target unavailable";
+                    break;
+                }
+
+                ushort beforeStack = curBefore.Item.StackSize;
+                Item beforeTargetItem = tgtBefore.Item;
+
+                await Game.UseItemOn(p, request, "stashqol-bulk");
+
+                var (_, curAfter) = Game.Locate(items, stash, currencyInventoryId, currencyItemId);
+                var (_, tgtAfter) = Game.Locate(items, stash, targetInventoryId, targetItemId);
+                ushort afterStack = curAfter?.Item.StackSize ?? 0;
+
+                if (afterStack >= beforeStack)
+                {
+                    stopReason = "target completed or max reached";
+                    break;
+                }
+
+                applied++;
+                if (afterStack == 0)
+                {
+                    stopReason = "stack exhausted";
+                    break;
+                }
+
+                if (tgtAfter is not null && ReferenceEquals(tgtAfter.Item, beforeTargetItem))
+                {
+                    stopReason = "target unchanged";
+                    break;
+                }
+            }
+
+            if (applied == 0)
+            {
+                return new BulkTargetedCurrencyResult(false, 0, stopReason, string.IsNullOrEmpty(stopReason) ? "Currency could not be applied." : stopReason);
+            }
+
+            if (string.IsNullOrEmpty(stopReason))
+            {
+                stopReason = "reached action cap";
+            }
+
+            return new BulkTargetedCurrencyResult(true, applied, stopReason);
         }
 
         public QolPassiveTreeState? GetPassiveTreeState(string connectionId)
@@ -512,6 +835,32 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
                 ? Program.WorldOf(p).AllocatePassivesAsync(nodes, masteryEffect, reason)
                 : Task.FromResult<string?>("Player disconnected.");
 
+        private Dictionary<uint, (string TargetMetadata, string TargetName)> GetMapUpgradeTargets(ItemCatalog catalog)
+        {
+            if (_mapUpgradeCache is not null && ReferenceEquals(_mapUpgradeCatalog, catalog))
+            {
+                return _mapUpgradeCache;
+            }
+
+            Dictionary<uint, (string TargetMetadata, string TargetName)> upgrades = [];
+            if (ClientTables.TableOrNull("Maps") is { } mapsTable)
+            {
+                foreach (var map in mapsTable)
+                {
+                    if (map.IntOrNull("MapUpgrade_BaseItemTypesKey") is int next
+                        && catalog.Row(map.Int("BaseItemTypesKey")) is { Supported: true } from
+                        && catalog.Row(next) is { Supported: true } to)
+                    {
+                        upgrades.TryAdd(from.Hash, (to.Id, to.Name));
+                    }
+                }
+            }
+
+            _mapUpgradeCatalog = catalog;
+            _mapUpgradeCache = upgrades;
+            return upgrades;
+        }
+
         private QolItemRecord MapItem(InventoryItem invItem, ItemCatalog catalog, bool offered, bool isInputSlot)
         {
             var item = invItem.Item;
@@ -522,6 +871,11 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
             {
                 modLines.Add($"{item.Mods.Count} modifier(s)");
             }
+
+            (string TargetMetadata, string TargetName)? mapUpgrade = GetMapUpgradeTargets(catalog).TryGetValue(item.TypeHash, out var upgrade)
+                ? upgrade
+                : null;
+
             return new QolItemRecord
             {
                 Id = invItem.Id,
@@ -550,6 +904,8 @@ public sealed class StashQolLocalExileEntry : IMod, IDisposable
                 IsBlightedMap = catalog.Stash.IsBlightedMap(item),
                 IsInputSlot = isInputSlot,
                 MapTier = catalog.Stash.MapTier(item.TypeHash),
+                MapUpgradeTargetMetadata = mapUpgrade?.TargetMetadata,
+                MapUpgradeTargetName = mapUpgrade?.TargetName,
                 Affinities = [.. catalog.Stash.AffinitiesOf(item.TypeHash)],
                 ModLines = modLines,
             };

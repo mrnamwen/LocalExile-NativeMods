@@ -163,7 +163,7 @@ public interface IStashQolWorldBackend
     int? FindAffinityTab(string connectionId, QolItemRecord item);
     bool TryDepositItem(string connectionId, uint itemId, int targetTabIndex);
 
-    QolVendorQuote QuoteVendor(string connectionId, IReadOnlyList<QolItemRecord> offered);
+    QolVendorQuote QuoteVendor(string connectionId, int sourceTabIndex, IReadOnlyList<QolItemRecord> offered);
     bool CommitVendorSale(string connectionId, int sourceTabIndex, IReadOnlyList<uint> soldItemIds, IReadOnlyList<QolItemRecord> rewards, out string error);
 
     bool CommitInventoryRepack(string connectionId, IReadOnlyList<(uint ItemId, byte X, byte Y)> placements, out string error);
@@ -183,7 +183,7 @@ public interface IStashQolWorldBackend
 
     bool TryGetItem(string connectionId, uint inventoryId, uint itemId, out QolItemRecord item, out bool isWorn, out bool isPublicStash);
     int CountCurrency(string connectionId, string currencyMetadataPath);
-    QolItemRecord? SimulateCurrencyRoll(string connectionId, QolItemRecord target, string currencyMetadataPath, int rollIndex);
+    QolItemRecord? SimulateCurrencyRoll(string connectionId, uint targetInventoryId, QolItemRecord target, string currencyMetadataPath, int rollIndex);
     bool CommitRegexRoll(string connectionId, uint targetInventoryId, uint targetItemId, string currencyMetadataPath, int orbsConsumed, QolItemRecord finalItem, out string error);
 
     Task<BulkStackedDeckResult> BulkOpenStackedDecksAsync(string connectionId, uint inventoryId, uint itemId, int maxCount, CancellationToken cancellationToken = default);
@@ -329,8 +329,9 @@ public sealed class InMemoryStashQolWorldBackend : IStashQolWorldBackend
         return true;
     }
 
-    public QolVendorQuote QuoteVendor(string connectionId, IReadOnlyList<QolItemRecord> offered)
+    public QolVendorQuote QuoteVendor(string connectionId, int sourceTabIndex, IReadOnlyList<QolItemRecord> offered)
     {
+        _ = sourceTabIndex;
         PlayerState p = GetOrCreatePlayer(connectionId);
         if (p.CustomVendorQuoter is not null)
         {
@@ -544,8 +545,9 @@ public sealed class InMemoryStashQolWorldBackend : IStashQolWorldBackend
         return total;
     }
 
-    public QolItemRecord? SimulateCurrencyRoll(string connectionId, QolItemRecord target, string currencyMetadataPath, int rollIndex)
+    public QolItemRecord? SimulateCurrencyRoll(string connectionId, uint targetInventoryId, QolItemRecord target, string currencyMetadataPath, int rollIndex)
     {
+        _ = targetInventoryId;
         PlayerState p = GetOrCreatePlayer(connectionId);
         if (p.CustomRollSimulator is not null)
         {

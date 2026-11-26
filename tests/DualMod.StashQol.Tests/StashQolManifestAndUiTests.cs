@@ -120,6 +120,11 @@ public sealed class StashQolManifestAndUiTests
         Assert.Contains("Saves.Atomically", source, StringComparison.Ordinal);
         Assert.Contains("InstanceItems.InventoryChange", source, StringComparison.Ordinal);
         Assert.Contains("Game.SendTabChange", source, StringComparison.Ordinal);
+        Assert.Contains("MapUpgrade_BaseItemTypesKey", source, StringComparison.Ordinal);
+        Assert.Contains("items.Pay(PlayerInventories.MainInventory", source, StringComparison.Ordinal);
+        Assert.Contains("stash.Pay(orbType.Hash", source, StringComparison.Ordinal);
+        Assert.Contains("stash.Inventory(sourceTabIndex).Items", source, StringComparison.Ordinal);
+        Assert.Contains("items.FreeCell(PlayerInventories.MainInventory", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetAwaiter().GetResult()", source, StringComparison.Ordinal);
     }
 
