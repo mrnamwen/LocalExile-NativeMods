@@ -1,66 +1,79 @@
-// Orb of Siphoning — Native 3.29.3d Recombinator-style modifier picker layout.
+// Orb of Siphoning — Authentic Path of Exile 3.29.3d Recombinator-style Item-Card Modifier Selector.
 // Verified 3.29.3d UI rules:
 // - Leading comment before <DEFINITIONS>
-// - 100% stock registered 3.29.3d control types (Frame, StackLayout, Label, Picture, Button)
-// - Every ancestor Frame/StackLayout carries an explicit unique id (case-sensitive FindChild)
-// - Mixed-case modifier text rendered via Label (Fonts.Normal, MiddleLeft); Button stays action-only
+// - 100% stock registered 3.29.3d control types (Frame, StackLayout, Label, Picture, BasicButton, Button)
+// - Every ancestor container carries an explicit unique id (case-sensitive FindChild)
 // - Spacer Frame after Picture inside StackLayout (never puts margin on Picture inside StackLayout)
-// - Hiding affix_row_N collapses the row in StackLayout and blocks clicks on child affix_btn_N
+// - Full-width clickable modifier rows use BasicButton (+0x2A0 click event) with mouse_enabled = false
+//   on all overlaid Picture/Frame/Label children so clicking anywhere on a modifier line triggers Clicked
+// - Real 3.29.3d Kingsmarch Recombinator 9-slice frame, Rare/Magic item card headers & separators,
+//   CraftingBench modifier selection bars, circular close button, and Orb of Siphoning DDS icons
 
 <DEFINITIONS>
 
-const $w = 1120;
+const $w = 960;
 const $pad = 28;
-const $inner = 1064;
+const $inner = 904;
+const $card_w = 904;
+const $card_inner = 872;
+const $row_h = 52;
 
 begin Frame
 	id = siphon_picker_window;
 	aspect_mode = scaley;
-	size = $w, 720;
+	size = $w, 760;
+	min_size = $w, 420;
+	auto_size = true, true;
 	float = centre;
-	y = 180;
+	y = 140;
 	visible = true;
 	mouse_enabled = true;
 	propagate_properties = false;
 
 	border = normal,
-		"Art/2DArt/UIImages/Common/OrnateTopLeft", "Art/2DArt/UIImages/Common/OrnateTop", "Art/2DArt/UIImages/Common/OrnateTopRight",
-		"Art/2DArt/UIImages/Common/OrnateLeft", "Art/2DArt/UIImages/Common/OrnateRight",
-		"Art/2DArt/UIImages/Common/OrnateBottomLeft", "Art/2DArt/UIImages/Common/OrnateBottom", "Art/2DArt/UIImages/Common/OrnateBottomRight";
+		"Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftTopLeft", "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftTop", "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftTopRight",
+		"Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftLeft", "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftRight",
+		"Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftBottomLeft", "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftBottom", "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftBottomRight";
 	border_position = outside;
-	background = "Art/2DArt/UIImages/Common/Background1", tile;
+	background = "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageCraftingBorderCentre", tile;
 
 	begin StackLayout
 		id = body;
 		auto_size = true, true;
-		margin = $pad, 20, $pad, 20;
+		margin = $pad, 18, $pad, 18;
 		float = centre;
 
-		begin Label
-			id = title_label;
-			font = Fonts.LargeSC;
-			foreground_colour = rgb( 212, 180, 120 );
-			float = centre;
-			text = "Orb of Siphoning — Select Modifier";
-			margin = 0, 0, 0, 4;
-		end
+		begin Frame
+			id = title_bar;
+			size = $inner, 46;
+			margin = 0, 0, 0, 6;
 
-		begin Label
-			id = subtitle_label;
-			width = $inner;
-			auto_size = true;
-			font = Fonts.Normal;
-			foreground_colour = rgb( 225, 225, 205 );
-			float = centre;
-			text = "Choose an explicit modifier on the target item.";
-			margin = 0, 0, 0, 8;
+			begin Label
+				id = title_label;
+				location = 48, 0;
+				size = $inner - 96, 46;
+				auto_size = false;
+				text_align = MiddleCentre;
+				font = Fonts.LargeSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				outline_colour = rgb( 0, 0, 0 );
+				text = "Orb of Siphoning";
+			end
+
+			begin BasicButton
+				id = close_button;
+				location = $inner - 42, 2;
+				size = 41, 41;
+				mouse_enabled = true;
+				background = "Art/2DArt/UIImages/Common/ButtonCloseNormal", stretch;
+			end
 		end
 
 		begin Picture
 			id = header_divider;
 			float = centre;
 			source = "Art/2DArt/UIImages/InGame/Divider";
-			size = $w - 220, 8;
+			size = $inner - 40, 8;
 		end
 
 		begin Frame
@@ -69,188 +82,745 @@ begin Frame
 		end
 
 		begin Frame
-			id = stored_mod_box;
-			size = $inner, 66;
+			id = steal_orb_box;
+			size = $inner, 84;
 			float = centre;
-			margin = 0, 0, 0, 10;
-			pixel_border_colour = rgb( 110, 190, 235 );
-			visible = false;
+			margin = 0, 0, 0, 12;
+			background_colour = argb( 215, 10, 12, 16 );
+			pixel_border_colour = rgb( 137, 100, 64 );
+			visible = true;
+
+			begin Frame
+				id = steal_orb_icon_frame;
+				location = 14, 7;
+				size = 70, 70;
+				background = "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/VillageResourceSlot", stretch;
+				mouse_enabled = false;
+
+				begin Picture
+					id = steal_orb_icon;
+					location = 4, 4;
+					size = 62, 62;
+					source = "Art/2DItems/Currency/Mods/Siphon/SiphonOrbEmpty.dds";
+					mouse_enabled = false;
+				end
+			end
 
 			begin Label
-				id = stored_mod_title;
-				location = 14, 6;
-				size = $inner - 28, 22;
+				id = steal_mode_header;
+				location = 98, 10;
+				size = $inner - 114, 28;
 				auto_size = false;
 				text_align = MiddleLeft;
 				font = Fonts.NormalSC;
-				foreground_colour = rgb( 212, 180, 120 );
-				text = "Stored Siphoned Modifier";
+				foreground_colour = rgb( 227, 194, 146 );
+				outline_colour = rgb( 0, 0, 0 );
+				text = "CLICK A MODIFIER ON THE ITEM CARD TO SIPHON";
+			end
+
+			begin Label
+				id = subtitle_label;
+				location = 98, 40;
+				size = $inner - 114, 34;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormal;
+				foreground_colour = rgb( 205, 205, 195 );
+				text = "Extracts the chosen explicit modifier into a Charged Orb of Siphoning.";
+			end
+		end
+
+		begin Frame
+			id = stored_mod_box;
+			size = $inner, 96;
+			float = centre;
+			margin = 0, 0, 0, 12;
+			background_colour = argb( 228, 10, 18, 28 );
+			pixel_border_colour = rgb( 95, 205, 245 );
+			visible = false;
+
+			begin Frame
+				id = charged_orb_icon_frame;
+				location = 14, 10;
+				size = 76, 76;
+				background = "Art/2DArt/UIImages/InGame/Village/RecombinateCrafting/ThaumaturgicDustDisplay", stretch;
+				mouse_enabled = false;
+
+				begin Picture
+					id = charged_orb_icon;
+					location = 6, 6;
+					size = 64, 64;
+					source = "Art/2DItems/Currency/Mods/Siphon/SiphonOrbCharged.dds";
+					mouse_enabled = false;
+				end
+			end
+
+			begin Label
+				id = stored_mod_title;
+				location = 104, 8;
+				size = $inner - 120, 26;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormalSC;
+				foreground_colour = rgb( 130, 225, 255 );
+				outline_colour = rgb( 0, 0, 0 );
+				text = "IMBUE INTO TARGET ITEM — STORED MODIFIER";
 			end
 
 			begin Label
 				id = stored_mod_label;
-				location = 14, 30;
-				size = $inner - 28, 30;
+				location = 104, 35;
+				size = $inner - 120, 32;
 				auto_size = false;
 				text_align = MiddleLeft;
 				font = Fonts.Normal;
-				foreground_colour = rgb( 150, 220, 255 );
+				foreground_colour = rgb( 255, 232, 150 );
+				outline_colour = rgb( 0, 0, 0 );
 				text = "(None)";
+			end
+
+			begin Label
+				id = stored_mod_hint;
+				location = 104, 67;
+				size = $inner - 120, 24;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.Small;
+				foreground_colour = rgb( 178, 192, 205 );
+				text = "Click a compatible modifier on the target item card below to replace it.";
 			end
 		end
 
-		begin StackLayout
-			id = affix_list;
-			auto_size = true, true;
+		begin Frame
+			id = item_card_frame;
+			size = $card_w, 420;
+			auto_size = false, true;
 			float = centre;
+			margin = 0, 0, 0, 12;
+			background_colour = argb( 244, 6, 6, 8 );
+			pixel_border_colour = rgb( 137, 100, 64 );
 
-			begin Frame
-				id = affix_row_0;
-				size = $inner, 54;
-				margin = 0, 0, 0, 8;
-				pixel_border_colour = Colours.BorderColour;
+			begin StackLayout
+				id = item_card_body;
+				width = $card_w;
+				auto_size = false, true;
 
-				begin Button
-					id = affix_btn_0;
-					location = 10, 5;
-					size = 170, 44;
-					text = "Select";
+				begin Frame
+					id = item_header_rare;
+					size = $card_w, 88;
+					visible = true;
+
+					begin Picture
+						id = rare_hdr_left;
+						location = 0, 0;
+						size = 71, 88;
+						source = "Art/2DArt/UIImages/InGame/ItemsHeaderRareLeft";
+						mouse_enabled = false;
+					end
+
+					begin Picture
+						id = rare_hdr_mid;
+						location = 71, 0;
+						size = $card_w - 142, 88;
+						source = "Art/2DArt/UIImages/InGame/ItemsHeaderRareMiddle";
+						mouse_enabled = false;
+					end
+
+					begin Picture
+						id = rare_hdr_right;
+						location = $card_w - 71, 0;
+						size = 71, 88;
+						source = "Art/2DArt/UIImages/InGame/ItemsHeaderRareRight";
+						mouse_enabled = false;
+					end
+
+					begin Label
+						id = item_rare_name_label;
+						location = 72, 6;
+						size = $card_w - 144, 38;
+						auto_size = false;
+						text_align = MiddleCentre;
+						font = Fonts.LargeNormalSC;
+						foreground_colour = rgb( 255, 255, 119 );
+						outline_colour = rgb( 0, 0, 0 );
+						text = "RARE ITEM";
+					end
+
+					begin Label
+						id = item_rare_base_label;
+						location = 72, 44;
+						size = $card_w - 144, 36;
+						auto_size = false;
+						text_align = MiddleCentre;
+						font = Fonts.NormalSC;
+						foreground_colour = rgb( 255, 255, 119 );
+						outline_colour = rgb( 0, 0, 0 );
+						text = "BASE TYPE";
+					end
 				end
 
-				begin Label
-					id = affix_label_0;
-					location = 196, 0;
-					size = $inner - 210, 54;
-					auto_size = false;
-					text_align = MiddleLeft;
-					font = Fonts.Normal;
-					foreground_colour = rgb( 136, 136, 255 );
-					text = "[Prefix] Modifier 1";
-				end
-			end
+				begin Frame
+					id = item_header_magic;
+					size = $card_w, 55;
+					visible = false;
 
-			begin Frame
-				id = affix_row_1;
-				size = $inner, 54;
-				margin = 0, 0, 0, 8;
-				pixel_border_colour = Colours.BorderColour;
+					begin Picture
+						id = magic_hdr_left;
+						location = 0, 0;
+						size = 47, 55;
+						source = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicLeft";
+						mouse_enabled = false;
+					end
 
-				begin Button
-					id = affix_btn_1;
-					location = 10, 5;
-					size = 170, 44;
-					text = "Select";
-				end
+					begin Picture
+						id = magic_hdr_mid;
+						location = 47, 0;
+						size = $card_w - 94, 55;
+						source = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicMiddle";
+						mouse_enabled = false;
+					end
 
-				begin Label
-					id = affix_label_1;
-					location = 196, 0;
-					size = $inner - 210, 54;
-					auto_size = false;
-					text_align = MiddleLeft;
-					font = Fonts.Normal;
-					foreground_colour = rgb( 136, 136, 255 );
-					text = "[Prefix] Modifier 2";
-				end
-			end
+					begin Picture
+						id = magic_hdr_right;
+						location = $card_w - 47, 0;
+						size = 47, 55;
+						source = "Art/2DArt/UIImages/InGame/ItemsHeaderMagicRight";
+						mouse_enabled = false;
+					end
 
-			begin Frame
-				id = affix_row_2;
-				size = $inner, 54;
-				margin = 0, 0, 0, 8;
-				pixel_border_colour = Colours.BorderColour;
-
-				begin Button
-					id = affix_btn_2;
-					location = 10, 5;
-					size = 170, 44;
-					text = "Select";
+					begin Label
+						id = item_magic_name_label;
+						location = 50, 4;
+						size = $card_w - 100, 47;
+						auto_size = false;
+						text_align = MiddleCentre;
+						font = Fonts.LargeNormalSC;
+						foreground_colour = rgb( 136, 136, 255 );
+						outline_colour = rgb( 0, 0, 0 );
+						text = "MAGIC ITEM";
+					end
 				end
 
-				begin Label
-					id = affix_label_2;
-					location = 196, 0;
-					size = $inner - 210, 54;
-					auto_size = false;
-					text_align = MiddleLeft;
-					font = Fonts.Normal;
-					foreground_colour = rgb( 136, 136, 255 );
-					text = "[Prefix] Modifier 3";
-				end
-			end
+				begin Frame
+					id = item_sep_frame;
+					size = $card_w, 22;
 
-			begin Frame
-				id = affix_row_3;
-				size = $inner, 54;
-				margin = 0, 0, 0, 8;
-				pixel_border_colour = Colours.BorderColour;
+					begin Picture
+						id = item_sep_rare_pic;
+						location = 222, 5;
+						size = 460, 12;
+						source = "Art/2DArt/UIImages/InGame/ItemsSeparatorRare";
+						mouse_enabled = false;
+						visible = true;
+					end
 
-				begin Button
-					id = affix_btn_3;
-					location = 10, 5;
-					size = 170, 44;
-					text = "Select";
+					begin Picture
+						id = item_sep_magic_pic;
+						location = 222, 5;
+						size = 460, 12;
+						source = "Art/2DArt/UIImages/InGame/ItemsSeparatorMagic";
+						mouse_enabled = false;
+						visible = false;
+					end
 				end
 
-				begin Label
-					id = affix_label_3;
-					location = 196, 0;
-					size = $inner - 210, 54;
-					auto_size = false;
-					text_align = MiddleLeft;
-					font = Fonts.Normal;
-					foreground_colour = rgb( 136, 136, 255 );
-					text = "[Suffix] Modifier 4";
-				end
-			end
+				begin StackLayout
+					id = affix_list;
+					auto_size = true, true;
+					float = centre;
+					margin = 16, 4, 16, 10;
 
-			begin Frame
-				id = affix_row_4;
-				size = $inner, 54;
-				margin = 0, 0, 0, 8;
-				pixel_border_colour = Colours.BorderColour;
+					begin Frame
+						id = affix_row_0;
+						size = $card_inner, $row_h;
+						margin = 0, 0, 0, 6;
 
-				begin Button
-					id = affix_btn_4;
-					location = 10, 5;
-					size = 170, 44;
-					text = "Select";
-				end
+						begin BasicButton
+							id = affix_btn_0;
+							location = 0, 0;
+							size = $card_inner, $row_h;
+							mouse_enabled = true;
+							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
+							pixel_border_colour = argb( 155, 76, 64, 48 );
 
-				begin Label
-					id = affix_label_4;
-					location = 196, 0;
-					size = $inner - 210, 54;
-					auto_size = false;
-					text_align = MiddleLeft;
-					font = Fonts.Normal;
-					foreground_colour = rgb( 136, 136, 255 );
-					text = "[Suffix] Modifier 5";
-				end
-			end
+							begin Picture
+								id = affix_sel_bg_0;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								mouse_enabled = false;
+								visible = false;
+							end
 
-			begin Frame
-				id = affix_row_5;
-				size = $inner, 54;
-				margin = 0, 0, 0, 8;
-				pixel_border_colour = Colours.BorderColour;
+							begin Frame
+								id = affix_sel_border_0;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								pixel_border_colour = rgb( 110, 220, 255 );
+								mouse_enabled = false;
+								visible = false;
+							end
 
-				begin Button
-					id = affix_btn_5;
-					location = 10, 5;
-					size = 170, 44;
-					text = "Select";
-				end
+							begin Frame
+								id = affix_lock_bg_0;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								background_colour = argb( 185, 10, 10, 14 );
+								pixel_border_colour = argb( 130, 125, 54, 54 );
+								mouse_enabled = false;
+								visible = false;
+							end
 
-				begin Label
-					id = affix_label_5;
-					location = 196, 0;
-					size = $inner - 210, 54;
-					auto_size = false;
-					text_align = MiddleLeft;
-					font = Fonts.Normal;
-					foreground_colour = rgb( 136, 136, 255 );
-					text = "[Suffix] Modifier 6";
+							begin Label
+								id = affix_tag_0;
+								location = 14, 0;
+								size = 118, $row_h;
+								auto_size = false;
+								text_align = MiddleLeft;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 212, 180, 120 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "PREFIX";
+							end
+
+							begin Label
+								id = affix_label_0;
+								location = 134, 0;
+								size = $card_inner - 290, $row_h;
+								auto_size = false;
+								text_align = MiddleCentre;
+								font = Fonts.Normal;
+								foreground_colour = rgb( 136, 136, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "Modifier 1";
+							end
+
+							begin Label
+								id = affix_state_0;
+								location = $card_inner - 152, 0;
+								size = 140, $row_h;
+								auto_size = false;
+								text_align = MiddleRight;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 125, 225, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "";
+							end
+						end
+					end
+
+					begin Frame
+						id = affix_row_1;
+						size = $card_inner, $row_h;
+						margin = 0, 0, 0, 6;
+
+						begin BasicButton
+							id = affix_btn_1;
+							location = 0, 0;
+							size = $card_inner, $row_h;
+							mouse_enabled = true;
+							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
+							pixel_border_colour = argb( 155, 76, 64, 48 );
+
+							begin Picture
+								id = affix_sel_bg_1;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_sel_border_1;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								pixel_border_colour = rgb( 110, 220, 255 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_lock_bg_1;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								background_colour = argb( 185, 10, 10, 14 );
+								pixel_border_colour = argb( 130, 125, 54, 54 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Label
+								id = affix_tag_1;
+								location = 14, 0;
+								size = 118, $row_h;
+								auto_size = false;
+								text_align = MiddleLeft;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 212, 180, 120 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "PREFIX";
+							end
+
+							begin Label
+								id = affix_label_1;
+								location = 134, 0;
+								size = $card_inner - 290, $row_h;
+								auto_size = false;
+								text_align = MiddleCentre;
+								font = Fonts.Normal;
+								foreground_colour = rgb( 136, 136, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "Modifier 2";
+							end
+
+							begin Label
+								id = affix_state_1;
+								location = $card_inner - 152, 0;
+								size = 140, $row_h;
+								auto_size = false;
+								text_align = MiddleRight;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 125, 225, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "";
+							end
+						end
+					end
+
+					begin Frame
+						id = affix_row_2;
+						size = $card_inner, $row_h;
+						margin = 0, 0, 0, 6;
+
+						begin BasicButton
+							id = affix_btn_2;
+							location = 0, 0;
+							size = $card_inner, $row_h;
+							mouse_enabled = true;
+							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
+							pixel_border_colour = argb( 155, 76, 64, 48 );
+
+							begin Picture
+								id = affix_sel_bg_2;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_sel_border_2;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								pixel_border_colour = rgb( 110, 220, 255 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_lock_bg_2;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								background_colour = argb( 185, 10, 10, 14 );
+								pixel_border_colour = argb( 130, 125, 54, 54 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Label
+								id = affix_tag_2;
+								location = 14, 0;
+								size = 118, $row_h;
+								auto_size = false;
+								text_align = MiddleLeft;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 212, 180, 120 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "PREFIX";
+							end
+
+							begin Label
+								id = affix_label_2;
+								location = 134, 0;
+								size = $card_inner - 290, $row_h;
+								auto_size = false;
+								text_align = MiddleCentre;
+								font = Fonts.Normal;
+								foreground_colour = rgb( 136, 136, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "Modifier 3";
+							end
+
+							begin Label
+								id = affix_state_2;
+								location = $card_inner - 152, 0;
+								size = 140, $row_h;
+								auto_size = false;
+								text_align = MiddleRight;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 125, 225, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "";
+							end
+						end
+					end
+
+					begin Frame
+						id = affix_row_3;
+						size = $card_inner, $row_h;
+						margin = 0, 0, 0, 6;
+
+						begin BasicButton
+							id = affix_btn_3;
+							location = 0, 0;
+							size = $card_inner, $row_h;
+							mouse_enabled = true;
+							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
+							pixel_border_colour = argb( 155, 76, 64, 48 );
+
+							begin Picture
+								id = affix_sel_bg_3;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_sel_border_3;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								pixel_border_colour = rgb( 110, 220, 255 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_lock_bg_3;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								background_colour = argb( 185, 10, 10, 14 );
+								pixel_border_colour = argb( 130, 125, 54, 54 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Label
+								id = affix_tag_3;
+								location = 14, 0;
+								size = 118, $row_h;
+								auto_size = false;
+								text_align = MiddleLeft;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 212, 180, 120 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "SUFFIX";
+							end
+
+							begin Label
+								id = affix_label_3;
+								location = 134, 0;
+								size = $card_inner - 290, $row_h;
+								auto_size = false;
+								text_align = MiddleCentre;
+								font = Fonts.Normal;
+								foreground_colour = rgb( 136, 136, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "Modifier 4";
+							end
+
+							begin Label
+								id = affix_state_3;
+								location = $card_inner - 152, 0;
+								size = 140, $row_h;
+								auto_size = false;
+								text_align = MiddleRight;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 125, 225, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "";
+							end
+						end
+					end
+
+					begin Frame
+						id = affix_row_4;
+						size = $card_inner, $row_h;
+						margin = 0, 0, 0, 6;
+
+						begin BasicButton
+							id = affix_btn_4;
+							location = 0, 0;
+							size = $card_inner, $row_h;
+							mouse_enabled = true;
+							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
+							pixel_border_colour = argb( 155, 76, 64, 48 );
+
+							begin Picture
+								id = affix_sel_bg_4;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_sel_border_4;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								pixel_border_colour = rgb( 110, 220, 255 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_lock_bg_4;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								background_colour = argb( 185, 10, 10, 14 );
+								pixel_border_colour = argb( 130, 125, 54, 54 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Label
+								id = affix_tag_4;
+								location = 14, 0;
+								size = 118, $row_h;
+								auto_size = false;
+								text_align = MiddleLeft;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 212, 180, 120 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "SUFFIX";
+							end
+
+							begin Label
+								id = affix_label_4;
+								location = 134, 0;
+								size = $card_inner - 290, $row_h;
+								auto_size = false;
+								text_align = MiddleCentre;
+								font = Fonts.Normal;
+								foreground_colour = rgb( 136, 136, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "Modifier 5";
+							end
+
+							begin Label
+								id = affix_state_4;
+								location = $card_inner - 152, 0;
+								size = 140, $row_h;
+								auto_size = false;
+								text_align = MiddleRight;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 125, 225, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "";
+							end
+						end
+					end
+
+					begin Frame
+						id = affix_row_5;
+						size = $card_inner, $row_h;
+						margin = 0, 0, 0, 6;
+
+						begin BasicButton
+							id = affix_btn_5;
+							location = 0, 0;
+							size = $card_inner, $row_h;
+							mouse_enabled = true;
+							background = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeDefault", stretch;
+							pixel_border_colour = argb( 155, 76, 64, 48 );
+
+							begin Picture
+								id = affix_sel_bg_5;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								source = "Art/2DArt/UIImages/InGame/CraftingWindow/MasterCraftingLesserRecipeSelected";
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_sel_border_5;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								pixel_border_colour = rgb( 110, 220, 255 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Frame
+								id = affix_lock_bg_5;
+								location = 0, 0;
+								size = $card_inner, $row_h;
+								background_colour = argb( 185, 10, 10, 14 );
+								pixel_border_colour = argb( 130, 125, 54, 54 );
+								mouse_enabled = false;
+								visible = false;
+							end
+
+							begin Label
+								id = affix_tag_5;
+								location = 14, 0;
+								size = 118, $row_h;
+								auto_size = false;
+								text_align = MiddleLeft;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 212, 180, 120 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "SUFFIX";
+							end
+
+							begin Label
+								id = affix_label_5;
+								location = 134, 0;
+								size = $card_inner - 290, $row_h;
+								auto_size = false;
+								text_align = MiddleCentre;
+								font = Fonts.Normal;
+								foreground_colour = rgb( 136, 136, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "Modifier 6";
+							end
+
+							begin Label
+								id = affix_state_5;
+								location = $card_inner - 152, 0;
+								size = 140, $row_h;
+								auto_size = false;
+								text_align = MiddleRight;
+								font = Fonts.SmallSC;
+								foreground_colour = rgb( 125, 225, 255 );
+								outline_colour = rgb( 0, 0, 0 );
+								mouse_enabled = false;
+								text = "";
+							end
+						end
+					end
 				end
 			end
 		end
@@ -260,17 +830,19 @@ begin Frame
 			width = $inner;
 			auto_size = true;
 			float = centre;
-			font = Fonts.Normal;
-			foreground_colour = Colours.White;
-			text = "Select a modifier row, then click Confirm.";
-			margin = 0, 4, 0, 10;
+			text_align = MiddleCentre;
+			font = Fonts.SmallNormal;
+			foreground_colour = rgb( 235, 225, 200 );
+			outline_colour = rgb( 0, 0, 0 );
+			text = "Click a modifier on the item card, then confirm.";
+			margin = 0, 2, 0, 10;
 		end
 
 		begin Picture
 			id = footer_divider;
 			float = centre;
 			source = "Art/2DArt/UIImages/InGame/Divider";
-			size = $w - 220, 8;
+			size = $inner - 40, 8;
 		end
 
 		begin Frame
@@ -280,20 +852,20 @@ begin Frame
 
 		begin Frame
 			id = action_row;
-			size = $inner, Sizes[ "Button" ].Size.Height;
+			size = 560, Sizes[ "Button" ].Size.Height;
 			float = centre;
 			propagate_properties = false;
 
 			begin Button
 				id = confirm_button;
-				size = Sizes[ "Button" ].Size.Width, Sizes[ "Button" ].Size.Height;
+				size = 280, Sizes[ "Button" ].Size.Height;
 				float = inside left, 0;
-				text = "Confirm Siphon";
+				text = "Siphon Modifier";
 			end
 
 			begin Button
 				id = cancel_button;
-				size = Sizes[ "Button" ].Size.Width, Sizes[ "Button" ].Size.Height;
+				size = 220, Sizes[ "Button" ].Size.Height;
 				float = inside right, 0;
 				text = "Cancel";
 			end

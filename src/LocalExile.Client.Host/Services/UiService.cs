@@ -152,10 +152,10 @@ public class UiControlNode : IUiControl
             _properties["text"] = _text;
             if (NativeControlHandle != nint.Zero && NativeBridge is not null)
             {
-                bool isButton = string.Equals(ControlType, "Button", StringComparison.OrdinalIgnoreCase);
-                if (isButton || string.Equals(ControlType, "Label", StringComparison.OrdinalIgnoreCase))
+                bool isCaptionButton = SupportsNativeButtonCaption(ControlType);
+                if (isCaptionButton || string.Equals(ControlType, "Label", StringComparison.OrdinalIgnoreCase))
                 {
-                    NativeBridge.SetNativeUiText(NativeControlHandle, _text, isButton);
+                    NativeBridge.SetNativeUiText(NativeControlHandle, _text, isCaptionButton);
                 }
             }
 
@@ -211,6 +211,15 @@ public class UiControlNode : IUiControl
 
         _customBehavior?.OnPropertyChanged(name, value);
     }
+
+    internal static bool SupportsNativeButtonCaption(string controlType) =>
+        string.Equals(controlType, "Button", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(controlType, "GreenButton", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool IsClickableButtonControl(string controlType) =>
+        SupportsNativeButtonCaption(controlType) ||
+        string.Equals(controlType, "BasicButton", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(controlType, "ImageButton", StringComparison.OrdinalIgnoreCase);
 
     internal bool IsEffectivelyVisible()
     {
@@ -334,7 +343,8 @@ public class UiControlNode : IUiControl
 }
 
 /// <summary>Managed <see cref="IButton"/> implementation.</summary>
-public sealed class UiButtonNode(string id, UiControlNode? parent) : UiControlNode(id, "Button", parent), IButton
+public sealed class UiButtonNode(string id, UiControlNode? parent, string controlType = "Button")
+    : UiControlNode(id, controlType, parent), IButton
 {
     /// <inheritdoc/>
     public bool Enabled { get; set; } = true;
@@ -717,7 +727,8 @@ public sealed class UiService : IUiService
                 _bridge.SetNativeUiVisible(nativeChild, child.Visible);
                 if (child is UiButtonNode button)
                 {
-                    if (child.Properties.ContainsKey("text") || !string.IsNullOrEmpty(child.Text))
+                    if (UiControlNode.SupportsNativeButtonCaption(child.ControlType) &&
+                        (child.Properties.ContainsKey("text") || !string.IsNullOrEmpty(child.Text)))
                     {
                         _bridge.SetNativeUiText(nativeChild, child.Text, isButton: true);
                     }
@@ -864,9 +875,9 @@ public sealed class UiService : IUiService
 
     private UiControlNode InstantiateControl(string typeName, UiControlNode? parent)
     {
-        if (string.Equals(typeName, "Button", StringComparison.OrdinalIgnoreCase))
+        if (UiControlNode.IsClickableButtonControl(typeName))
         {
-            return new UiButtonNode(string.Empty, parent);
+            return new UiButtonNode(string.Empty, parent, typeName);
         }
 
         if (string.Equals(typeName, "Label", StringComparison.OrdinalIgnoreCase))

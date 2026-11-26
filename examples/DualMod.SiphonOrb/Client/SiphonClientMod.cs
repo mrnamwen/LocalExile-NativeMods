@@ -249,28 +249,51 @@ public sealed class SiphonClientMod : IClientMod
         _window.SetProperty("siphon_target_item", picker.TargetItemName);
 
         bool isImbue = picker.Mode == SiphonPickerMode.Imbue;
-        SetLabel("title_label", isImbue
-            ? "Charged Orb of Siphoning — Choose Modifier to Replace"
-            : "Orb of Siphoning — Choose Modifier to Steal");
-        SetLabel("subtitle_label", $"{picker.TargetRarity} {picker.TargetItemName} ({picker.TargetBaseType}) — {picker.PromptText}");
+        bool isMagic = string.Equals(picker.TargetRarity, "Magic", StringComparison.OrdinalIgnoreCase);
 
-        IUiControl? storedBox = _window.Find<IUiControl>("stored_mod_box");
-        if (storedBox is not null)
-            storedBox.Visible = isImbue && picker.StoredAffix is not null;
+        SetLabel("title_label", isImbue ? "Charged Orb of Siphoning" : "Orb of Siphoning");
+        SetLabel("steal_mode_header", "CLICK A MODIFIER ON THE ITEM CARD TO SIPHON");
+        SetLabel("subtitle_label", string.IsNullOrWhiteSpace(picker.PromptText)
+            ? "Extracts the chosen explicit modifier into a Charged Orb of Siphoning."
+            : picker.PromptText);
+
+        SetVisible("steal_orb_box", !isImbue);
+        SetVisible("stored_mod_box", isImbue && picker.StoredAffix is not null);
 
         if (isImbue && picker.StoredAffix is { } stored)
         {
-            SetLabel("stored_mod_title", $"Stored Modifier ({stored.SlotTag})");
-            SetLabel("stored_mod_label", FormatAffixDisplayLine(stored.SlotTag, stored.DisplayName, stored.StatText, selectable: true, disabledReason: null));
+            string storedSlot = stored.SlotTag.ToUpperInvariant();
+            string tierPart = stored.Tier > 0 ? $"  T{stored.Tier}" : string.Empty;
+            SetLabel("stored_mod_title", $"IMBUE INTO TARGET ITEM — STORED {storedSlot}{tierPart}");
+            SetLabel("stored_mod_label", FormatStoredAffixLine(stored));
+            SetLabel("stored_mod_hint", "Click a compatible modifier on the target item card below to replace it.");
         }
         else
         {
             SetLabel("stored_mod_label", "(None)");
         }
 
+        // Authentic PoE Item Card header & separator (Rare 2-line gold vs Magic 1-line blue).
+        SetVisible("item_header_rare", !isMagic);
+        SetVisible("item_header_magic", isMagic);
+        SetVisible("item_sep_rare_pic", !isMagic);
+        SetVisible("item_sep_magic_pic", isMagic);
+
+        string displayName = string.IsNullOrWhiteSpace(picker.TargetItemName) ? picker.TargetBaseType : picker.TargetItemName;
+        string displayBase = string.IsNullOrWhiteSpace(picker.TargetBaseType) ? displayName : picker.TargetBaseType;
+        if (isMagic)
+        {
+            SetLabel("item_magic_name_label", displayName);
+        }
+        else
+        {
+            SetLabel("item_rare_name_label", displayName);
+            SetLabel("item_rare_base_label", displayBase);
+        }
+
         IButton? confirmBtn = _window.Find<IButton>("confirm_button");
         if (confirmBtn is not null)
-            confirmBtn.Text = isImbue ? "Confirm Imbue" : "Confirm Siphon";
+            confirmBtn.Text = isImbue ? "Replace Modifier" : "Siphon Modifier";
 
         RefreshRowStates();
     }
@@ -312,6 +335,9 @@ public sealed class SiphonClientMod : IClientMod
 
         if (_window.Find<IButton>("cancel_button") is { } cancelBtn)
             cancelBtn.Clicked += CancelPicker;
+
+        if (_window.Find<IButton>("close_button") is { } closeBtn)
+            closeBtn.Clicked += CancelPicker;
     }
 
     private void RefreshRowStates()
@@ -319,6 +345,7 @@ public sealed class SiphonClientMod : IClientMod
         if (_window is null || _activePicker is null)
             return;
 
+        bool isImbue = _activePicker.Mode == SiphonPickerMode.Imbue;
         IReadOnlyList<SiphonAffixOption> affixes = _activePicker.Affixes;
         for (int i = 0; i < SiphonProtocol.MaxPickerAffixRows; i++)
         {
@@ -336,18 +363,30 @@ public sealed class SiphonClientMod : IClientMod
                 if (btn is not null)
                 {
                     btn.Visible = true;
+                    // Managed state caption for tests/automation; BasicButton has no native text overlay.
                     btn.Text = !opt.Selectable
                         ? "Locked"
                         : isSelected
                             ? "[SELECTED]"
                             : "Select";
+                    btn.SetProperty("siphon_state", !opt.Selectable ? "locked" : isSelected ? "selected" : "default");
                 }
+
+                SetVisible($"affix_sel_bg_{i}", isSelected);
+                SetVisible($"affix_sel_border_{i}", isSelected);
+                SetVisible($"affix_lock_bg_{i}", !opt.Selectable);
+
+                SetVisible($"affix_tag_{i}", true);
+                SetLabel($"affix_tag_{i}", FormatSlotBadge(opt));
 
                 if (label is not null)
                 {
                     label.Visible = true;
-                    label.Text = FormatAffixDisplayLine(opt.SlotTag, opt.DisplayName, opt.StatText, opt.Selectable, opt.DisabledReason);
+                    label.Text = FormatCardAffixLine(opt);
                 }
+
+                SetVisible($"affix_state_{i}", true);
+                SetLabel($"affix_state_{i}", FormatStateBadge(opt, isSelected, isImbue));
             }
             else
             {
@@ -355,8 +394,13 @@ public sealed class SiphonClientMod : IClientMod
                     rowFrame.Visible = false;
                 if (btn is not null)
                     btn.Visible = false;
+                SetVisible($"affix_sel_bg_{i}", false);
+                SetVisible($"affix_sel_border_{i}", false);
+                SetVisible($"affix_lock_bg_{i}", false);
+                SetVisible($"affix_tag_{i}", false);
                 if (label is not null)
                     label.Visible = false;
+                SetVisible($"affix_state_{i}", false);
             }
         }
 
@@ -367,19 +411,19 @@ public sealed class SiphonClientMod : IClientMod
         {
             if (_activePicker.Mode == SiphonPickerMode.Steal)
             {
-                UpdateStatusText($"Ready to steal [{selected.SlotTag}] {selected.StatText} into a Charged Orb of Siphoning.");
+                UpdateStatusText($"Siphon [{selected.SlotTag}] {selected.StatText}  ->  Charged Orb of Siphoning");
             }
             else
             {
                 string storedText = _activePicker.StoredAffix?.StatText ?? "stored modifier";
-                UpdateStatusText($"Ready to replace [{selected.SlotTag}] {selected.StatText} with {storedText}.");
+                UpdateStatusText($"Replace [{selected.SlotTag}] {selected.StatText}  ->  {storedText}");
             }
         }
         else
         {
             UpdateStatusText(_activePicker.Mode == SiphonPickerMode.Imbue
                 ? "No compatible modifiers on this item can be replaced by the stored modifier."
-                : "Select a modifier row, then click Confirm.");
+                : "Click a modifier on the item card, then click Siphon Modifier.");
         }
     }
 
@@ -397,23 +441,61 @@ public sealed class SiphonClientMod : IClientMod
             label.Text = text;
     }
 
+    private void SetVisible(string id, bool visible)
+    {
+        if (_window?.Find<IUiControl>(id) is { } control)
+            control.Visible = visible;
+    }
+
     private void UpdateStatusText(string text) => SetLabel("status_label", text);
 
-    private static string FormatAffixDisplayLine(
-        string slotTag,
-        string displayName,
-        string statText,
-        bool selectable,
-        string? disabledReason)
+    private static string FormatSlotBadge(SiphonAffixOption opt)
     {
-        string namePart = string.IsNullOrWhiteSpace(displayName) ? "" : $" ({displayName})";
-        string baseLine = $"[{slotTag}] {statText}{namePart}";
-        if (!selectable)
+        if (!opt.Selectable)
+            return "LOCKED";
+
+        string tag = opt.IsPrefix ? "PREFIX" : opt.IsSuffix ? "SUFFIX" : "MOD";
+        return opt.Tier > 0 ? $"{tag}  T{opt.Tier}" : tag;
+    }
+
+    private static string FormatStateBadge(SiphonAffixOption opt, bool isSelected, bool isImbue)
+    {
+        if (!opt.Selectable)
+            return "LOCKED";
+        if (isSelected)
+            return isImbue ? "REPLACE" : "SELECTED";
+        if (string.IsNullOrWhiteSpace(opt.DisplayName))
+            return string.Empty;
+        return opt.DisplayName.Length <= 14 ? opt.DisplayName : opt.DisplayName[..13] + ".";
+    }
+
+    private static string FormatCardAffixLine(SiphonAffixOption opt)
+    {
+        if (!opt.Selectable)
         {
-            string reason = string.IsNullOrWhiteSpace(disabledReason) ? "Incompatible" : disabledReason;
-            return $"[LOCKED] {baseLine} — {reason}";
+            string reason = ShortenDisabledReason(opt.DisabledReason);
+            return $"{opt.StatText}  ({reason})";
         }
 
-        return baseLine;
+        return opt.StatText;
+    }
+
+    private static string ShortenDisabledReason(string? disabledReason)
+    {
+        if (string.IsNullOrWhiteSpace(disabledReason))
+            return "Incompatible";
+        if (disabledReason.Contains("Fractured", StringComparison.OrdinalIgnoreCase))
+            return "Fractured";
+        if (disabledReason.Contains("already has", StringComparison.OrdinalIgnoreCase) ||
+            disabledReason.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
+            disabledReason.Contains("group", StringComparison.OrdinalIgnoreCase))
+            return "Duplicate group";
+        return disabledReason.Length <= 26 ? disabledReason : disabledReason[..25] + ".";
+    }
+
+    private static string FormatStoredAffixLine(SiphonStoredAffixDto stored)
+    {
+        string namePart = string.IsNullOrWhiteSpace(stored.DisplayName) ? string.Empty : $"  ({stored.DisplayName})";
+        return $"{stored.StatText}{namePart}";
     }
 }
