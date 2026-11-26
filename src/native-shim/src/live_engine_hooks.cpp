@@ -177,6 +177,27 @@ std::unordered_set<void*>        g_registered_pumps;
 std::atomic<void*>               g_captured_ui_root{nullptr};
 std::atomic<bool>                g_trace_files{false};
 std::atomic<uint64_t>            g_cached_app_global_addr{0};
+std::atomic<nm_build_id_t>       g_live_build_id{NM_BUILD_UNKNOWN};
+
+size_t resolve_offset_or(nm_build_id_t build_id, std::string_view name, size_t fallback) noexcept {
+    if (build_id != NM_BUILD_UNKNOWN && build_id != NM_BUILD_SYNTHETIC) {
+        if (const EmbeddedOffset* off = find_offset(build_id, name)) {
+            return off->offset;
+        }
+    }
+    return fallback;
+}
+
+uint64_t resolve_vtable_addr(nm_build_id_t build_id, uint64_t image_base, std::string_view sym_name) noexcept {
+    if (build_id == NM_BUILD_UNKNOWN || build_id == NM_BUILD_SYNTHETIC || image_base == 0) {
+        return 0ull;
+    }
+    const EmbeddedSymbol* sym = find_symbol(build_id, sym_name);
+    if (!sym || sym->rva == 0) {
+        return 0ull;
+    }
+    return image_base + sym->rva;
+}
 
 constexpr size_t                 kFsMissCacheSize = 16384u;
 std::atomic<uint64_t>            g_fs_miss_cache[kFsMissCacheSize];
@@ -226,6 +247,24 @@ bool is_ptr_readable(const void* p, size_t len) {
     const uintptr_t start = reinterpret_cast<uintptr_t>(p);
     const uintptr_t end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
     return (start + len) <= end;
+}
+
+nm_status_t verify_control_vtable_guarded(void* control, uint64_t expected_vt) {
+    if (!control) return NM_ERR_INVALID_ARG;
+    if (expected_vt == 0) return NM_OK;
+    struct VtCtx { void* ctrl; uint64_t expected_vt; } ctx{control, expected_vt};
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<VtCtx*>(raw);
+        if (!is_ptr_readable(c->ctrl, sizeof(void*))) return -1;
+        const uint64_t actual = reinterpret_cast<uint64_t>(*reinterpret_cast<void* const*>(c->ctrl));
+        return (actual == c->expected_vt) ? 0 : -10;
+    };
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK) return st;
+    if (rc == -10) return NM_ERR_INVALID_ARG;
+    return (rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
 }
 
 std::string wview_to_utf8(const wchar_t* ptr, size_t len) {
@@ -490,12 +529,14 @@ FsReadResult* NM_CALL detour_fs_read_v5(void* fs, FsReadResult* out, const uint6
 
 void NM_CALL detour_ui_control_load(void* control, const void* wstring_path) {
     if (control) {
+        const size_t parent_off = resolve_offset_or(
+            g_live_build_id.load(std::memory_order_acquire), "ui.control.parent", 0x1E0u);
         void* cur = control;
         for (int hops = 0; hops < 64; ++hops) {
-            if (!is_ptr_readable(static_cast<const uint8_t*>(cur) + 0x1E0, sizeof(void*))) {
+            if (!is_ptr_readable(static_cast<const uint8_t*>(cur) + parent_off, sizeof(void*))) {
                 break;
             }
-            void* parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(cur) + 0x1E0);
+            void* parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(cur) + parent_off);
             if (!parent) {
                 void* prev = g_captured_ui_root.exchange(cur, std::memory_order_acq_rel);
                 if (prev != cur) {
@@ -517,10 +558,13 @@ void NM_CALL detour_ui_control_load(void* control, const void* wstring_path) {
 void NM_CALL detour_chat_panel_listener(void* panel, void* message) {
     auto* ov = g_live_overlay.load(std::memory_order_acquire);
     if (ov && message) {
-        const std::string text = read_msvc_wstring_utf8(static_cast<const uint8_t*>(message) + 0x20);
+        const nm_build_id_t bid = g_live_build_id.load(std::memory_order_acquire);
+        const size_t sender_off = resolve_offset_or(bid, "network.chat_message.sender", 0x00u);
+        const size_t text_off = resolve_offset_or(bid, "network.chat_message.text", 0x20u);
+        const std::string text = read_msvc_wstring_utf8(static_cast<const uint8_t*>(message) + text_off);
         const bool is_nm = text.size() >= 5 && std::strncmp(text.c_str(), NM_CHAT_FALLBACK_PREFIX, 5) == 0;
         if (is_nm || ov->has_chat_handlers()) {
-            const std::string sender = read_msvc_wstring_utf8(message);
+            const std::string sender = read_msvc_wstring_utf8(static_cast<const uint8_t*>(message) + sender_off);
             if (ov->dispatch_chat_rx(sender.c_str(), text.c_str()) != 0) {
                 logger_logf("INFO", "[NET] Intercepted S->C chat message (len=%zu, nm_prefix=%d)", text.size(), is_nm ? 1 : 0);
                 return;
@@ -781,12 +825,17 @@ void* g_ui_event_vtable[4] = {
     reinterpret_cast<void*>(&ui_event_invoke),
 };
 
-bool is_control_in_parent_children(void* parent, void* target) {
+bool is_control_in_parent_children(nm_build_id_t build_id, void* parent, void* target) {
     if (!parent || !target) return false;
+    const size_t begin_off = resolve_offset_or(build_id, "ui.control.children_begin", 0xC0u);
+    const size_t end_off = resolve_offset_or(build_id, "ui.control.children_end", 0xC8u);
     auto* parent_bytes = static_cast<const uint8_t*>(parent);
-    if (!is_ptr_readable(parent_bytes + 0xC0, 2 * sizeof(void*))) return false;
-    auto* begin = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC0);
-    auto* end   = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC8);
+    if (!is_ptr_readable(parent_bytes + begin_off, sizeof(void*)) ||
+        !is_ptr_readable(parent_bytes + end_off, sizeof(void*))) {
+        return false;
+    }
+    auto* begin = *reinterpret_cast<void* const* const*>(parent_bytes + begin_off);
+    auto* end   = *reinterpret_cast<void* const* const*>(parent_bytes + end_off);
     if (!begin || !end || end < begin) return false;
     const size_t count = static_cast<size_t>(end - begin);
     if (count == 0 || count > 2048 || !is_ptr_readable(begin, count * sizeof(void*))) return false;
@@ -798,9 +847,10 @@ bool is_control_in_parent_children(void* parent, void* target) {
     return false;
 }
 
-bool control_id_equals(const void* control, const wchar_t* target, size_t target_len) {
+bool control_id_equals(nm_build_id_t build_id, const void* control, const wchar_t* target, size_t target_len) {
     if (!control || !target || target_len == 0) return false;
-    const auto* ws_addr = static_cast<const uint8_t*>(control) + 0x1B8;
+    const size_t id_off = resolve_offset_or(build_id, "ui.control.id", 0x1B8u);
+    const auto* ws_addr = static_cast<const uint8_t*>(control) + id_off;
     if (!is_ptr_readable(ws_addr, sizeof(MsvcWString))) return false;
     const auto* ws = reinterpret_cast<const MsvcWString*>(ws_addr);
     if (ws->size != target_len || ws->size > 4096) return false;
@@ -809,12 +859,17 @@ bool control_id_equals(const void* control, const wchar_t* target, size_t target
     return std::wmemcmp(chars, target, target_len) == 0;
 }
 
-void* find_child_recursive_by_segment(void* parent, const wchar_t* seg, size_t seg_len, int depth) {
+void* find_child_recursive_by_segment(nm_build_id_t build_id, void* parent, const wchar_t* seg, size_t seg_len, int depth) {
     if (!parent || !seg || seg_len == 0 || depth > 16) return nullptr;
+    const size_t begin_off = resolve_offset_or(build_id, "ui.control.children_begin", 0xC0u);
+    const size_t end_off = resolve_offset_or(build_id, "ui.control.children_end", 0xC8u);
     const auto* parent_bytes = static_cast<const uint8_t*>(parent);
-    if (!is_ptr_readable(parent_bytes + 0xC0, 2 * sizeof(void*))) return nullptr;
-    auto* begin = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC0);
-    auto* end   = *reinterpret_cast<void* const* const*>(parent_bytes + 0xC8);
+    if (!is_ptr_readable(parent_bytes + begin_off, sizeof(void*)) ||
+        !is_ptr_readable(parent_bytes + end_off, sizeof(void*))) {
+        return nullptr;
+    }
+    auto* begin = *reinterpret_cast<void* const* const*>(parent_bytes + begin_off);
+    auto* end   = *reinterpret_cast<void* const* const*>(parent_bytes + end_off);
     if (!begin || !end || end < begin) return nullptr;
     const size_t count = static_cast<size_t>(end - begin);
     if (count == 0 || count > 512 || !is_ptr_readable(begin, count * sizeof(void*))) return nullptr;
@@ -822,7 +877,7 @@ void* find_child_recursive_by_segment(void* parent, const wchar_t* seg, size_t s
     // Pass 1: direct children first (matches native Control::Find priority).
     for (size_t i = 0; i < count; ++i) {
         void* child = begin[i];
-        if (child && control_id_equals(child, seg, seg_len)) {
+        if (child && control_id_equals(build_id, child, seg, seg_len)) {
             return child;
         }
     }
@@ -830,7 +885,7 @@ void* find_child_recursive_by_segment(void* parent, const wchar_t* seg, size_t s
     for (size_t i = 0; i < count; ++i) {
         void* child = begin[i];
         if (child) {
-            if (void* nested = find_child_recursive_by_segment(child, seg, seg_len, depth + 1)) {
+            if (void* nested = find_child_recursive_by_segment(build_id, child, seg, seg_len, depth + 1)) {
                 return nested;
             }
         }
@@ -838,7 +893,7 @@ void* find_child_recursive_by_segment(void* parent, const wchar_t* seg, size_t s
     return nullptr;
 }
 
-void* find_child_fallback_dot_path(void* parent, const std::wstring& dot_path) {
+void* find_child_fallback_dot_path(nm_build_id_t build_id, void* parent, const std::wstring& dot_path) {
     if (!parent || dot_path.empty()) return nullptr;
     void* current = parent;
     size_t pos = 0;
@@ -846,7 +901,7 @@ void* find_child_fallback_dot_path(void* parent, const std::wstring& dot_path) {
         const size_t dot = dot_path.find(L'.', pos);
         const size_t seg_len = (dot == std::wstring::npos) ? (dot_path.size() - pos) : (dot - pos);
         if (seg_len > 0) {
-            current = find_child_recursive_by_segment(current, dot_path.c_str() + pos, seg_len, 0);
+            current = find_child_recursive_by_segment(build_id, current, dot_path.c_str() + pos, seg_len, 0);
         }
         if (dot == std::wstring::npos) break;
         pos = dot + 1;
@@ -887,13 +942,15 @@ bool resolve_live_connection_ptrs(nm_build_id_t build_id, uint64_t image_base, v
     if (app_global_addr == 0) return false;
     if (!is_ptr_readable(reinterpret_cast<const void*>(static_cast<uintptr_t>(app_global_addr)), sizeof(void*))) return false;
 
+    const size_t instance_off = resolve_offset_or(build_id, "network.app.instance_client", 0x348u);
+    const size_t sock_off = resolve_offset_or(build_id, "network.instance_client.socket", 0xC288u);
     void* app = *reinterpret_cast<void* const*>(static_cast<uintptr_t>(app_global_addr));
-    if (!app || !is_ptr_readable(static_cast<const uint8_t*>(app) + 0x348, sizeof(void*))) return false;
+    if (!app || !is_ptr_readable(static_cast<const uint8_t*>(app) + instance_off, sizeof(void*))) return false;
 
-    void* instance = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(app) + 0x348);
-    if (!instance || !is_ptr_readable(static_cast<const uint8_t*>(instance) + 0xC288, sizeof(void*))) return false;
+    void* instance = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(app) + instance_off);
+    if (!instance || !is_ptr_readable(static_cast<const uint8_t*>(instance) + sock_off, sizeof(void*))) return false;
 
-    void* sock = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(instance) + 0xC288);
+    void* sock = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(instance) + sock_off);
     if (!sock || !is_ptr_readable(static_cast<const uint8_t*>(sock) + 0x250, 8)) return false;
 
     if (out_instance) *out_instance = instance;
@@ -930,7 +987,19 @@ nm_status_t write_socket_bytes_locked(
         size_t         len;
         uint64_t       write_addr;
         uint64_t       flush_addr;
-    } ctx{sock, data, len, image_base + write_sym->rva, image_base + flush_sym->rva};
+        size_t         write_in_prog_off;
+        size_t         threaded_off;
+        size_t         srw_lock_off;
+    } ctx{
+        sock,
+        data,
+        len,
+        image_base + write_sym->rva,
+        image_base + flush_sym->rva,
+        resolve_offset_or(build_id, "network.socket.write_in_progress", 0x240u),
+        resolve_offset_or(build_id, "network.socket.threaded_flag", 0x242u),
+        resolve_offset_or(build_id, "network.socket.srw_lock", 0x248u),
+    };
 
     auto tx_fn = [](void* raw) -> int64_t {
         auto* c = static_cast<TxCtx*>(raw);
@@ -940,14 +1009,14 @@ nm_status_t write_socket_bytes_locked(
         auto sock_flush = reinterpret_cast<SocketFlushFn>(static_cast<uintptr_t>(c->flush_addr));
 
         auto* sbytes = static_cast<uint8_t*>(c->sock);
-        const bool threaded = (sbytes[0x242] != 0);
-        auto* srw = reinterpret_cast<PSRWLOCK>(sbytes + 0x248);
+        const bool threaded = (sbytes[c->threaded_off] != 0);
+        auto* srw = reinterpret_cast<PSRWLOCK>(sbytes + c->srw_lock_off);
 
-        sbytes[0x240] = 1;
+        sbytes[c->write_in_prog_off] = 1;
         if (threaded) AcquireSRWLockExclusive(srw);
         sock_write(c->sock, c->data, static_cast<uint64_t>(c->len));
         if (threaded) ReleaseSRWLockExclusive(srw);
-        sbytes[0x240] = 0;
+        sbytes[c->write_in_prog_off] = 0;
 
         // SocketStream::Flush is self-locking — NEVER call while holding socket+0x248 SRW lock!
         sock_flush(c->sock, 0, 0);
@@ -1073,6 +1142,7 @@ void LiveEngineHooks::install_live_hooks(
         return;
     }
 
+    g_live_build_id.store(build_id, std::memory_order_release);
     g_live_overlay.store(&overlay, std::memory_order_release);
     g_live_alloc.store(&allocator, std::memory_order_release);
 
@@ -1168,6 +1238,7 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
     image_base_ = 0;
 
 #if defined(_WIN32)
+    g_live_build_id.store(NM_BUILD_UNKNOWN, std::memory_order_release);
     g_live_overlay.store(nullptr, std::memory_order_release);
     g_live_alloc.store(nullptr, std::memory_order_release);
     g_hash_to_wv.store(nullptr, std::memory_order_release);
@@ -1208,8 +1279,10 @@ void LiveEngineHooks::reset(HookEngine* hooks) {
             if (rec) {
                 rec->cb = nullptr;
                 rec->user_data = nullptr;
+                delete rec;
             }
         }
+        g_ui_handlers.clear();
         g_ui_token_map.clear();
         g_ui_button_slots.clear();
         g_ui_checkbox_slots.clear();
@@ -1251,8 +1324,8 @@ nm_status_t LiveEngineHooks::send_live_ruleset_packet(uint32_t ruleset_id, const
 }
 
 nm_status_t LiveEngineHooks::send_live_raw_packet(uint16_t opcode, const uint8_t* payload, uint32_t length) {
-    if (length > 1048576u) return NM_ERR_PAYLOAD_TOO_LARGE;
-    if (length > 0 && payload == nullptr) return NM_ERR_INVALID_ARG;
+    if (length == 0 || payload == nullptr) return NM_ERR_INVALID_ARG;
+    if (length > 65536u) return NM_ERR_PAYLOAD_TOO_LARGE;
 #if defined(_WIN32)
     const std::vector<uint8_t> wire = encode_poe_raw_wire(opcode, payload, length);
     const nm_status_t st = write_socket_bytes_locked(build_id_, image_base_, wire.data(), wire.size());
@@ -1556,7 +1629,7 @@ nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, co
         } else {
             auto it = g_ui_loaded_windows.find(cache_key);
             if (it != g_ui_loaded_windows.end() && it->second != nullptr) {
-                if (is_control_in_parent_children(parent_control, it->second) && is_ptr_readable(it->second, 0x200)) {
+                if (is_control_in_parent_children(build_id_, parent_control, it->second) && is_ptr_readable(it->second, 0x200)) {
                     *out_control = it->second;
                     (void)ui_set_visible(it->second, 1);
                     logger_logf("INFO", "[UI] Reused existing native window '%s' (parent=%p, control=%p)",
@@ -1582,6 +1655,8 @@ nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, co
         uint64_t     load_addr;
         uint64_t     assign_addr;
         uint64_t     destroy_addr;
+        size_t       children_begin_off;
+        size_t       children_end_off;
         std::wstring wide_path;
         void*        created = nullptr;
     } ctx{
@@ -1589,13 +1664,18 @@ nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, co
         image_base_ + sym_load->rva,
         image_base_ + sym_assign->rva,
         (sym_destroy && sym_destroy->rva) ? (image_base_ + sym_destroy->rva) : 0ull,
+        resolve_offset_or(build_id_, "ui.control.children_begin", 0xC0u),
+        resolve_offset_or(build_id_, "ui.control.children_end", 0xC8u),
         utf8_to_wide_hooks(virtual_path_utf8),
         nullptr,
     };
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<CreateWinCtx*>(raw);
-        if (!is_ptr_readable(static_cast<const uint8_t*>(c->parent) + 0xC0, 2 * sizeof(void*))) return -1;
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->parent) + c->children_begin_off, sizeof(void*)) ||
+            !is_ptr_readable(static_cast<const uint8_t*>(c->parent) + c->children_end_off, sizeof(void*))) {
+            return -1;
+        }
         using LoadFn    = void(NM_CALL*)(void*, const void*);
         using AssignFn  = void*(NM_CALL*)(void*, const wchar_t*, uint64_t);
         using DestroyFn = void(NM_CALL*)(void*);
@@ -1607,8 +1687,8 @@ nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, co
                               : nullptr;
 
         auto* parent_bytes = static_cast<uint8_t*>(c->parent);
-        auto* old_begin = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC0);
-        auto* old_end   = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC8);
+        auto* old_begin = *reinterpret_cast<uint8_t**>(parent_bytes + c->children_begin_off);
+        auto* old_end   = *reinterpret_cast<uint8_t**>(parent_bytes + c->children_end_off);
         const size_t old_count = (old_end >= old_begin) ? static_cast<size_t>(old_end - old_begin) / sizeof(void*) : 0u;
 
         MsvcWString ws{};
@@ -1620,8 +1700,8 @@ nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, co
             destroy_fn(&ws);
         }
 
-        auto* new_begin = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC0);
-        auto* new_end   = *reinterpret_cast<uint8_t**>(parent_bytes + 0xC8);
+        auto* new_begin = *reinterpret_cast<uint8_t**>(parent_bytes + c->children_begin_off);
+        auto* new_end   = *reinterpret_cast<uint8_t**>(parent_bytes + c->children_end_off);
         const size_t new_count = (new_end >= new_begin) ? static_cast<size_t>(new_end - new_begin) / sizeof(void*) : 0u;
         if (new_count > old_count && new_end != nullptr) {
             c->created = *(reinterpret_cast<void**>(new_end) - 1);
@@ -1634,8 +1714,9 @@ nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, co
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
     if (st != NM_OK || rc != 0 || !ctx.created) {
-        logger_logf("ERROR", "[UI] ui_create_window('%s') failed (st=%d, rc=%lld, ex=0x%08X '%s')",
-                    virtual_path_utf8, static_cast<int>(st), static_cast<long long>(rc), ex.exception_code, ex.message);
+        logger_logf("ERROR", "[UI] ui_create_window('%s') failed (st=%d, rc=%lld, ex=0x%08X addr=0x%llX '%s')",
+                    virtual_path_utf8, static_cast<int>(st), static_cast<long long>(rc), ex.exception_code,
+                    static_cast<unsigned long long>(ex.exception_address), ex.message);
         return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
     }
 
@@ -1680,21 +1761,30 @@ nm_status_t LiveEngineHooks::ui_find_child(void* parent_control, const char* dot
     if (!sym_find || sym_find->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
 
     struct FindCtx {
-        void*        parent;
-        uint64_t     find_addr;
-        std::wstring wide_path;
-        void*        found = nullptr;
-    } ctx{parent_control, image_base_ + sym_find->rva, utf8_to_wide_hooks(dot_path_utf8), nullptr};
+        nm_build_id_t build_id;
+        void*         parent;
+        uint64_t      find_addr;
+        size_t        children_off;
+        std::wstring  wide_path;
+        void*         found = nullptr;
+    } ctx{
+        build_id_,
+        parent_control,
+        image_base_ + sym_find->rva,
+        resolve_offset_or(build_id_, "ui.control.children_container", 0xB8u),
+        utf8_to_wide_hooks(dot_path_utf8),
+        nullptr,
+    };
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<FindCtx*>(raw);
-        if (!is_ptr_readable(static_cast<const uint8_t*>(c->parent) + 0xB8, 0x18)) return -1;
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->parent) + c->children_off, 0x18)) return -1;
         using FindFn = void*(NM_CALL*)(void*, const WStringView*);
         auto find_fn = reinterpret_cast<FindFn>(static_cast<uintptr_t>(c->find_addr));
         WStringView wv{c->wide_path.c_str(), static_cast<uint64_t>(c->wide_path.size())};
-        c->found = find_fn(static_cast<uint8_t*>(c->parent) + 0xB8, &wv);
+        c->found = find_fn(static_cast<uint8_t*>(c->parent) + c->children_off, &wv);
         if (!c->found) {
-            c->found = find_child_fallback_dot_path(c->parent, c->wide_path);
+            c->found = find_child_fallback_dot_path(c->build_id, c->parent, c->wide_path);
         }
         return 0;
     };
@@ -1754,13 +1844,19 @@ nm_status_t LiveEngineHooks::ui_set_text(void* control, const char* text_utf8, i
     struct TextCtx {
         void*        control;
         size_t       iface_offset;
+        size_t       btn_iface_off;
+        size_t       lbl_iface_off;
         uint64_t     btn_vt_addr;
         uint64_t     lbl_vt_addr;
         uint64_t     assign_addr;
         std::wstring wide_text;
     } ctx{
         control,
-        is_button ? 0x3F8u : 0x298u,
+        is_button
+            ? resolve_offset_or(build_id_, "ui.button.caption_interface", 0x3F8u)
+            : resolve_offset_or(build_id_, "ui.label.text_interface", 0x298u),
+        resolve_offset_or(build_id_, "ui.button.caption_interface", 0x3F8u),
+        resolve_offset_or(build_id_, "ui.label.text_interface", 0x298u),
         btn_vt_addr,
         lbl_vt_addr,
         image_base_ + sym_assign->rva,
@@ -1775,18 +1871,18 @@ nm_status_t LiveEngineHooks::ui_set_text(void* control, const char* text_utf8, i
         // against the real 3.29.3d primary vtable so callers can never hit a wrong subobject offset.
         const uint64_t primary_vt = reinterpret_cast<uint64_t>(*reinterpret_cast<void* const*>(c->control));
         size_t offset = c->iface_offset;
-        bool target_is_button = (offset == 0x3F8u);
+        bool target_is_button = (offset == c->btn_iface_off);
         if (c->btn_vt_addr != 0 && primary_vt == c->btn_vt_addr) {
-            offset = 0x3F8u;
+            offset = c->btn_iface_off;
             target_is_button = true;
         } else if (c->lbl_vt_addr != 0 && primary_vt == c->lbl_vt_addr) {
-            offset = 0x298u;
+            offset = c->lbl_iface_off;
             target_is_button = false;
         }
 
         if (target_is_button) {
-            if (!is_ptr_readable(static_cast<const uint8_t*>(c->control) + 0x408, sizeof(void*))) return -2;
-            void* inner_label = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->control) + 0x408);
+            if (!is_ptr_readable(static_cast<const uint8_t*>(c->control) + c->btn_iface_off + 0x10, sizeof(void*))) return -2;
+            void* inner_label = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->control) + c->btn_iface_off + 0x10);
             if (!inner_label) return -3;
         }
 
@@ -1870,11 +1966,18 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
         UiClickHandlerRecord* rec;
         uint64_t              get_addr;
         uint64_t              grow_addr;
-    } ctx{button_control, rec, image_base_ + sym_get->rva, image_base_ + sym_grow->rva};
+        size_t                clicked_event_off;
+    } ctx{
+        button_control,
+        rec,
+        image_base_ + sym_get->rva,
+        image_base_ + sym_grow->rva,
+        resolve_offset_or(build_id_, "ui.button.clicked_event", 0x2A0u),
+    };
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<SubCtx*>(raw);
-        if (!is_ptr_readable(static_cast<const uint8_t*>(c->button) + 0x2A0, sizeof(void*))) return -2;
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->button) + c->clicked_event_off, sizeof(void*))) return -2;
         using EventGetFn  = void*(NM_CALL*)(void*, void*, uint8_t);
         using EventGrowFn = void(NM_CALL*)(void*);
         using StepFn      = uint64_t(NM_CALL*)(void*);
@@ -1883,7 +1986,7 @@ nm_status_t LiveEngineHooks::ui_subscribe_click(
         auto event_grow = reinterpret_cast<EventGrowFn>(static_cast<uintptr_t>(c->grow_addr));
 
         void* shared[2] = {nullptr, nullptr};
-        event_get(static_cast<uint8_t*>(c->button) + 0x2A0, shared, 1);
+        event_get(static_cast<uint8_t*>(c->button) + c->clicked_event_off, shared, 1);
         auto* list = static_cast<uint8_t*>(shared[0]);
         if (!list) return -1;
 
@@ -1944,25 +2047,30 @@ nm_status_t LiveEngineHooks::ui_get_rect(void* control, float* out_x, float* out
     const EmbeddedSymbol* sym_pos = find_symbol(build_id_, "ui.control_get_abs_pos");
     if (!sym_pos || sym_pos->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
 
+    const size_t w_off = resolve_offset_or(build_id_, "ui.control.width", 0x268u);
+    const size_t h_off = resolve_offset_or(build_id_, "ui.control.height", 0x26Cu);
     struct RectCtx {
         void*    control;
         uint64_t pos_addr;
+        size_t   w_off;
+        size_t   h_off;
         float    x = 0.0f;
         float    y = 0.0f;
         float    w = 0.0f;
         float    h = 0.0f;
-    } ctx{control, image_base_ + sym_pos->rva};
+    } ctx{control, image_base_ + sym_pos->rva, w_off, h_off};
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<RectCtx*>(raw);
-        if (!is_ptr_readable(c->control, 0x270)) return -1;
+        const size_t min_bytes = (c->h_off > c->w_off ? c->h_off : c->w_off) + sizeof(float);
+        if (!is_ptr_readable(c->control, min_bytes)) return -1;
         using GetAbsPosFn = float*(NM_CALL*)(void*, float*);
         float xy[2] = {0.0f, 0.0f};
         reinterpret_cast<GetAbsPosFn>(static_cast<uintptr_t>(c->pos_addr))(c->control, xy);
         c->x = xy[0];
         c->y = xy[1];
-        std::memcpy(&c->w, static_cast<const uint8_t*>(c->control) + 0x268, sizeof(float));
-        std::memcpy(&c->h, static_cast<const uint8_t*>(c->control) + 0x26C, sizeof(float));
+        std::memcpy(&c->w, static_cast<const uint8_t*>(c->control) + c->w_off, sizeof(float));
+        std::memcpy(&c->h, static_cast<const uint8_t*>(c->control) + c->h_off, sizeof(float));
         return 0;
     };
 
@@ -2057,6 +2165,41 @@ nm_status_t LiveEngineHooks::ui_set_enabled(void* control, int32_t enabled) {
 #endif
 }
 
+nm_status_t LiveEngineHooks::ui_get_enabled(void* control, int32_t* out_enabled) {
+    if (!control || !out_enabled) return NM_ERR_INVALID_ARG;
+    *out_enabled = 0;
+#if defined(_WIN32)
+    if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const EmbeddedOffset* flags_off = find_offset(build_id_, "ui.control.flags");
+    if (!flags_off) return NM_ERR_SYMBOL_NOT_FOUND;
+
+    struct GetEnabledCtx {
+        void*   control;
+        size_t  flags_offset;
+        int32_t enabled = 0;
+    } ctx{control, flags_off->offset, 0};
+
+    auto fn = [](void* raw) -> int64_t {
+        auto* c = static_cast<GetEnabledCtx*>(raw);
+        const uint8_t* ptr = static_cast<const uint8_t*>(c->control) + c->flags_offset;
+        if (!is_ptr_readable(ptr, sizeof(uint32_t))) return -1;
+        uint32_t flags = 0;
+        std::memcpy(&flags, ptr, sizeof(uint32_t));
+        c->enabled = ((flags & 0x2000u) != 0u) ? 1 : 0;
+        return 0;
+    };
+
+    int64_t rc = 0;
+    nm_exception_info_t ex{};
+    const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
+    if (st != NM_OK || rc != 0) return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
+    *out_enabled = ctx.enabled;
+    return NM_OK;
+#else
+    return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+#endif
+}
+
 nm_status_t LiveEngineHooks::ui_remove_child(void* parent_control, void* child_control) {
     if (!parent_control || !child_control) return NM_ERR_INVALID_ARG;
 #if defined(_WIN32)
@@ -2066,11 +2209,13 @@ nm_status_t LiveEngineHooks::ui_remove_child(void* parent_control, void* child_c
 
     invalidate_control_cache_and_handlers(child_control);
 
-    struct DetachCtx { void* parent; void* child; uint64_t addr; } ctx{parent_control, child_control, image_base_ + sym->rva};
+    const size_t parent_off = resolve_offset_or(build_id_, "ui.control.parent", 0x1E0u);
+    struct DetachCtx { void* parent; void* child; uint64_t addr; size_t parent_off; } ctx{
+        parent_control, child_control, image_base_ + sym->rva, parent_off};
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<DetachCtx*>(raw);
-        if (!is_ptr_readable(static_cast<const uint8_t*>(c->child) + 0x1E0, sizeof(void*))) return -1;
-        void* cur_parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->child) + 0x1E0);
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->child) + c->parent_off, sizeof(void*))) return -1;
+        void* cur_parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->child) + c->parent_off);
         if (cur_parent != c->parent) return -2;
         using DetachFn = void(NM_CALL*)(void*);
         reinterpret_cast<DetachFn>(static_cast<uintptr_t>(c->addr))(c->child);
@@ -2096,19 +2241,48 @@ nm_status_t LiveEngineHooks::ui_destroy_control(void* control) {
     }
 
     const EmbeddedSymbol* sym_detach = find_symbol(build_id_, "ui.control_detach");
+    const EmbeddedSymbol* sym_erase  = find_symbol(build_id_, "ui.children_remove_at");
     const uint64_t detach_addr = (sym_detach && sym_detach->rva != 0) ? (image_base_ + sym_detach->rva) : 0ull;
+
+    uint64_t release_or_destroy_addr = 0ull;
+    if (sym_erase && sym_erase->rva != 0) {
+        static constexpr uint8_t kReleaseSig[16] = {
+            0x40, 0x56, 0x48, 0x83, 0xEC, 0x20, 0xF6, 0x81,
+            0xE8, 0x01, 0x00, 0x00, 0x01, 0x48, 0x8B, 0xF1,
+        };
+        const uint8_t* scan_base = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(image_base_ + sym_erase->rva));
+        if (is_ptr_readable(scan_base, 0x300)) {
+            for (size_t off = 0x80; off + sizeof(kReleaseSig) <= 0x300; ++off) {
+                if (std::memcmp(scan_base + off, kReleaseSig, sizeof(kReleaseSig)) == 0) {
+                    release_or_destroy_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(scan_base + off));
+                    break;
+                }
+            }
+        }
+    }
 
     invalidate_control_cache_and_handlers(control);
 
-    struct DestroyCtx { void* control; uint64_t detach_addr; } ctx{control, detach_addr};
+    const size_t parent_off = resolve_offset_or(build_id_, "ui.control.parent", 0x1E0u);
+    struct DestroyCtx { void* control; uint64_t detach_addr; uint64_t release_addr; size_t parent_off; } ctx{
+        control, detach_addr, release_or_destroy_addr, parent_off};
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<DestroyCtx*>(raw);
-        if (!is_ptr_readable(c->control, 0x1E8)) return -1;
-        void* parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->control) + 0x1E0);
+        if (!is_ptr_readable(c->control, c->parent_off + sizeof(void*))) return -1;
+        void* parent = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(c->control) + c->parent_off);
         if (parent != nullptr && c->detach_addr != 0) {
             using DetachFn = void(NM_CALL*)(void*);
             reinterpret_cast<DetachFn>(static_cast<uintptr_t>(c->detach_addr))(c->control);
         }
+        if (c->release_addr != 0) {
+            using ReleaseOrDestroyFn = void(NM_CALL*)(void*);
+            reinterpret_cast<ReleaseOrDestroyFn>(static_cast<uintptr_t>(c->release_addr))(c->control);
+            return 0;
+        }
+        // Fallback only when control is heap-owned (pool_size at +0x08 == 0); slab-pooled controls
+        // MUST go through Control::ReleaseOrDestroy so their slab bucket receives them instead of free().
+        const uint64_t pool_size = *reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(c->control) + 0x08);
+        if (pool_size != 0) return -3;
         void** vtbl = *reinterpret_cast<void***>(c->control);
         if (!vtbl || !is_ptr_readable(vtbl, 9 * sizeof(void*)) || !vtbl[8]) return -2;
         using DeletingDtorFn = void*(NM_CALL*)(void*, uint32_t);
@@ -2130,21 +2304,32 @@ nm_status_t LiveEngineHooks::ui_textbox_get_text(void* textbox_control, char* ou
 #if defined(_WIN32)
     if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
 
+    const uint64_t expected_vt = resolve_vtable_addr(build_id_, image_base_, "ui.vtable_textbox");
+    const size_t content_off = resolve_offset_or(build_id_, "ui.textbox.content", 0x338u);
     struct GetTextCtx {
         void*       ctrl;
+        uint64_t    expected_vt;
+        size_t      content_off;
         std::string text;
-    } ctx{textbox_control, {}};
+    } ctx{textbox_control, expected_vt, content_off, {}};
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<GetTextCtx*>(raw);
-        if (!is_ptr_readable(static_cast<const uint8_t*>(c->ctrl) + 0x338, sizeof(MsvcWString))) return -1;
-        c->text = read_msvc_wstring_utf8(static_cast<const uint8_t*>(c->ctrl) + 0x338);
+        if (!is_ptr_readable(c->ctrl, sizeof(void*))) return -1;
+        if (c->expected_vt != 0) {
+            const uint64_t actual_vt = reinterpret_cast<uint64_t>(*reinterpret_cast<void* const*>(c->ctrl));
+            if (actual_vt != c->expected_vt) return -10;
+        }
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->ctrl) + c->content_off, sizeof(MsvcWString))) return -1;
+        c->text = read_msvc_wstring_utf8(static_cast<const uint8_t*>(c->ctrl) + c->content_off);
         return 0;
     };
     int64_t rc = 0;
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
-    if (st != NM_OK || rc != 0) return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
+    if (st != NM_OK) return st;
+    if (rc == -10) return NM_ERR_INVALID_ARG;
+    if (rc != 0) return NM_ERR_GAME_EXCEPTION;
 
     if (out_length) *out_length = ctx.text.size();
     if (!out_utf8 && capacity == 0) return NM_OK;
@@ -2166,15 +2351,24 @@ nm_status_t LiveEngineHooks::ui_textbox_set_text(void* textbox_control, const ch
     const EmbeddedSymbol* sym_assign = find_symbol(build_id_, "runtime.wstring_assign");
     if (!sym_assign || sym_assign->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
 
+    const uint64_t expected_vt = resolve_vtable_addr(build_id_, image_base_, "ui.vtable_textbox");
+    const size_t ti_off = resolve_offset_or(build_id_, "ui.textbox.text_interface", 0x298u);
     struct SetTextCtx {
         void*        ctrl;
+        uint64_t     expected_vt;
+        size_t       ti_off;
         uint64_t     assign_addr;
         std::wstring wide;
-    } ctx{textbox_control, image_base_ + sym_assign->rva, utf8_to_wide_hooks(text_utf8)};
+    } ctx{textbox_control, expected_vt, ti_off, image_base_ + sym_assign->rva, utf8_to_wide_hooks(text_utf8)};
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<SetTextCtx*>(raw);
-        void* sub = static_cast<uint8_t*>(c->ctrl) + 0x298;
+        if (!is_ptr_readable(c->ctrl, sizeof(void*))) return -1;
+        if (c->expected_vt != 0) {
+            const uint64_t actual_vt = reinterpret_cast<uint64_t>(*reinterpret_cast<void* const*>(c->ctrl));
+            if (actual_vt != c->expected_vt) return -10;
+        }
+        void* sub = static_cast<uint8_t*>(c->ctrl) + c->ti_off;
         if (!is_ptr_readable(sub, sizeof(void*))) return -1;
         void** vtbl = *reinterpret_cast<void***>(sub);
         if (!vtbl || !is_ptr_readable(vtbl, 3 * sizeof(void*)) || !vtbl[2]) return -2;
@@ -2196,7 +2390,9 @@ nm_status_t LiveEngineHooks::ui_textbox_set_text(void* textbox_control, const ch
     int64_t rc = 0;
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
-    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+    if (st != NM_OK) return st;
+    if (rc == -10) return NM_ERR_INVALID_ARG;
+    return (rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
 #else
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
 #endif
@@ -2213,6 +2409,8 @@ nm_status_t LiveEngineHooks::ui_textbox_subscribe_changed(
     if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0 || !hooks_) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
     const EmbeddedSymbol* sym_vt = find_symbol(build_id_, "ui.vtable_textbox");
     if (!sym_vt || sym_vt->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+    const nm_status_t vtst = verify_control_vtable_guarded(textbox_control, image_base_ + sym_vt->rva);
+    if (vtst != NM_OK) return vtst;
 
     {
         std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
@@ -2262,6 +2460,8 @@ nm_status_t LiveEngineHooks::ui_textbox_subscribe_submitted(
     if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0 || !hooks_) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
     const EmbeddedSymbol* sym_vt = find_symbol(build_id_, "ui.vtable_textbox");
     if (!sym_vt || sym_vt->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
+    const nm_status_t vtst = verify_control_vtable_guarded(textbox_control, image_base_ + sym_vt->rva);
+    if (vtst != NM_OK) return vtst;
 
     {
         std::lock_guard<std::mutex> lock(g_ui_handlers_mutex);
@@ -2305,17 +2505,27 @@ nm_status_t LiveEngineHooks::ui_checkbox_get_checked(void* checkbox_control, int
     *out_checked = 0;
 #if defined(_WIN32)
     if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
-    struct GetCtx { void* ctrl; int32_t checked = 0; } ctx{checkbox_control, 0};
+    const uint64_t expected_vt = resolve_vtable_addr(build_id_, image_base_, "ui.vtable_checkbox");
+    const size_t checked_off = resolve_offset_or(build_id_, "ui.checkbox.checked", 0x4E2u);
+    struct GetCtx { void* ctrl; uint64_t expected_vt; size_t checked_off; int32_t checked = 0; } ctx{
+        checkbox_control, expected_vt, checked_off, 0};
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<GetCtx*>(raw);
-        if (!is_ptr_readable(static_cast<const uint8_t*>(c->ctrl) + 0x4E2, 1)) return -1;
-        c->checked = (*reinterpret_cast<const uint8_t*>(static_cast<const uint8_t*>(c->ctrl) + 0x4E2) != 0) ? 1 : 0;
+        if (!is_ptr_readable(c->ctrl, sizeof(void*))) return -1;
+        if (c->expected_vt != 0) {
+            const uint64_t actual_vt = reinterpret_cast<uint64_t>(*reinterpret_cast<void* const*>(c->ctrl));
+            if (actual_vt != c->expected_vt) return -10;
+        }
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->ctrl) + c->checked_off, 1)) return -1;
+        c->checked = (*reinterpret_cast<const uint8_t*>(static_cast<const uint8_t*>(c->ctrl) + c->checked_off) != 0) ? 1 : 0;
         return 0;
     };
     int64_t rc = 0;
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
-    if (st != NM_OK || rc != 0) return (st != NM_OK) ? st : NM_ERR_GAME_EXCEPTION;
+    if (st != NM_OK) return st;
+    if (rc == -10) return NM_ERR_INVALID_ARG;
+    if (rc != 0) return NM_ERR_GAME_EXCEPTION;
     *out_checked = ctx.checked;
     return NM_OK;
 #else
@@ -2327,11 +2537,14 @@ nm_status_t LiveEngineHooks::ui_checkbox_set_checked(void* checkbox_control, int
     if (!checkbox_control) return NM_ERR_INVALID_ARG;
 #if defined(_WIN32)
     if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
-    struct SetCtx { void* ctrl; uint8_t val; } ctx{checkbox_control, static_cast<uint8_t>(checked ? 1 : 0)};
+    const uint64_t expected_vt = resolve_vtable_addr(build_id_, image_base_, "ui.vtable_checkbox");
+    struct SetCtx { void* ctrl; uint64_t expected_vt; uint8_t val; } ctx{
+        checkbox_control, expected_vt, static_cast<uint8_t>(checked ? 1 : 0)};
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<SetCtx*>(raw);
         if (!is_ptr_readable(c->ctrl, sizeof(void*))) return -1;
         void** vtbl = *reinterpret_cast<void***>(c->ctrl);
+        if (c->expected_vt != 0 && reinterpret_cast<uint64_t>(vtbl) != c->expected_vt) return -10;
         if (!vtbl || !is_ptr_readable(vtbl, 116 * sizeof(void*)) || !vtbl[115]) return -2;
         using SetCheckedFn = void(NM_CALL*)(void*, uint8_t, uint8_t);
         reinterpret_cast<SetCheckedFn>(vtbl[115])(c->ctrl, c->val, 1);
@@ -2340,7 +2553,9 @@ nm_status_t LiveEngineHooks::ui_checkbox_set_checked(void* checkbox_control, int
     int64_t rc = 0;
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
-    return (st == NM_OK && rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
+    if (st != NM_OK) return st;
+    if (rc == -10) return NM_ERR_INVALID_ARG;
+    return (rc == 0) ? NM_OK : NM_ERR_GAME_EXCEPTION;
 #else
     (void)checked;
     return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
@@ -2356,6 +2571,9 @@ nm_status_t LiveEngineHooks::ui_checkbox_subscribe_changed(
     *out_token = 0;
 #if defined(_WIN32)
     if (build_id_ == NM_BUILD_SYNTHETIC || image_base_ == 0) return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
+    const uint64_t expected_vt = resolve_vtable_addr(build_id_, image_base_, "ui.vtable_checkbox");
+    const nm_status_t vtst = verify_control_vtable_guarded(checkbox_control, expected_vt);
+    if (vtst != NM_OK) return vtst;
     const EmbeddedSymbol* sym_get  = find_symbol(build_id_, "ui.event_list_get");
     const EmbeddedSymbol* sym_grow = find_symbol(build_id_, "ui.event_list_grow");
     if (!sym_get || !sym_grow || sym_get->rva == 0 || sym_grow->rva == 0) return NM_ERR_SYMBOL_NOT_FOUND;
@@ -2384,16 +2602,18 @@ nm_status_t LiveEngineHooks::ui_checkbox_subscribe_changed(
         g_ui_handlers.push_back(rec);
     }
 
+    const size_t event_key_off = resolve_offset_or(build_id_, "ui.checkbox.event_key", 0x418u);
     struct SubCtx {
         void*                 checkbox;
         UiClickHandlerRecord* rec;
         uint64_t              get_addr;
         uint64_t              grow_addr;
-    } ctx{checkbox_control, rec, image_base_ + sym_get->rva, image_base_ + sym_grow->rva};
+        size_t                event_key_off;
+    } ctx{checkbox_control, rec, image_base_ + sym_get->rva, image_base_ + sym_grow->rva, event_key_off};
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<SubCtx*>(raw);
-        if (!is_ptr_readable(static_cast<const uint8_t*>(c->checkbox) + 0x418, sizeof(void*))) return -2;
+        if (!is_ptr_readable(static_cast<const uint8_t*>(c->checkbox) + c->event_key_off, sizeof(void*))) return -2;
         using EventGetFn  = void*(NM_CALL*)(void*, void*, uint8_t);
         using EventGrowFn = void(NM_CALL*)(void*);
         using StepFn      = uint64_t(NM_CALL*)(void*);
@@ -2402,7 +2622,7 @@ nm_status_t LiveEngineHooks::ui_checkbox_subscribe_changed(
         auto event_grow = reinterpret_cast<EventGrowFn>(static_cast<uintptr_t>(c->grow_addr));
 
         void* shared[2] = {nullptr, nullptr};
-        event_get(static_cast<uint8_t*>(c->checkbox) + 0x418, shared, 1);
+        event_get(static_cast<uint8_t*>(c->checkbox) + c->event_key_off, shared, 1);
         auto* list = static_cast<uint8_t*>(shared[0]);
         if (!list) return -1;
 

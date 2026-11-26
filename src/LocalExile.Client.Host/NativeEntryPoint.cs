@@ -202,9 +202,9 @@ public static class NativeEntryPoint
                         {
                             return;
                         }
-                    }
 
-                    AutoLoadClientMods(hostDir, runtime, WriteLog);
+                        AutoLoadClientMods(hostDir, runtime, WriteLog);
+                    }
                 });
                 if (!enqueued)
                 {

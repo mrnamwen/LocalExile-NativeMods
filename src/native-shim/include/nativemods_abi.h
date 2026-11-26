@@ -473,6 +473,9 @@ typedef struct nm_abi_table_t {
         size_t  capacity,
         size_t* out_length);
     nm_status_t (NM_CALL *clipboard_set_text)(const char* text_utf8);
+
+    /* ABI 0.2.0: Control enabled readback (1) */
+    nm_status_t (NM_CALL *ui_get_enabled)(void* control, int32_t* out_enabled);
 } nm_abi_table_t;
 
 /* Exported C ABI functions. */
@@ -613,6 +616,7 @@ NM_API nm_status_t NM_CALL nm_ui_get_rect(
 NM_API nm_status_t NM_CALL nm_ui_set_position(void* control, float x, float y);
 NM_API nm_status_t NM_CALL nm_ui_set_size(void* control, float w, float h);
 NM_API nm_status_t NM_CALL nm_ui_set_enabled(void* control, int32_t enabled);
+NM_API nm_status_t NM_CALL nm_ui_get_enabled(void* control, int32_t* out_enabled);
 NM_API nm_status_t NM_CALL nm_ui_remove_child(void* parent_control, void* child_control);
 NM_API nm_status_t NM_CALL nm_ui_destroy_control(void* control);
 NM_API nm_status_t NM_CALL nm_ui_textbox_get_text(

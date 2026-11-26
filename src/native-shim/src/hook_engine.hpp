@@ -70,6 +70,11 @@ public:
     nm_status_t remove(nm_hook_handle_t handle);
     void        remove_all();
 
+    // Diagnostic/test helpers for verifying quiescent reclamation & active_calls tracking.
+    uint32_t chain_active_calls(nm_hook_kind_t kind, uint64_t target_address) const;
+    size_t   retired_chain_count() const;
+    void     sweep_retired_now(bool force_quiescent = true);
+
     static constexpr size_t kAbsJumpSize = 14; // FF 25 00 00 00 00 <u64 target>
 
     // Full C++20 x86-64 instruction decoder & length calculator (returns length=0 on invalid/truncated).
@@ -106,6 +111,12 @@ private:
         size_t           next_stub_size = 0;
     };
 
+    struct Win64RuntimeFunction {
+        uint32_t begin_address = 0;
+        uint32_t end_address = 0;
+        uint32_t unwind_data = 0;
+    };
+
     struct TargetChain {
         nm_hook_kind_t        kind = NM_HOOK_INLINE_DETOUR;
         uint64_t              target_address = 0;
@@ -121,6 +132,9 @@ private:
 
         void*                 dispatcher_page = nullptr;
         size_t                dispatcher_size = 0;
+        void*                 eh_frame_fde = nullptr;
+        Win64RuntimeFunction  win64_rt_fn{};
+        bool                  win64_rt_registered = false;
 
         std::vector<RawDetourNode> raw_detours; // Ordered from head (back) to tail (front)
         std::vector<ChainNode>     pre_hooks;
@@ -150,6 +164,7 @@ private:
     static uint64_t make_chain_key(nm_hook_kind_t kind, uint64_t target_address);
     static bool     write_protected_memory(void* dst, const void* src, size_t len);
     static void*    build_dispatcher_stub(TargetChain* chain, size_t& out_size);
+    static void     dispatch_chain_body(TargetChain* chain, nm_hook_context_t* ctx);
     static void     dispatch_pre(TargetChain* chain, nm_hook_context_t* ctx);
     static void     dispatch_post(TargetChain* chain, nm_hook_context_t* ctx);
     static void     emit_aligned_indirect_jmp_x64(uint8_t* dst, uint64_t target);
@@ -168,7 +183,7 @@ private:
     void sweep_retired_stubs_locked(bool force_quiescent = false);
     void free_chain_pages(TargetChain* chain);
 
-    std::mutex                                         mutex_;
+    mutable std::mutex                                 mutex_;
     nm_hook_handle_t                                   next_handle_ = 1;
     std::unordered_map<uint64_t, TargetChain*>         chains_; // key = target_address ^ kind tag
     std::unordered_map<nm_hook_handle_t, HandleLocation> handles_;

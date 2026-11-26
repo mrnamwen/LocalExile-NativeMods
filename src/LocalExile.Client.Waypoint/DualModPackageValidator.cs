@@ -370,6 +370,34 @@ public static class DualModPackageValidator
 
         foreach (var (virtualPath, fullPath) in actualPayloadFiles.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
         {
+            if (virtualPath.EndsWith(".sm", StringComparison.OrdinalIgnoreCase)
+                || virtualPath.EndsWith(".mat", StringComparison.OrdinalIgnoreCase)
+                || virtualPath.EndsWith(".amd", StringComparison.OrdinalIgnoreCase))
+            {
+                byte[] header = new byte[3];
+                int read = 0;
+                using (var fs = File.OpenRead(fullPath))
+                {
+                    read = fs.Read(header, 0, 3);
+                }
+
+                bool hasUtf16Bom = read >= 2 &&
+                    ((header[0] == 0xFF && header[1] == 0xFE) || (header[0] == 0xFE && header[1] == 0xFF));
+                bool hasUtf8Bom = read >= 3 && header[0] == 0xEF && header[1] == 0xBB && header[2] == 0xBF;
+                if (hasUtf16Bom || hasUtf8Bom)
+                {
+                    string bomKind = hasUtf8Bom
+                        ? "UTF-8 BOM (EF BB BF)"
+                        : (header[0] == 0xFF ? "UTF-16LE BOM (FF FE)" : "UTF-16BE BOM (FE FF)");
+                    diagnostics.Add(new(
+                        DiagnosticSeverity.Error,
+                        "ENC001",
+                        $"Loose PoE asset '{virtualPath}' contains forbidden {bomKind}; .sm/.mat/.amd files must be BOM-less UTF-16LE CRLF.",
+                        virtualPath));
+                }
+                continue;
+            }
+
             if (!virtualPath.EndsWith(".ui", StringComparison.OrdinalIgnoreCase))
                 continue;
 

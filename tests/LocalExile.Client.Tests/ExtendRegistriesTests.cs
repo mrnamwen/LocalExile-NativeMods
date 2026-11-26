@@ -188,4 +188,39 @@ public sealed class ExtendRegistriesTests
         public void OnFrame(float deltaSeconds) => FrameCount++;
         public void OnAreaLeft() => LeftArea = true;
     }
+
+    [Fact]
+    public void ContentRegistry_RejectsDuplicateDatRowsItemBasesAndWorldObjects_AndAllowsReRegistrationAfterDispose()
+    {
+        using var bridge = new SimulatedNativeBridge();
+        using var host = new ClientHostRuntime(bridge);
+
+        IDisposable dat1 = host.Content.DeclareDatRow(new DatRowDeclaration(
+            "MiscObjects", "garden_plot", new Dictionary<string, object?> { ["Id"] = "a" }));
+        Assert.Throws<InvalidOperationException>(() => host.Content.DeclareDatRow(new DatRowDeclaration(
+            "miscobjects", "GARDEN_PLOT", new Dictionary<string, object?> { ["Id"] = "b" })));
+        dat1.Dispose();
+        using IDisposable dat2 = host.Content.DeclareDatRow(new DatRowDeclaration(
+            "MiscObjects", "garden_plot", new Dictionary<string, object?> { ["Id"] = "b" }));
+
+        IDisposable item1 = host.Content.DeclareItemBase(new ItemBaseDeclaration(
+            "Metadata/Items/Mods/Garden/WildSeed", "Wild Seed", "Metadata/Items/Currency/StackableCurrency", "StackableCurrency", "Art/2DItems/WildSeed"));
+        Assert.Throws<InvalidOperationException>(() => host.Content.DeclareItemBase(new ItemBaseDeclaration(
+            "metadata/items/mods/garden/wildseed", "Dup Seed", "Metadata/Items/Currency/StackableCurrency", "StackableCurrency", "Art/2DItems/WildSeed")));
+        item1.Dispose();
+        using IDisposable item2 = host.Content.DeclareItemBase(new ItemBaseDeclaration(
+            "Metadata/Items/Mods/Garden/WildSeed", "Wild Seed 2", "Metadata/Items/Currency/StackableCurrency", "StackableCurrency", "Art/2DItems/WildSeed"));
+
+        IDisposable obj1 = host.Content.DeclareWorldObject(new WorldObjectDeclaration(
+            "Metadata/MiscellaneousObjects/Mods/Garden/Plot", "MiscObjects", OtOverlayContent: "version = 2\n"));
+        Assert.Throws<InvalidOperationException>(() => host.Content.DeclareWorldObject(new WorldObjectDeclaration(
+            "metadata/miscellaneousobjects/mods/garden/plot", "MiscObjects", OtOverlayContent: "version = 2\n")));
+        obj1.Dispose();
+        using IDisposable obj2 = host.Content.DeclareWorldObject(new WorldObjectDeclaration(
+            "Metadata/MiscellaneousObjects/Mods/Garden/Plot", "MiscObjects", OtOverlayContent: "version = 2\n"));
+
+        Assert.Single(host.Content.DatRows);
+        Assert.Single(host.Content.ItemBases);
+        Assert.Single(host.Content.WorldObjects);
+    }
 }

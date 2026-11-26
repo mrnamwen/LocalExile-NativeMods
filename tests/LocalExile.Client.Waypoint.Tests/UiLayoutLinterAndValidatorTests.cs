@@ -239,6 +239,58 @@ begin Frame
         }
     }
 
+    [Fact]
+    public void Validator_RejectsBomInSmMatAmdFiles_WithEnc001_AndAllowsBomlessUtf16Le()
+    {
+        string temp = Path.Combine(AppContext.BaseDirectory, "val-enc-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+        try
+        {
+            string clientDir = Path.Combine(temp, "client", "Art", "Models");
+            Directory.CreateDirectory(clientDir);
+
+            File.WriteAllBytes(Path.Combine(clientDir, "bad_le.sm"), [0xFF, 0xFE, (byte)'v', 0x00]);
+            File.WriteAllBytes(Path.Combine(clientDir, "bad_be.mat"), [0xFE, 0xFF, 0x00, (byte)'m']);
+            File.WriteAllBytes(Path.Combine(clientDir, "bad_u8.amd"), [0xEF, 0xBB, 0xBF, (byte)'a']);
+            File.WriteAllBytes(Path.Combine(clientDir, "good_le.sm"), [(byte)'v', 0x00, (byte)'\r', 0x00, (byte)'\n', 0x00]);
+
+            var manifest = new DualModManifest
+            {
+                Id = "enc-check",
+                Name = "Encoding Check",
+                Version = "1.0.0",
+                CompatibleClientVersions = ["0.5.2-beta"],
+                NativeClient = new NativeClientManifest
+                {
+                    SdkVersionRange = ">=0.1.0-poc <2.0.0",
+                    PayloadDir = "client",
+                    Overlays =
+                    [
+                        "Art/Models/bad_le.sm",
+                        "Art/Models/bad_be.mat",
+                        "Art/Models/bad_u8.amd",
+                        "Art/Models/good_le.sm"
+                    ]
+                }
+            };
+            File.WriteAllText(Path.Combine(temp, "mod.json"), manifest.ToJson());
+
+            var report = DualModPackageValidator.ValidatePackageDirectory(temp, SemVer.Parse("0.1.0-poc"));
+
+            Assert.False(report.IsValid);
+            var encErrors = report.Errors.Where(d => d.Code == "ENC001").ToList();
+            Assert.Equal(3, encErrors.Count);
+            Assert.Contains(encErrors, d => d.FilePath == "Art/Models/bad_le.sm");
+            Assert.Contains(encErrors, d => d.FilePath == "Art/Models/bad_be.mat");
+            Assert.Contains(encErrors, d => d.FilePath == "Art/Models/bad_u8.amd");
+            Assert.DoesNotContain(encErrors, d => d.FilePath == "Art/Models/good_le.sm");
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
     private static string FindRepoRoot()
     {
         string? dir = AppContext.BaseDirectory;

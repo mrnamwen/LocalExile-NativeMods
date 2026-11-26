@@ -48,6 +48,7 @@ EXPORTS
     nm_ui_set_position
     nm_ui_set_size
     nm_ui_set_enabled
+    nm_ui_get_enabled
     nm_ui_remove_child
     nm_ui_destroy_control
     nm_ui_textbox_get_text

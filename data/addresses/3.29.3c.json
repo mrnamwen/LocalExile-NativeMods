@@ -1670,7 +1670,7 @@
       "offset": "0x1e8",
       "type": "uint32_t",
       "status": "code_shared_3_29_3c",
-      "notes": "Control flags bitfield; bit 0x800 tracks visibility. (Struct layout shared with 3.29.3d code.)",
+      "notes": "Control flags bitfield; bit 0x800 tracks visibility and bit 13 (0x2000) tracks enabled state (Control::SetEnabled 0x18b0c70). (Struct layout shared with 3.29.3d code.)",
       "source": "07-spike-results.md; spikes/agent.js#L74"
     },
     {

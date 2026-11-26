@@ -201,7 +201,14 @@ public sealed class WaypointModInstaller
     public InstallAuditReport AuditPackage(
         string packageDir,
         string localExileRoot,
-        InstallOptions? options = null)
+        InstallOptions? options = null) =>
+        AuditPackageCore(packageDir, localExileRoot, options, allowAutoNormalizedEncErrors: false);
+
+    private static InstallAuditReport AuditPackageCore(
+        string packageDir,
+        string localExileRoot,
+        InstallOptions? options,
+        bool allowAutoNormalizedEncErrors)
     {
         options ??= new InstallOptions();
         var validation = DualModPackageValidator.ValidatePackageDirectory(packageDir, options.CurrentSdkVersion);
@@ -239,8 +246,12 @@ public sealed class WaypointModInstaller
         var conflicts = DualModPackageValidator.DetectConflicts(otherManifests);
         var nc = manifest.NativeClient;
 
+        bool hasBlockingValidationErrors = allowAutoNormalizedEncErrors
+            ? validation.Errors.Any(d => !string.Equals(d.Code, "ENC001", StringComparison.Ordinal))
+            : !validation.IsValid;
+
         string? failureReason = null;
-        if (!validation.IsValid)
+        if (hasBlockingValidationErrors)
             failureReason = "Package validation failed with errors.";
         else if (nc is { RawAccess: true } && !options.AllowRawAccess)
             failureReason = "Mod requests RawAccess, which is not approved in InstallOptions.";
@@ -340,6 +351,7 @@ public sealed class WaypointModInstaller
     /// <summary>
     /// Installs or cleanly upgrades a dual-side mod from <paramref name="packageDir"/> into <paramref name="localExileRoot"/>.
     /// </summary>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Uniform instance service API for Waypoint DI/composition.")]
     public InstallAuditReport Install(
         string packageDir,
         string localExileRoot,
@@ -349,7 +361,7 @@ public sealed class WaypointModInstaller
         if (!DualModPackageValidator.IsPhysicalPath(localExileRoot))
             throw new IOException("Redirected LocalExile root paths are not supported.");
 
-        var audit = AuditPackage(packageDir, localExileRoot, options);
+        var audit = AuditPackageCore(packageDir, localExileRoot, options, allowAutoNormalizedEncErrors: true);
         if (!audit.Succeeded)
             return audit;
 

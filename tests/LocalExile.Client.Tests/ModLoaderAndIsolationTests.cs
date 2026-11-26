@@ -359,4 +359,63 @@ public sealed class ModLoaderAndIsolationTests
     {
         public void Dispose() => onDispose();
     }
+
+    [Fact]
+    public void ManifestParse_SeparatesBundleSha256FromPayloadHash_AndLoadsDualAssemblyWithoutFalseMismatch()
+    {
+        string tempModDir = Path.Combine(AppContext.BaseDirectory, "mod-bundle-sha-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempModDir);
+        try
+        {
+            string asmPath = Path.Combine(tempModDir, "Self.Test.dll");
+            File.Copy(typeof(ModLoaderAndIsolationTests).Assembly.Location, asmPath, overwrite: true);
+
+            // A dual-side mod declaring BOTH assembly and bundleSha256 (hash of the .bundle.bin, NOT the dll)
+            // must NOT fail assembly payloadHash verification when payloadHash/assemblyPayloadHash is omitted.
+            File.WriteAllText(Path.Combine(tempModDir, "mod.json"), """
+                {
+                  "id": "dual-bundle-only",
+                  "name": "Dual Bundle Only",
+                  "version": "1.0.0",
+                  "nativeClient": {
+                    "sdkVersionRange": ">=0.1.0-poc",
+                    "assembly": "Self.Test.dll",
+                    "bundleFile": "dual-bundle-only.bundle.bin",
+                    "bundleSha256": "deadbeef0000111122223333444455556666777788889999aaaabbbbccccdddd"
+                  }
+                }
+                """);
+
+            using var bridge = new SimulatedNativeBridge();
+            using var host = new ClientHostRuntime(bridge);
+            LoadedClientMod loaded = host.Loader.LoadModFromDirectory(tempModDir);
+            Assert.Equal("deadbeef0000111122223333444455556666777788889999aaaabbbbccccdddd", loaded.Manifest.BundleSha256);
+            Assert.Null(loaded.Manifest.PayloadHash);
+
+            var mismatched = ClientModManifest.Parse("""
+                {
+                  "id": "dual-asm-hash",
+                  "name": "Dual Asm Hash",
+                  "version": "1.0.0",
+                  "nativeClient": {
+                    "sdkVersionRange": ">=0.1.0-poc",
+                    "assembly": "Self.Test.dll",
+                    "payloadHash": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "bundleSha256": "deadbeef0000111122223333444455556666777788889999aaaabbbbccccdddd"
+                  }
+                }
+                """);
+            Assert.Equal("0000000000000000000000000000000000000000000000000000000000000000", mismatched.PayloadHash);
+            Assert.Equal("deadbeef0000111122223333444455556666777788889999aaaabbbbccccdddd", mismatched.BundleSha256);
+        }
+        finally
+        {
+            Directory.Delete(tempModDir, recursive: true);
+        }
+    }
+}
+
+public sealed class DummyBundleTestClientMod : IClientMod
+{
+    public void Load(IClientContext context) { }
 }

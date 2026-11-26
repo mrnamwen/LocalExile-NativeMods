@@ -270,6 +270,86 @@ constexpr std::array<EmbeddedSymbol, 122> kSymbols3293c = {{
     {"ui.event_list_get_ctrl",             "ui",           NM_SYM_CODE,         NM_SYM_STATUS_UNVERIFIED,       0ull,          nullptr},
 }};
 
+constexpr std::array<EmbeddedOffset, 37> kOffsets3293d = {{
+    {"ui.control.children_container",      0xb8u},
+    {"ui.control.children_begin",          0xc0u},
+    {"ui.control.children_end",            0xc8u},
+    {"ui.control.rect",                    0x110u},
+    {"ui.control.id",                      0x1b8u},
+    {"ui.control.parent",                  0x1e0u},
+    {"ui.control.flags",                   0x1e8u},
+    {"ui.label.text_interface",            0x298u},
+    {"ui.button.clicked_event",            0x2a0u},
+    {"ui.textbox.content",                 0x338u},
+    {"ui.button.caption_interface",        0x3f8u},
+    {"files.filesystem.bundle_index_table", 0xc900u},
+    {"files.filesystem.reverse_path_map",  0xc910u},
+    {"files.streambuf.has_buffer",         0x80u},
+    {"files.streambuf.buffer_begin",       0x88u},
+    {"files.streambuf.buffer_end",         0x90u},
+    {"network.app.instance_client",        0x348u},
+    {"network.instance_client.socket",     0xc288u},
+    {"network.instance_client.rulesets_vector", 0xcfd8u},
+    {"network.socket.write_in_progress",   0x240u},
+    {"network.socket.threaded_flag",       0x242u},
+    {"network.socket.srw_lock",            0x248u},
+    {"network.chat_message.sender",        0x0u},
+    {"network.chat_message.text",          0x20u},
+    {"rulesets.base.id",                   0x8u},
+    {"rulesets.base.client",               0x10u},
+    {"audio.holder.manager",               0x8u},
+    {"audio.manager.srw_lock",             0xbb8u},
+    {"world.object_map",                   0x8d8u},
+    {"ui.control.rel_x",                   0x150u},
+    {"ui.control.rel_y",                   0x154u},
+    {"ui.control.width",                   0x268u},
+    {"ui.control.height",                  0x26cu},
+    {"ui.textbox.text_interface",          0x298u},
+    {"ui.textbox.changed_event_key",       0x6c7u},
+    {"ui.checkbox.checked",                0x4e2u},
+    {"ui.checkbox.event_key",              0x418u},
+}};
+
+constexpr std::array<EmbeddedOffset, 37> kOffsets3293c = {{
+    {"ui.control.children_container",      0xb8u},
+    {"ui.control.children_begin",          0xc0u},
+    {"ui.control.children_end",            0xc8u},
+    {"ui.control.rect",                    0x110u},
+    {"ui.control.id",                      0x1b8u},
+    {"ui.control.parent",                  0x1e0u},
+    {"ui.control.flags",                   0x1e8u},
+    {"ui.label.text_interface",            0x298u},
+    {"ui.button.clicked_event",            0x2a0u},
+    {"ui.textbox.content",                 0x338u},
+    {"ui.button.caption_interface",        0x3f8u},
+    {"files.filesystem.bundle_index_table", 0xc900u},
+    {"files.filesystem.reverse_path_map",  0xc910u},
+    {"files.streambuf.has_buffer",         0x80u},
+    {"files.streambuf.buffer_begin",       0x88u},
+    {"files.streambuf.buffer_end",         0x90u},
+    {"network.app.instance_client",        0x348u},
+    {"network.instance_client.socket",     0xc288u},
+    {"network.instance_client.rulesets_vector", 0xcfd8u},
+    {"network.socket.write_in_progress",   0x240u},
+    {"network.socket.threaded_flag",       0x242u},
+    {"network.socket.srw_lock",            0x248u},
+    {"network.chat_message.sender",        0x0u},
+    {"network.chat_message.text",          0x20u},
+    {"rulesets.base.id",                   0x8u},
+    {"rulesets.base.client",               0x10u},
+    {"audio.holder.manager",               0x8u},
+    {"audio.manager.srw_lock",             0xbb8u},
+    {"world.object_map",                   0x8d8u},
+    {"ui.control.rel_x",                   0x150u},
+    {"ui.control.rel_y",                   0x154u},
+    {"ui.control.width",                   0x268u},
+    {"ui.control.height",                  0x26cu},
+    {"ui.textbox.text_interface",          0x298u},
+    {"ui.textbox.changed_event_key",       0x6c7u},
+    {"ui.checkbox.checked",                0x4e2u},
+    {"ui.checkbox.event_key",              0x418u},
+}};
+
 int hex_nibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -331,6 +411,36 @@ const EmbeddedSymbol* get_symbol_table(nm_build_id_t build_id, uint32_t& out_cou
 const EmbeddedSymbol* find_symbol(nm_build_id_t build_id, std::string_view name) {
     uint32_t count = 0;
     const EmbeddedSymbol* table = get_symbol_table(build_id, count);
+    if (!table) {
+        return nullptr;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        if (name == table[i].name) {
+            return &table[i];
+        }
+    }
+    return nullptr;
+}
+
+const EmbeddedOffset* get_offset_table(nm_build_id_t build_id, uint32_t& out_count) {
+    switch (build_id) {
+        case NM_BUILD_3_29_3D_328228:
+        case NM_BUILD_SYNTHETIC:
+            out_count = static_cast<uint32_t>(kOffsets3293d.size());
+            return kOffsets3293d.data();
+        case NM_BUILD_3_29_3C_327984:
+        case NM_BUILD_3_29_3C_328126:
+            out_count = static_cast<uint32_t>(kOffsets3293c.size());
+            return kOffsets3293c.data();
+        default:
+            out_count = 0;
+            return nullptr;
+    }
+}
+
+const EmbeddedOffset* find_offset(nm_build_id_t build_id, std::string_view name) {
+    uint32_t count = 0;
+    const EmbeddedOffset* table = get_offset_table(build_id, count);
     if (!table) {
         return nullptr;
     }

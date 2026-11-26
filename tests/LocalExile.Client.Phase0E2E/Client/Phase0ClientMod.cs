@@ -88,16 +88,24 @@ public sealed class Phase0ClientMod : IClientMod
         // 3. Verify E2E-08: IOpcodeRegistry >= 0x02FC registration + < 0x02FC guard (kept alive until Unload)
         VerifyOpcodeRegistry();
 
-        // 4. Register raw handler for E2E-07 (0x02FE)
-        context.TrackDisposable(context.Net.OnRaw(Phase0Protocol.RawProbeOpcodeLoopback, bytes =>
-        {
-            _rawPacketReceived = true;
-            _rawPacketBytes = bytes.ToArray();
-            EmitAssertion(
-                "E2E-07",
-                context.Scheduler.IsOnGameThread && _rawPacketBytes.SequenceEqual(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }),
-                $"rawOnGameThread={context.Scheduler.IsOnGameThread} len={_rawPacketBytes.Length}");
-        }));
+        // 4. Register framed stream handler for E2E-07 (0x02FE) so exact 4-byte payload is read without consuming subsequent S->C packets
+        context.TrackDisposable(game.Opcodes.RegisterStreamHandler(
+            Phase0Protocol.RawProbeOpcodeLoopback,
+            Phase0Protocol.RawProbeOpcodeLoopback,
+            (_, stream, preloaded) =>
+            {
+                byte[] bytes = preloaded.Length >= 4
+                    ? preloaded[..4].ToArray()
+                    : stream.ReadBytes(4);
+                _rawPacketReceived = true;
+                _rawPacketBytes = bytes;
+                EmitAssertion(
+                    "E2E-07",
+                    context.Scheduler.IsOnGameThread && _rawPacketBytes.SequenceEqual(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }),
+                    $"rawOnGameThread={context.Scheduler.IsOnGameThread} len={_rawPacketBytes.Length}");
+                return true;
+            },
+            Phase0Protocol.ModId));
 
         // 5. Subscribe Frame callback to verify IsOnGameThread == true during native frame
         _frameHandler = _ =>
@@ -261,6 +269,7 @@ public sealed class Phase0ClientMod : IClientMod
         textBox.MaxLength = 16;
         textBox.Text = "Phase0_Hello";
         string readBack = textBox.Text;
+        string? changedAfterHello = changedText;
         textBox.Submit();
 
         textBox.Text = "0123456789ABCDEF_OVERFLOW";
@@ -268,8 +277,8 @@ public sealed class Phase0ClientMod : IClientMod
 
         EmitAssertion(
             "E2E-02",
-            readBack == "Phase0_Hello" && changedText == "Phase0_Hello" && submittedText == "Phase0_Hello" && clamped,
-            $"read='{readBack}' changed='{changedText}' submitted='{submittedText}' clamped={clamped}");
+            readBack == "Phase0_Hello" && changedAfterHello == "Phase0_Hello" && submittedText == "Phase0_Hello" && clamped,
+            $"read='{readBack}' changed='{changedAfterHello}' submitted='{submittedText}' clamped={clamped}");
 
         // E2E-03: ICheckBox (CheckedChanged)
         var checkBox = _probeWindow.Require<ICheckBox>("probe_checkbox");
@@ -286,8 +295,26 @@ public sealed class Phase0ClientMod : IClientMod
             $"states=[{stateTrue},{stateFalse}] events=[{string.Join(',', checkTransitions)}]");
 
         // E2E-05: Rect / SetPosition / SetSize / IsEnabled
+        // Isolate SetPosition checks BEFORE SetSize so centered StackLayout width changes cannot mask X/Y movement.
         var slotHost = _probeWindow.Require<IUiControl>("probe_slot_host");
-        slotHost.SetPosition(120f, 140f);
+        slotHost.SetPosition(80f, 90f);
+        var p0 = slotHost.Rect;
+        slotHost.SetPosition(150f, 90f);
+        var p1 = slotHost.Rect;
+        slotHost.SetPosition(150f, 140f);
+        var p2 = slotHost.Rect;
+        slotHost.SetPosition(80f, 90f);
+        var p3 = slotHost.Rect;
+
+        bool finitePosOk = float.IsFinite(p0.X) && float.IsFinite(p0.Y)
+            && float.IsFinite(p1.X) && float.IsFinite(p1.Y)
+            && float.IsFinite(p2.X) && float.IsFinite(p2.Y)
+            && float.IsFinite(p3.X) && float.IsFinite(p3.Y);
+        bool posDeltaOk = finitePosOk
+            && (p1.X - p0.X) > 20f && MathF.Abs(p1.Y - p0.Y) <= 1f
+            && MathF.Abs(p2.X - p1.X) <= 1f && (p2.Y - p1.Y) > 20f
+            && p3.X < p2.X && p3.Y < p2.Y;
+
         slotHost.SetSize(320f, 180f);
         var rect = slotHost.Rect;
         slotHost.IsEnabled = false;
@@ -295,15 +322,17 @@ public sealed class Phase0ClientMod : IClientMod
         slotHost.IsEnabled = true;
         bool enabledOk = slotHost.IsEnabled;
 
-        bool rectOk = MathF.Abs(rect.X - 120f) <= 0.5f
-            && MathF.Abs(rect.Y - 140f) <= 0.5f
+        bool sizeOk = float.IsFinite(rect.Width)
+            && float.IsFinite(rect.Height)
             && MathF.Abs(rect.Width - 320f) <= 0.5f
             && MathF.Abs(rect.Height - 180f) <= 0.5f;
 
         EmitAssertion(
             "E2E-05",
-            rectOk && disabledOk && enabledOk,
-            string.Create(CultureInfo.InvariantCulture, $"rect=({rect.X},{rect.Y},{rect.Width},{rect.Height}) disabledOk={disabledOk} enabledOk={enabledOk} uiClickGameThread={_uiClickOnGameThreadObserved}"));
+            posDeltaOk && sizeOk && disabledOk && enabledOk && _uiClickOnGameThreadObserved,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"p0=({p0.X},{p0.Y}) p1=({p1.X},{p1.Y}) p2=({p2.X},{p2.Y}) p3=({p3.X},{p3.Y}) rect=({rect.X},{rect.Y},{rect.Width},{rect.Height}) disabledOk={disabledOk} enabledOk={enabledOk} uiClickGameThread={_uiClickOnGameThreadObserved}"));
 
         // E2E-06: CreateWindowInto + RemoveChild + Destroy, plus IUiWindow.Closed on a dedicated disposable probe window,
         // keeping _probeWindow visible until /phase0 close (after 04-phase0-probe-ui screenshot).

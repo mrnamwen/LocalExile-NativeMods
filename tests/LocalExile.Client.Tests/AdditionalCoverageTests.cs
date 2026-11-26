@@ -86,7 +86,8 @@ public sealed class AdditionalCoverageTests
             using var bridge = new SimulatedNativeBridge();
             using var host = new ClientHostRuntime(bridge);
             LoadedClientMod loaded = host.Loader.LoadModFromDirectory(tempModDir);
-            Assert.Equal("cafebabe01234567", loaded.Manifest.PayloadHash);
+            Assert.Equal("cafebabe01234567", loaded.Manifest.BundleSha256);
+            Assert.Null(loaded.Manifest.PayloadHash);
             Assert.True(host.FileOverlayService.Exists("Metadata/UI/Mods/WP/Test.ui"));
         }
         finally

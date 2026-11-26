@@ -121,5 +121,20 @@ Read precedence is strictly: **in-memory index table (`fs+0xc900`) → open GGPK
 ## 7. Phase 0 (`0.2.0`) Newly Wired `3.29.3d.json` Symbols (`122` Symbols, `37` Offsets, `18` Constants)
 
 In addition to the baseline table above, `data/addresses/3.29.3d.json` and C ABI `0.2.0` (`address_table.cpp` generated via `scripts/generate-address-table.py`) now include and wire:
-- **UI Controls & Geometry:** `TextBox` (`+0x338`, changed slot 129 `0x1894e30`, submitted slot 72 `0x18926f0`), `CheckBox` (`+0x4e2`/`+0x418`, changed slot 115 `0x18f5710`), `ui.control_set_position` (`0x18b1080`), `ui.control_set_size` (`0x1906a30`), `ui.control_get_abs_pos` (`0x18b1250`), `ui.control_detach` (`0x18b5a00`), `ui.children_remove_at`, `ui.event_list_get_ctrl`, `Control::Destroy` (vtable slot 8).
+- **UI Controls & Geometry:** `TextBox` (`ui.vtable_textbox` `0x30321a0`, content `+0x338`, text_interface `+0x298`, changed slot 129 `0x1894e30`, submitted slot 72 `0x18926f0`), `CheckBox` (`ui.vtable_checkbox` `0x34afe98`, checked `+0x4e2`, event_key `+0x418`, changed slot 115 `0x18f5710`), `Control::SetEnabled` (`0x18b0c70` / `[control+0x1e8]` bit 13 `0x2000` enabled), `Control::ReleaseOrDestroy` (`0x18b6810` slab-pool teardown when `[control+0x08] != 0`), `ui.control_set_position` (`0x18b1080`), `ui.control_set_size` (`0x1906a30`), `ui.control_get_abs_pos` (`0x18b1250`), `ui.control_detach` (`0x18b5a00`), `ui.children_remove_at`, `ui.event_list_get_ctrl`, `Control::Destroy` (vtable slot 8, heap-only fallback).
 - **Files, Runtime & Network:** `files.hash_to_wstring_view` (`0x0e40af0`), `files.hash_and_register_path`, `files.filesystem_holder_get`, `files.hot_reload_singleton`, `files.hot_reload_invalidate_ext` (`0x1010560`), `runtime.wstring_destroy` (`0x134500`), `runtime.string_destroy`, `network.stream_reader` (`0xdf9ed0`), `network.register_handler_group` (`0x29a7710`).
+
+---
+
+## 8. Pre-Game Character Creation & `LeagueOverlay` (Planned for Phase 1)
+
+Code VAs below are shared between `3.29.3c` and `3.29.3d`; **vtable/data VAs below are `3.29.3c` references and must be verified on `3.29.3d`** before adding to `data/addresses/3.29.3d.json`:
+
+- **`CreateCharacterState`** (3.29.3c vtable `0x1431f2948`):
+  - Enter: `0x140cf4ad0` (loads `Metadata/UI/PreGameState/CreateCharacterScreen.ui` into `S+0x218`, binds `create_character_frame` `+0x248`, `name_textbox` `+0x250`, `league_label` `+0x270`, `select_league_button` `+0x298`, `create_button` `+0x2a8`, lazy `LeagueOverlay` `+0x2b8`). Leave: `0x140cf57c0`.
+  - Send create: `0x140cf5e60` → Login TCP writer `0x142146de0` (`C→S 0x12`: `u16 0x0012`, `wstr name`, `wstr league`, `u32 0`, `u32 0`, `wstr start_state` e.g. `"DexDefault"`, `bytes[32] password_sha256`).
+  - Result handler (`S→C 0x13`): `0x140cf7fb0(S, u16 result)` — on `0`, looks up new char in list and immediately sends Play (`C→S 0x0e`, `0x142147040`).
+- **`LeagueOverlay`** (100% C++-constructed, 3.29.3c vtable `0x1431eebc0`, size `0x3d8`, ctor `0x140ccc160`, created lazily by `0x140cf9bc0` and inserted before `title_frame`):
+  - `cards_flow` at `+0x3c0`; **`LeagueOverlay::Fill` (`0x140cccff0`) clears and reconstructs all league cards from scratch on every open/refresh**.
+  - Each main-league card (3.29.3c vtable `0x1431eccd0`, size `0x300`, ctor `0x140cc9370`, tag `*(u32*)(card+0x1d8) == 0xdc35`, size `500 × 905`) creates a local unstored mode `StackLayout` holding Hardcore (`+0x2d8`), SSF (`+0x2e0`), and Ruthless (`+0x2e8`) checkboxes via `0x140ccb3f0` (`CheckBox` `0x1418f50a0`, height `59`, right-aligned, widths equalized).
+  - *Gotchas:* None of `LeagueOverlay`/cards/checkboxes have `.ui` `+0x1b8` IDs; 3 × `59 px` boxes reach `y ≈ 789–853` in the `905 px` card (tight for a 4th box on 3–4 line descriptions); if Character Select had a league filter active, `0x140d157d0` skips auto-opening `LeagueOverlay`.

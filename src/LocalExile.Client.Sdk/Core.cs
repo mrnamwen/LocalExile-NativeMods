@@ -195,8 +195,9 @@ public interface IClientMod
 /// <param name="Replaces">Stock virtual paths overridden by this mod's overlays.</param>
 /// <param name="RawAccess">Whether this mod explicitly requests access to <see cref="IRawMemory"/>.</param>
 /// <param name="RawAccessJustification">Human-readable justification shown to players when <see cref="RawAccess"/> is <c>true</c>.</param>
-/// <param name="PayloadHash">Optional SHA-256 digest of the packed client payload bundle.</param>
+/// <param name="PayloadHash">Optional SHA-256 digest of the managed client mod assembly DLL (<c>payloadHash</c>/<c>assemblyPayloadHash</c>/<c>assemblySha256</c>).</param>
 /// <param name="Enabled">Whether the mod is enabled by default.</param>
+/// <param name="BundleSha256">Optional SHA-256 digest of the packed client <c>.bundle.bin</c> asset archive (<c>bundleSha256</c>/<c>integrity.packageSha256</c>).</param>
 public sealed record ClientModManifest(
     string Id,
     string Name,
@@ -211,7 +212,8 @@ public sealed record ClientModManifest(
     bool RawAccess = false,
     string? RawAccessJustification = null,
     string? PayloadHash = null,
-    bool Enabled = true)
+    bool Enabled = true,
+    string? BundleSha256 = null)
 {
     /// <summary>Gets the non-null dependency list.</summary>
     public IReadOnlyList<string> EffectiveDepends => Depends ?? [];
@@ -286,14 +288,19 @@ public sealed record ClientModManifest(
         string? rawJustification = GetString(clientSection, "rawAccessJustification")
             ?? GetString(root, "rawAccessJustification");
         string? payloadHash = GetString(clientSection, "payloadHash")
-            ?? GetString(clientSection, "bundleSha256")
+            ?? GetString(clientSection, "assemblyPayloadHash")
+            ?? GetString(clientSection, "assemblySha256")
             ?? GetString(root, "payloadHash")
+            ?? GetString(root, "assemblyPayloadHash")
+            ?? GetString(root, "assemblySha256");
+
+        string? bundleSha256 = GetString(clientSection, "bundleSha256")
             ?? GetString(root, "bundleSha256");
-        if (payloadHash is null
+        if (bundleSha256 is null
             && clientSection.TryGetProperty("integrity", out JsonElement integrityElem)
             && integrityElem.ValueKind == JsonValueKind.Object)
         {
-            payloadHash = GetString(integrityElem, "packageSha256");
+            bundleSha256 = GetString(integrityElem, "packageSha256");
         }
         bool enabled = (GetBool(root, "enabled") ?? true) && (GetBool(clientSection, "enabled") ?? true);
 
@@ -311,7 +318,8 @@ public sealed record ClientModManifest(
             RawAccess: rawAccess,
             RawAccessJustification: rawJustification,
             PayloadHash: payloadHash,
-            Enabled: enabled);
+            Enabled: enabled,
+            BundleSha256: bundleSha256);
     }
 
     private static string? GetString(JsonElement element, string propertyName)

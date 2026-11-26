@@ -43,6 +43,9 @@ public sealed class Host020AndReliabilityTests
     private static readonly byte[] s_stockBytes = "stock_payload_v2"u8.ToArray();
     private static readonly byte[] s_streamFallbackBytes = [0xAA, 0xBB, 0xCC, 0xDD];
     private static string s_clipboardMock = string.Empty;
+    private static bool s_nativeEnabledMock = true;
+    private static bool s_ignoreSetEnabled;
+    private static bool s_failGetEnabled;
 
     private static byte[] AllocatePinnedUtf8(string text)
     {
@@ -262,6 +265,43 @@ public sealed class Host020AndReliabilityTests
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiCreateWindow(byte* path, void** outControl)
+    {
+        *outControl = (void*)0x2100;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiFindChild(void* parent, byte* dotPath, void** outChild)
+    {
+        *outChild = (void*)0x2101;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiSetEnabled(void* control, int enabled)
+    {
+        if (!s_ignoreSetEnabled)
+        {
+            s_nativeEnabledMock = enabled != 0;
+        }
+
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiGetEnabled(void* control, int* outEnabled)
+    {
+        if (s_failGetEnabled)
+        {
+            return NmStatus.ErrGameException;
+        }
+
+        *outEnabled = s_nativeEnabledMock ? 1 : 0;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static unsafe NmStatus MockUiSubscribeClick(void* ctrl, delegate* unmanaged[Cdecl]<void*, void*, void> cb, void* ud, ulong* outToken)
     {
         *outToken = Interlocked.Increment(ref s_nextToken);
@@ -312,6 +352,7 @@ public sealed class Host020AndReliabilityTests
         table.UiUnsubscribe = &MockUiUnsubscribe;
         table.ClipboardGetText = &MockClipboardGetText;
         table.ClipboardSetText = &MockClipboardSetText;
+        table.UiGetEnabled = &MockUiGetEnabled;
         return table;
     }
 
@@ -335,6 +376,9 @@ public sealed class Host020AndReliabilityTests
             s_overlayUserData = null;
             s_lastAllocatedStockBuffer = nint.Zero;
             s_clipboardMock = string.Empty;
+            s_nativeEnabledMock = true;
+            s_ignoreSetEnabled = false;
+            s_failGetEnabled = false;
         }
     }
 
@@ -595,8 +639,14 @@ public sealed class Host020AndReliabilityTests
         Assert.False(sim.EnqueueGameThread(() => executed++));
         sim.DrainGameThreadQueue(0.016f, 4096);
         Assert.Equal(4096, executed);
-        Assert.True(sim.EnqueueGameThread(() => executed++));
+        int gameThreadId = 0;
+        Assert.True(sim.EnqueueGameThread(() =>
+        {
+            executed++;
+            gameThreadId = Environment.CurrentManagedThreadId;
+        }));
         sim.DrainGameThreadQueue(0.016f, 4096);
+        Assert.NotEqual(0, gameThreadId);
 
         VerifyNativeQueueFullBehavior();
 
@@ -607,12 +657,33 @@ public sealed class Host020AndReliabilityTests
             Assert.True(sim.EnqueueGameThread(() => { }));
         }
 
-        InvalidOperationException syncEx = await Task.Run(() =>
-            Assert.Throws<InvalidOperationException>(() => host.Scheduler.RunOnGameThread(() => { })));
-        Assert.Contains("full", syncEx.Message, StringComparison.OrdinalIgnoreCase);
+        var offThreadDone = new TaskCompletionSource<(InvalidOperationException SyncEx, InvalidOperationException AsyncEx)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                Assert.NotEqual(gameThreadId, Environment.CurrentManagedThreadId);
+                InvalidOperationException syncEx = Assert.Throws<InvalidOperationException>(
+                    () => host.Scheduler.RunOnGameThread(() => { }));
+                InvalidOperationException asyncEx = Assert.ThrowsAsync<InvalidOperationException>(
+                    () => host.Scheduler.RunOnGameThreadAsync(() => 42)).GetAwaiter().GetResult();
+                offThreadDone.SetResult((syncEx, asyncEx));
+            }
+            catch (Exception ex)
+            {
+                offThreadDone.SetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "QueueFullOffGameThread"
+        };
+        worker.Start();
+        (InvalidOperationException syncEx, InvalidOperationException asyncEx) = await offThreadDone.Task;
+        worker.Join();
 
-        InvalidOperationException asyncEx = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => Task.Run(() => host.Scheduler.RunOnGameThreadAsync(() => 42)));
+        Assert.Contains("full", syncEx.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("full", asyncEx.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -698,6 +769,10 @@ public sealed class Host020AndReliabilityTests
         Assert.Equal(btn.Rect, btn.Bounds);
         btn.Enabled = false;
         Assert.False(btn.IsEnabled);
+        var simBtn = bridge.GetSimulatedNativeUiControl("Art/UI/mod.ui", "Go")!;
+        Assert.False(simBtn.Enabled);
+        simBtn.Enabled = true;
+        Assert.True(btn.IsEnabled);
 
         host.HandleServerUiCommand(new ServerUiCommand(ServerUiCommandKind.SubscribeEvent, "nested_win", ControlPath: "Go", EventName: "clicked"));
         host.HandleServerUiCommand(new ServerUiCommand(ServerUiCommandKind.SubscribeEvent, "NESTED_WIN", ControlPath: "go", EventName: "CLICKED"));
@@ -726,6 +801,77 @@ public sealed class Host020AndReliabilityTests
         Assert.Equal(0, host.SubscribedUiEventCount);
         repChild.Destroy();
         Assert.Throws<ObjectDisposedException>(() => _ = repChild.Text);
+    }
+
+    [Fact]
+    public unsafe void UiControlNode_RectAndIsEnabled_QueryNativeStateWithoutMaskingDeadOrNoopBridge()
+    {
+        NmAbiTable table = CreateMockAbiTable();
+        table.UiCreateWindow = &MockUiCreateWindow;
+        table.UiFindChild = &MockUiFindChild;
+        table.UiSetEnabled = &MockUiSetEnabled;
+        table.UiGetEnabled = &MockUiGetEnabled;
+
+        using var bridge = new NativeShimBridge((nint)(&table));
+        using var host = new ClientHostRuntime(bridge);
+        host.Start();
+
+        using var uiOverlay = host.FileOverlayService.RegisterVirtualTextFile(
+            "Art/UI/native_guard.ui",
+            """
+            begin Frame
+              id = "root_frame"
+              begin Button
+                id = "Go"
+                text = "Go"
+              end
+            end
+            """);
+
+        IUiWindow win = host.Ui.Load("Art/UI/native_guard.ui");
+        IButton btn = win.Require<IButton>("Go");
+
+        // 1. IsEnabled reads back native state via TryGetNativeUiEnabled.
+        Assert.True(btn.IsEnabled);
+        btn.IsEnabled = false;
+        Assert.False(btn.IsEnabled);
+        Assert.False(s_nativeEnabledMock);
+
+        // 2. If SetNativeUiEnabled is a no-op, IsEnabled must reflect true native state instead of stale _enabled.
+        btn.IsEnabled = true;
+        Assert.True(btn.IsEnabled);
+        s_ignoreSetEnabled = true;
+        btn.IsEnabled = false;
+        Assert.True(btn.IsEnabled);
+
+        // 3. If TryGetNativeUiEnabled fails, IsEnabled must return false instead of masking via stale _enabled.
+        s_failGetEnabled = true;
+        Assert.False(btn.IsEnabled);
+
+        // 4. If TryGetNativeUiRect fails (UiGetRect == null) on a live-handled control, Rect must return default.
+        btn.SetPosition(12, 34);
+        btn.SetSize(120, 40);
+        Assert.Equal(default, btn.Rect);
+
+        // 5. When NativeControlHandle == 0 (simulated native UI disabled), managed fallback still works.
+        using var simOffBridge = new SimulatedNativeBridge { EnableSimulatedNativeUi = false };
+        using var simOffHost = new ClientHostRuntime(simOffBridge);
+        simOffHost.Start();
+        simOffBridge.AddStockTextFile("Art/UI/managed_fallback.ui", """
+            begin Frame
+              id = "root_frame"
+              begin Button
+                id = "Go"
+              end
+            end
+            """);
+        IUiWindow simWin = simOffHost.Ui.Load("Art/UI/managed_fallback.ui");
+        IButton simBtn = simWin.Require<IButton>("Go");
+        simBtn.SetPosition(12, 34);
+        simBtn.SetSize(120, 40);
+        Assert.Equal(new UiRect(12, 34, 120, 40), simBtn.Rect);
+        simBtn.IsEnabled = false;
+        Assert.False(simBtn.IsEnabled);
     }
 
     [Fact]
@@ -1409,5 +1555,22 @@ public sealed class Host020AndReliabilityTests
         tb.DefineMethodOverride(loadMethod, ifaceLoad);
         tb.CreateType();
         ab.Save(outputDllPath);
+    }
+
+    [Fact]
+    public void Bridge_DrainGameThreadQueueZeroMaxItems_AndSendRawPayloadOver64K_Guards()
+    {
+        using var bridge = new SimulatedNativeBridge();
+        int ran = 0;
+        Assert.True(bridge.EnqueueGameThread(() => ran++));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => bridge.DrainGameThreadQueue(0.016f, -1));
+        Assert.Equal(0, bridge.DrainGameThreadQueue(0.016f, 0));
+        Assert.Equal(0, ran);
+        Assert.Equal(1, bridge.DrainGameThreadQueue(0.016f, 1));
+        Assert.Equal(1, ran);
+
+        byte[] oversized = new byte[65537];
+        Assert.Throws<ArgumentOutOfRangeException>(() => bridge.SendRawPacket(0x02FC, oversized));
     }
 }

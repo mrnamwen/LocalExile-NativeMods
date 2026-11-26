@@ -1662,7 +1662,7 @@
       "offset": "0x1e8",
       "type": "uint32_t",
       "status": "live_verified",
-      "notes": "Control flags bitfield; bit 0x800 tracks visibility.",
+      "notes": "Control flags bitfield; bit 0x800 tracks visibility and bit 13 (0x2000) tracks enabled state (Control::SetEnabled 0x18b0c70).",
       "source": "07-spike-results.md; spikes/agent.js#L74"
     },
     {

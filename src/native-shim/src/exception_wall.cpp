@@ -1,4 +1,5 @@
 #include "exception_wall.hpp"
+#include "shim_logger.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -311,6 +312,23 @@ LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
     if (frame == nullptr) {
         if (code == NM_MSVC_CXX_EXCEPTION_CODE) {
             g_msvc_cxx_passthrough_count.fetch_add(1, std::memory_order_relaxed);
+        } else if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_STACK_OVERFLOW) {
+            static std::atomic<int> diag_count{0};
+            if (diag_count.fetch_add(1, std::memory_order_relaxed) < 5) {
+                const uint64_t mod_base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+                const uint64_t rip = ep->ContextRecord->Rip;
+                const uint64_t fault_addr = (ep->ExceptionRecord->NumberParameters >= 2)
+                                                ? static_cast<uint64_t>(ep->ExceptionRecord->ExceptionInformation[1])
+                                                : 0ull;
+                logger_logf("ERROR",
+                            "[VEH-DIAG] Native exception outside guard: code=0x%08lX rip=0x%llX (exe_rva=0x%llX) fault_addr=0x%llX rcx=0x%llX rdx=0x%llX",
+                            static_cast<unsigned long>(code),
+                            static_cast<unsigned long long>(rip),
+                            static_cast<unsigned long long>(rip >= mod_base ? (rip - mod_base) : 0ull),
+                            static_cast<unsigned long long>(fault_addr),
+                            static_cast<unsigned long long>(ep->ContextRecord->Rcx),
+                            static_cast<unsigned long long>(ep->ContextRecord->Rdx));
+            }
         }
         return EXCEPTION_CONTINUE_SEARCH;
     }

@@ -221,7 +221,7 @@ public sealed class ClientModLoader : IDisposable
         {
             return [.. _mods.Values
                 .Where(m => !m.IsDisabled)
-                .Select(m => new InstalledClientModInfo(m.Manifest.Id, m.Manifest.Version, m.Manifest.PayloadHash))];
+                .Select(m => new InstalledClientModInfo(m.Manifest.Id, m.Manifest.Version, m.Manifest.PayloadHash ?? m.Manifest.BundleSha256))];
         }
     }
 

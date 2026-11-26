@@ -28,17 +28,33 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
     {
         string id = mod.Manifest.Id;
 
-        _bridge = new ClientBridgeHost(new LocalExileGatewaySink(_players), new ClientBridgeOptions
+        var bridge = new ClientBridgeHost(new LocalExileGatewaySink(_players), new ClientBridgeOptions
         {
             ServerVersion = "LocalExile-3.29.3d",
-            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId,
+            DefaultChannel = Phase0Protocol.ChannelName
         });
+        _bridge = bridge;
 
-        _serverMod = new Phase0ServerMod(_bridge, mod.Log);
-        _serverMod.Attach();
+        var serverMod = new Phase0ServerMod(bridge, mod.Log);
+        _serverMod = serverMod;
+        serverMod.Attach();
 
         // Register via LocalExileGatewayHost + shared GatewayBridgeBus (0x02C9/0x02CA + /nm)
-        _gatewayHostHandle = LocalExileGatewayHost.Attach(mod, _bridge, out _busRegistration);
+        _gatewayHostHandle = LocalExileGatewayHost.Attach(
+            mod,
+            bridge,
+            out _busRegistration,
+            new LocalExileGatewayHostOptions
+            {
+                OnGatewayContext = (connId, _, gw) =>
+                {
+                    if (gw is Player p)
+                    {
+                        _players[connId] = p;
+                    }
+                }
+            });
 
         bool clientReadySeen = false;
         bool clientReadyChannelOk = false;
@@ -52,7 +68,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
         // Ensure _players tracks every player as early as area entry so ServerHandshake / ClientHandshake replies are never dropped.
         GameEvents.PlayerEntered.Add(id, player =>
         {
-            var client = Client.For(player);
+            var client = global::Client.For(player);
             _players[client.ConnectionId] = player;
             return Task.CompletedTask;
         });
@@ -60,7 +76,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
         // E2E-13: GameEvents.ClientReady + Client.For(player)
         GameEvents.ClientReady.Add(id, async player =>
         {
-            var client = Client.For(player);
+            var client = global::Client.For(player);
             _players[client.ConnectionId] = player;
             clientReadySeen = true;
             clientReadyChannelOk = client.Connected;
@@ -77,7 +93,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
 
             if (client.Connected)
             {
-                await _bridge.SendAsync(
+                await bridge.SendAsync(
                     client.ConnectionId,
                     new Phase0ServerEventNotice("ClientReady", $"Server observed Client.For(player) conn={client.ConnectionId}"));
             }
@@ -86,7 +102,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
         // E2E-13: GameEvents.ClientMessage
         GameEvents.ClientMessage.Add(id, async msg =>
         {
-            var client = Client.For(msg.Player);
+            var client = global::Client.For(msg.Player);
             _players[client.ConnectionId] = msg.Player;
             clientMessageSeen = true;
             mod.Log($"[PHASE0-E2E] GameEvents.ClientMessage player={Program.CharacterName(msg.Player)} text='{msg.Text}' links={msg.Links.Count}");
@@ -143,7 +159,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
                 return false;
             }
 
-            var client = Client.For(player);
+            var client = global::Client.For(player);
             _players[client.ConnectionId] = player;
             ReadOnlyMemory<byte> payload = bytes.AsMemory(2);
             mod.Log($"[PHASE0-E2E] Echoing C->S 0x{Phase0Protocol.RawProbeOpcodeLoopback:X4} ({payload.Length} B) back to {client.ConnectionId}");
@@ -155,7 +171,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
         });
 
         // E2E-15: Item.CustomName (0x80 custom-name flag) via /phase0 item or Phase0ItemTestRequest
-        _bridge.On<Phase0ItemTestRequest>(async (session, req, ct) =>
+        bridge.On<Phase0ItemTestRequest>(async (session, req, ct) =>
         {
             var item = new Item(1, ["Mods"], 0)
             {
@@ -182,7 +198,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
                 passed,
                 $"set='{observed}' payloadBytes={payloadWithName.Length} cleared={clearedOk}"));
 
-            await _bridge.SendAsync(
+            await bridge.SendAsync(
                 session.ConnectionId,
                 new Phase0ItemTestResult(passed, observed, clearedOk, "Item.CustomName 0x80 verified"),
                 cancellationToken: ct);
@@ -191,7 +207,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
         // /phase0 <run|close|raw|item|levelup|chat|finalize> driver command
         GameEvents.Command(id, "phase0", "/phase0 [run|close|raw|item|levelup|chat|finalize]", async (player, args) =>
         {
-            var channel = Client.For(player);
+            var channel = global::Client.For(player);
             string connId = channel.ConnectionId;
             _players[connId] = player;
             string suite = args.Length > 0 ? args[0].Trim().ToLowerInvariant() : "run";
@@ -228,7 +244,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
                 case "chat":
                     await channel.SendChat($"{Phase0Protocol.SuppressChatPrefix} probe_secret");
                     await channel.SendChat($"{Phase0Protocol.AllowChatPrefix} probe_public");
-                    await _serverMod.TriggerSuiteAsync(connId, suite);
+                    await serverMod.TriggerSuiteAsync(connId, suite);
                     break;
 
                 case "finalize":
@@ -248,11 +264,11 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
                             false,
                             $"Incomplete: levelUpSeen={levelUpSeen} cosmeticSeen={cosmeticSeen}"));
                     }
-                    await _serverMod.TriggerSuiteAsync(connId, suite);
+                    await serverMod.TriggerSuiteAsync(connId, suite);
                     break;
 
                 default:
-                    await _serverMod.TriggerSuiteAsync(connId, suite);
+                    await serverMod.TriggerSuiteAsync(connId, suite);
                     break;
             }
         });
@@ -280,7 +296,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
         {
             if (_players.TryGetValue(connectionId, out Player? player) && !player.Closed)
             {
-                await Client.For(player).SendPacket(opcode, payload, cancellationToken: cancellationToken);
+                await global::Client.For(player).SendPacket(opcode, payload, cancellationToken: cancellationToken);
             }
         }
 
@@ -288,7 +304,7 @@ public sealed class Phase0LocalExileEntry : IMod, IDisposable
         {
             if (_players.TryGetValue(connectionId, out Player? player) && !player.Closed)
             {
-                await Client.For(player).SendChat(text, cancellationToken);
+                await global::Client.For(player).SendChat(text, cancellationToken);
             }
         }
     }

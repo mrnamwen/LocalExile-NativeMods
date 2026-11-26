@@ -17,6 +17,95 @@
 #  include <fstream>
 #  include <sys/mman.h>
 #  include <unistd.h>
+extern "C" void __register_frame(const void* begin);
+extern "C" void __deregister_frame(const void* begin);
+#endif
+
+#if defined(_WIN32) && !defined(_MSC_VER) && defined(__x86_64__)
+extern "C" {
+void nm_hook_invoke_original(void* orig_fn, nm_hook_context_t* ctx);
+__asm__(
+    ".text\n"
+    ".globl nm_hook_invoke_original\n"
+    ".def nm_hook_invoke_original; .scl 2; .type 32; .endef\n"
+    ".seh_proc nm_hook_invoke_original\n"
+    "nm_hook_invoke_original:\n"
+    "    pushq %rbx\n"
+    "    .seh_pushreg %rbx\n"
+    "    subq $0x40, %rsp\n"
+    "    .seh_stackalloc 0x40\n"
+    "    .seh_endprologue\n"
+    "    movq %rdx, %rbx\n"
+    "    movq %rcx, %r10\n"
+    "    movq 0x20(%rbx), %rax\n"
+    "    movq %rax, 0x20(%rsp)\n"
+    "    movq 0x28(%rbx), %rax\n"
+    "    movq %rax, 0x28(%rsp)\n"
+    "    movq 0x30(%rbx), %rax\n"
+    "    movq %rax, 0x30(%rsp)\n"
+    "    movq 0x38(%rbx), %rax\n"
+    "    movq %rax, 0x38(%rsp)\n"
+    "    movq 0x40(%rbx), %xmm0\n"
+    "    movq 0x48(%rbx), %xmm1\n"
+    "    movq 0x50(%rbx), %xmm2\n"
+    "    movq 0x58(%rbx), %xmm3\n"
+    "    movq 0x00(%rbx), %rcx\n"
+    "    movq 0x08(%rbx), %rdx\n"
+    "    movq 0x10(%rbx), %r8\n"
+    "    movq 0x18(%rbx), %r9\n"
+    "    callq *%r10\n"
+    "    movq %rax, 0x60(%rbx)\n"
+    "    movq %xmm0, 0x68(%rbx)\n"
+    "    addq $0x40, %rsp\n"
+    "    popq %rbx\n"
+    "    retq\n"
+    ".seh_endproc\n"
+);
+} // extern "C"
+#elif !defined(_WIN32) && defined(__x86_64__)
+extern "C" {
+void nm_hook_invoke_original(void* orig_fn, nm_hook_context_t* ctx);
+__asm__(
+    ".text\n"
+    ".globl nm_hook_invoke_original\n"
+    ".type nm_hook_invoke_original, @function\n"
+    "nm_hook_invoke_original:\n"
+    "    .cfi_startproc\n"
+    "    pushq %rbp\n"
+    "    .cfi_def_cfa_offset 16\n"
+    "    .cfi_offset %rbp, -16\n"
+    "    movq %rsp, %rbp\n"
+    "    .cfi_def_cfa_register %rbp\n"
+    "    pushq %rbx\n"
+    "    .cfi_offset %rbx, -24\n"
+    "    subq $8, %rsp\n"
+    "    movq %rsi, %rbx\n"
+    "    movq %rdi, %r10\n"
+    "    pushq 0x38(%rbx)\n"
+    "    pushq 0x30(%rbx)\n"
+    "    movq 0x40(%rbx), %xmm0\n"
+    "    movq 0x48(%rbx), %xmm1\n"
+    "    movq 0x50(%rbx), %xmm2\n"
+    "    movq 0x58(%rbx), %xmm3\n"
+    "    movq 0x00(%rbx), %rdi\n"
+    "    movq 0x08(%rbx), %rsi\n"
+    "    movq 0x10(%rbx), %rdx\n"
+    "    movq 0x18(%rbx), %rcx\n"
+    "    movq 0x20(%rbx), %r8\n"
+    "    movq 0x28(%rbx), %r9\n"
+    "    movl $4, %eax\n"
+    "    callq *%r10\n"
+    "    movq %rax, 0x60(%rbx)\n"
+    "    movq %xmm0, 0x68(%rbx)\n"
+    "    leaq -8(%rbp), %rsp\n"
+    "    popq %rbx\n"
+    "    popq %rbp\n"
+    "    .cfi_def_cfa %rsp, 8\n"
+    "    retq\n"
+    "    .cfi_endproc\n"
+    ".size nm_hook_invoke_original, .-nm_hook_invoke_original\n"
+);
+} // extern "C"
 #endif
 
 namespace nativemods {
@@ -519,12 +608,58 @@ size_t HookEngine::compute_stolen_length(const uint8_t* code, size_t min_len) {
     if (!code || min_len == 0) return 0;
     constexpr size_t kMaxScan = 64;
     size_t offset = 0;
+    size_t max_forward_branch_target = 0;
     while (offset < min_len && offset < kMaxScan) {
         const DecodedX64Insn insn = decode_x64_insn(code + offset, kMaxScan - offset);
         if (insn.length == 0) {
             return 0; // Fail safely instead of splitting an unknown/invalid instruction
         }
-        offset += insn.length;
+        const size_t next_offset = offset + insn.length;
+
+        // Track forward conditional branches so an early-return pattern like:
+        //   test rcx, rcx ; jnz +3 ; xor eax, eax ; ret ; <rest of prologue>
+        // can continue decoding past the guarded ret.
+        const bool is_cond_branch =
+            (!insn.is_0f && ((insn.opcode_byte1 >= 0x70u && insn.opcode_byte1 <= 0x7Fu) ||
+                             (insn.opcode_byte1 >= 0xE0u && insn.opcode_byte1 <= 0xE3u))) ||
+            (insn.is_0f && insn.opcode_byte2 >= 0x80u && insn.opcode_byte2 <= 0x8Fu);
+        if (is_cond_branch) {
+            int64_t rel = 0;
+            if (insn.disp_size == 1) {
+                rel = static_cast<int8_t>(code[offset + insn.disp_offset]);
+            } else if (insn.disp_size == 4) {
+                int32_t r32 = 0;
+                std::memcpy(&r32, code + offset + insn.disp_offset, 4);
+                rel = r32;
+            }
+            const int64_t target = static_cast<int64_t>(next_offset) + rel;
+            if (target > static_cast<int64_t>(next_offset) && target <= static_cast<int64_t>(kMaxScan)) {
+                max_forward_branch_target = std::max(max_forward_branch_target, static_cast<size_t>(target));
+            }
+        }
+
+        // Stop/reject if a function-terminating instruction is hit before min_len
+        // unless an earlier conditional/forward branch targets at or past it.
+        const uint8_t op = insn.opcode_byte1;
+        const bool is_int3 = (!insn.is_0f && op == 0xCCu);
+        const bool is_ret = (!insn.is_0f && (op == 0xC3u || op == 0xC2u || op == 0xCBu || op == 0xCAu));
+        const bool is_ud2 = (insn.is_0f && insn.opcode_byte2 == 0x0Bu);
+        const bool is_uncond_jmp =
+            (!insn.is_0f && (op == 0xE9u || op == 0xEBu ||
+                             (op == 0xFFu && insn.has_modrm &&
+                              ((code[offset + insn.modrm_offset] >> 3) & 7u) == 4u)));
+
+        if (is_int3) {
+            if (max_forward_branch_target < next_offset) {
+                return 0;
+            }
+        } else if ((is_ret || is_ud2 || is_uncond_jmp) && next_offset < min_len) {
+            if (max_forward_branch_target < next_offset) {
+                return 0;
+            }
+        }
+
+        offset = next_offset;
     }
     return (offset >= min_len && offset <= kMaxScan) ? offset : 0;
 }
@@ -632,6 +767,9 @@ bool HookEngine::relocate_instructions(
             }
 
             const StolenInsn* internal_insn = find_internal_target(si);
+            if (si.internal_target && internal_insn == nullptr) {
+                return false;
+            }
             const bool force_near = (!write_output && internal_insn != nullptr);
             const uint64_t target = write_output
                 ? (internal_insn ? (tramp_base + internal_insn->tramp_off) : si.abs_target)
@@ -960,22 +1098,9 @@ void HookEngine::dispatch_pre(TargetChain* chain, nm_hook_context_t* ctx) {
         snapshot = chain->pre_hooks;
     }
 
-    struct CallCtx {
-        nm_hook_chain_callback_t cb;
-        nm_hook_context_t*       hook_ctx;
-        void*                    ud;
-    };
-    auto run_one = [](void* raw) -> int64_t {
-        auto* c = static_cast<CallCtx*>(raw);
-        c->cb(c->hook_ctx, c->ud);
-        return 0;
-    };
-
     for (const auto& node : snapshot) {
         if (!node.cb) continue;
-        CallCtx cc{node.cb, ctx, node.user_data};
-        nm_exception_info_t ex{};
-        (void)invoke_guarded(run_one, &cc, nullptr, &ex);
+        node.cb(ctx, node.user_data);
     }
 }
 
@@ -988,23 +1113,39 @@ void HookEngine::dispatch_post(TargetChain* chain, nm_hook_context_t* ctx) {
         snapshot = chain->post_hooks;
     }
 
-    struct CallCtx {
-        nm_hook_chain_callback_t cb;
-        nm_hook_context_t*       hook_ctx;
-        void*                    ud;
-    };
-    auto run_one = [](void* raw) -> int64_t {
-        auto* c = static_cast<CallCtx*>(raw);
-        c->cb(c->hook_ctx, c->ud);
-        return 0;
-    };
-
     for (const auto& node : snapshot) {
         if (!node.cb) continue;
-        CallCtx cc{node.cb, ctx, node.user_data};
-        nm_exception_info_t ex{};
-        (void)invoke_guarded(run_one, &cc, nullptr, &ex);
+        node.cb(ctx, node.user_data);
     }
+}
+
+void HookEngine::dispatch_chain_body(TargetChain* chain, nm_hook_context_t* ctx) {
+    struct ActiveCallGuard {
+        TargetChain* c;
+        ~ActiveCallGuard() {
+            if (c) {
+                c->active_calls.fetch_sub(1, std::memory_order_acq_rel);
+            }
+        }
+    } guard{chain};
+
+    if (!chain || !ctx) {
+        return;
+    }
+
+    dispatch_pre(chain, ctx);
+    if (!ctx->skip_original && chain->original_callable != nullptr) {
+#if (defined(_WIN32) && !defined(_MSC_VER) && defined(__x86_64__)) || (!defined(_WIN32) && defined(__x86_64__))
+        nm_hook_invoke_original(chain->original_callable, ctx);
+#elif defined(_WIN32) && defined(_MSC_VER)
+        using OrigFn = uint64_t(NM_CALL*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+        auto fn = reinterpret_cast<OrigFn>(chain->original_callable);
+        ctx->return_value = fn(
+            ctx->args[0], ctx->args[1], ctx->args[2], ctx->args[3],
+            ctx->args[4], ctx->args[5], ctx->args[6], ctx->args[7]);
+#endif
+    }
+    dispatch_post(chain, ctx);
 }
 
 void* HookEngine::build_dispatcher_stub(TargetChain* chain, size_t& out_size) {
@@ -1022,9 +1163,7 @@ void* HookEngine::build_dispatcher_stub(TargetChain* chain, size_t& out_size) {
     const ptrdiff_t active_calls_diff =
         reinterpret_cast<const uint8_t*>(&chain->active_calls) - reinterpret_cast<const uint8_t*>(chain);
     const int32_t active_calls_off = static_cast<int32_t>(active_calls_diff);
-    const uint64_t pre_addr  = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&HookEngine::dispatch_pre));
-    const uint64_t post_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&HookEngine::dispatch_post));
-    const uint64_t orig_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(chain->original_callable));
+    const uint64_t body_addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&HookEngine::dispatch_chain_body));
 
     auto push_bytes = [&](std::initializer_list<uint8_t> bs) {
         code.insert(code.end(), bs.begin(), bs.end());
@@ -1039,109 +1178,12 @@ void* HookEngine::build_dispatcher_stub(TargetChain* chain, size_t& out_size) {
     };
 
 #if defined(_WIN32)
-    // Win64 ABI dispatcher stub
-    // push rbx ; sub rsp, 0xD0
-    push_bytes({0x53});
-    push_bytes({0x48, 0x81, 0xEC, 0xD0, 0x00, 0x00, 0x00});
-
-    // mov rbx, chain_ptr ; lock add dword ptr [rbx + active_calls_off], 1
-    emit_mov_rbx_u64(chain_ptr);
-    push_bytes({0xF0, 0x83, 0x83});
-    emit_u32(code, static_cast<uint32_t>(active_calls_off));
-    code.push_back(0x01u);
-
-    // Save rcx, rdx, r8, r9 -> ctx.args[0..3] ([rsp+0x40..0x58])
-    push_bytes({0x48, 0x89, 0x4C, 0x24, 0x40});
-    push_bytes({0x48, 0x89, 0x54, 0x24, 0x48});
-    push_bytes({0x4C, 0x89, 0x44, 0x24, 0x50});
-    push_bytes({0x4C, 0x89, 0x4C, 0x24, 0x58});
-
-    // Copy caller stack args 4..7 ([rsp+0x100..0x118]) -> ctx.args[4..7] ([rsp+0x60..0x78])
-    push_bytes({0x48, 0x8B, 0x84, 0x24, 0x00, 0x01, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x60});
-    push_bytes({0x48, 0x8B, 0x84, 0x24, 0x08, 0x01, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x68});
-    push_bytes({0x48, 0x8B, 0x84, 0x24, 0x10, 0x01, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x70});
-    push_bytes({0x48, 0x8B, 0x84, 0x24, 0x18, 0x01, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x78});
-
-    // Save xmm0..xmm3 -> ctx.float_args[0..3] ([rsp+0x80..0x98])
-    push_bytes({0x66, 0x0F, 0xD6, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00});
-    push_bytes({0x66, 0x0F, 0xD6, 0x8C, 0x24, 0x88, 0x00, 0x00, 0x00});
-    push_bytes({0x66, 0x0F, 0xD6, 0x94, 0x24, 0x90, 0x00, 0x00, 0x00});
-    push_bytes({0x66, 0x0F, 0xD6, 0x9C, 0x24, 0x98, 0x00, 0x00, 0x00});
-
-    // Zero return_value (0xA0), return_float (0xA8), skip_original+reserved (0xB8)
-    push_bytes({0x33, 0xC0});
-    push_bytes({0x48, 0x89, 0x84, 0x24, 0xA0, 0x00, 0x00, 0x00});
-    push_bytes({0x48, 0x89, 0x84, 0x24, 0xA8, 0x00, 0x00, 0x00});
-    push_bytes({0x48, 0x89, 0x84, 0x24, 0xB8, 0x00, 0x00, 0x00});
-
-    // ctx.target_address (0xB0)
-    emit_mov_rax_u64(chain->target_address);
-    push_bytes({0x48, 0x89, 0x84, 0x24, 0xB0, 0x00, 0x00, 0x00});
-
-    // dispatch_pre(rcx=chain, rdx=&ctx)
-    push_bytes({0x48, 0x89, 0xD9});             // mov rcx, rbx
-    push_bytes({0x48, 0x8D, 0x54, 0x24, 0x40}); // lea rdx, [rsp+0x40]
-    emit_mov_rax_u64(pre_addr);
-    push_bytes({0xFF, 0xD0});                   // call rax
-
-    // cmp byte ptr [rsp+0xB8], 0 ; jne near skip_orig
-    push_bytes({0x80, 0xBC, 0x24, 0xB8, 0x00, 0x00, 0x00, 0x00});
-    push_bytes({0x0F, 0x85});
-    const size_t jcc_disp_pos = code.size();
-    emit_u32(code, 0);
-
-    // Copy ctx.args[4..7] -> [rsp+0x20..0x38]
-    push_bytes({0x48, 0x8B, 0x44, 0x24, 0x60, 0x48, 0x89, 0x44, 0x24, 0x20});
-    push_bytes({0x48, 0x8B, 0x44, 0x24, 0x68, 0x48, 0x89, 0x44, 0x24, 0x28});
-    push_bytes({0x48, 0x8B, 0x44, 0x24, 0x70, 0x48, 0x89, 0x44, 0x24, 0x30});
-    push_bytes({0x48, 0x8B, 0x44, 0x24, 0x78, 0x48, 0x89, 0x44, 0x24, 0x38});
-
-    // Reload xmm0..xmm3 from ctx.float_args[0..3] ([rsp+0x80..0x98])
-    push_bytes({0xF3, 0x0F, 0x7E, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00});
-    push_bytes({0xF3, 0x0F, 0x7E, 0x8C, 0x24, 0x88, 0x00, 0x00, 0x00});
-    push_bytes({0xF3, 0x0F, 0x7E, 0x94, 0x24, 0x90, 0x00, 0x00, 0x00});
-    push_bytes({0xF3, 0x0F, 0x7E, 0x9C, 0x24, 0x98, 0x00, 0x00, 0x00});
-
-    // Reload rcx..r9 from ctx.args[0..3] ([rsp+0x40..0x58])
-    push_bytes({0x48, 0x8B, 0x4C, 0x24, 0x40});
-    push_bytes({0x48, 0x8B, 0x54, 0x24, 0x48});
-    push_bytes({0x4C, 0x8B, 0x44, 0x24, 0x50});
-    push_bytes({0x4C, 0x8B, 0x4C, 0x24, 0x58});
-
-    // Call original_callable
-    emit_mov_rax_u64(orig_addr);
-    push_bytes({0xFF, 0xD0});
-
-    // Store RAX -> ctx.return_value (0xA0), XMM0 -> ctx.return_float (0xA8)
-    push_bytes({0x48, 0x89, 0x84, 0x24, 0xA0, 0x00, 0x00, 0x00});
-    push_bytes({0x66, 0x0F, 0xD6, 0x84, 0x24, 0xA8, 0x00, 0x00, 0x00});
-
-    // Patch jcc rel32 -> here (skip_orig)
-    {
-        const int32_t jcc_rel32 = static_cast<int32_t>(code.size() - (jcc_disp_pos + 4));
-        std::memcpy(code.data() + jcc_disp_pos, &jcc_rel32, 4);
-    }
-
-    // dispatch_post(rcx=chain, rdx=&ctx)
-    push_bytes({0x48, 0x89, 0xD9});
-    push_bytes({0x48, 0x8D, 0x54, 0x24, 0x40});
-    emit_mov_rax_u64(post_addr);
-    push_bytes({0xFF, 0xD0});
-
-    // Restore RAX, XMM0
-    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xA0, 0x00, 0x00, 0x00});
-    push_bytes({0xF3, 0x0F, 0x7E, 0x84, 0x24, 0xA8, 0x00, 0x00, 0x00});
-
-    // lock sub dword ptr [rbx + active_calls_off], 1
-    push_bytes({0xF0, 0x83, 0xAB});
-    emit_u32(code, static_cast<uint32_t>(active_calls_off));
-    code.push_back(0x01u);
-
-    push_bytes({0x48, 0x81, 0xC4, 0xD0, 0x00, 0x00, 0x00});
-    push_bytes({0x5B, 0xC3});
-#else
-    // SysV x64 ABI dispatcher stub
-    // push rbx ; sub rsp, 0xB0
+    static_assert(sizeof(Win64RuntimeFunction) == sizeof(RUNTIME_FUNCTION), "RUNTIME_FUNCTION size mismatch");
+    // Win64 ABI dispatcher stub (Prolog = 8 bytes: push rbx ; sub rsp, 0xB0)
+    // Stack layout inside stub:
+    //   [rsp+0x00..0x1F]: 32B shadow space for dispatch_chain_body
+    //   [rsp+0x20..0x9F]: nm_hook_context_t ctx (0x80 bytes)
+    //   [rsp+0xE0..0xF8]: caller stack args 4..7 (0xB0 + 0x08 rbx + 0x08 ret + 0x20 shadow)
     push_bytes({0x53});
     push_bytes({0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00});
 
@@ -1151,17 +1193,17 @@ void* HookEngine::build_dispatcher_stub(TargetChain* chain, size_t& out_size) {
     emit_u32(code, static_cast<uint32_t>(active_calls_off));
     code.push_back(0x01u);
 
-    // Save rdi, rsi, rdx, rcx, r8, r9 -> ctx.args[0..5] ([rsp+0x20..0x48])
-    push_bytes({0x48, 0x89, 0x7C, 0x24, 0x20});
-    push_bytes({0x48, 0x89, 0x74, 0x24, 0x28});
-    push_bytes({0x48, 0x89, 0x54, 0x24, 0x30});
-    push_bytes({0x48, 0x89, 0x4C, 0x24, 0x38});
-    push_bytes({0x4C, 0x89, 0x44, 0x24, 0x40});
-    push_bytes({0x4C, 0x89, 0x4C, 0x24, 0x48});
+    // Save rcx, rdx, r8, r9 -> ctx.args[0..3] ([rsp+0x20..0x38])
+    push_bytes({0x48, 0x89, 0x4C, 0x24, 0x20});
+    push_bytes({0x48, 0x89, 0x54, 0x24, 0x28});
+    push_bytes({0x4C, 0x89, 0x44, 0x24, 0x30});
+    push_bytes({0x4C, 0x89, 0x4C, 0x24, 0x38});
 
-    // Copy caller stack args 6..7 ([rsp+0xC0..0xC8]) -> ctx.args[6..7] ([rsp+0x50..0x58])
-    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xC0, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x50});
-    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xC8, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x58});
+    // Copy caller stack args 4..7 ([rsp+0xE0..0xF8]) -> ctx.args[4..7] ([rsp+0x40..0x58])
+    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xE0, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x40});
+    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xE8, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x48});
+    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xF0, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x50});
+    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xF8, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x58});
 
     // Save xmm0..xmm3 -> ctx.float_args[0..3] ([rsp+0x60..0x78])
     push_bytes({0x66, 0x0F, 0xD6, 0x44, 0x24, 0x60});
@@ -1179,75 +1221,150 @@ void* HookEngine::build_dispatcher_stub(TargetChain* chain, size_t& out_size) {
     emit_mov_rax_u64(chain->target_address);
     push_bytes({0x48, 0x89, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00});
 
-    // dispatch_pre(rdi=chain, rsi=&ctx)
-    push_bytes({0x48, 0x89, 0xDF});             // mov rdi, rbx
-    push_bytes({0x48, 0x8D, 0x74, 0x24, 0x20}); // lea rsi, [rsp+0x20]
-    emit_mov_rax_u64(pre_addr);
-    push_bytes({0xFF, 0xD0});
-
-    // cmp byte ptr [rsp+0x98], 0 ; jne near skip_orig
-    push_bytes({0x80, 0xBC, 0x24, 0x98, 0x00, 0x00, 0x00, 0x00});
-    push_bytes({0x0F, 0x85});
-    const size_t jcc_disp_pos = code.size();
-    emit_u32(code, 0);
-
-    // Copy ctx.args[6..7] ([rsp+0x50..0x58]) -> [rsp+0x00..0x08]
-    push_bytes({0x48, 0x8B, 0x44, 0x24, 0x50, 0x48, 0x89, 0x04, 0x24});
-    push_bytes({0x48, 0x8B, 0x44, 0x24, 0x58, 0x48, 0x89, 0x44, 0x24, 0x08});
-
-    // Reload xmm0..xmm3 from ctx.float_args[0..3] ([rsp+0x60..0x78])
-    push_bytes({0xF3, 0x0F, 0x7E, 0x44, 0x24, 0x60});
-    push_bytes({0xF3, 0x0F, 0x7E, 0x4C, 0x24, 0x68});
-    push_bytes({0xF3, 0x0F, 0x7E, 0x54, 0x24, 0x70});
-    push_bytes({0xF3, 0x0F, 0x7E, 0x5C, 0x24, 0x78});
-
-    // Reload rdi, rsi, rdx, rcx, r8, r9 from ctx.args[0..5] ([rsp+0x20..0x48])
-    push_bytes({0x48, 0x8B, 0x7C, 0x24, 0x20});
-    push_bytes({0x48, 0x8B, 0x74, 0x24, 0x28});
-    push_bytes({0x48, 0x8B, 0x54, 0x24, 0x30});
-    push_bytes({0x48, 0x8B, 0x4C, 0x24, 0x38});
-    push_bytes({0x4C, 0x8B, 0x44, 0x24, 0x40});
-    push_bytes({0x4C, 0x8B, 0x4C, 0x24, 0x48});
-
-    // mov eax, 4 ; movabs r10, orig_addr ; call r10
-    push_bytes({0xB8, 0x04, 0x00, 0x00, 0x00});
-    code.push_back(0x49u); code.push_back(0xBAu);
-    emit_u64(code, orig_addr);
-    push_bytes({0x41, 0xFF, 0xD2});
-
-    // Store RAX -> ctx.return_value (0x80), XMM0 -> ctx.return_float (0x88)
-    push_bytes({0x48, 0x89, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00});
-    push_bytes({0x66, 0x0F, 0xD6, 0x84, 0x24, 0x88, 0x00, 0x00, 0x00});
-
-    // Patch jcc rel32 -> here (skip_orig)
-    {
-        const int32_t jcc_rel32 = static_cast<int32_t>(code.size() - (jcc_disp_pos + 4));
-        std::memcpy(code.data() + jcc_disp_pos, &jcc_rel32, 4);
-    }
-
-    // dispatch_post(rdi=chain, rsi=&ctx)
-    push_bytes({0x48, 0x89, 0xDF});
-    push_bytes({0x48, 0x8D, 0x74, 0x24, 0x20});
-    emit_mov_rax_u64(post_addr);
-    push_bytes({0xFF, 0xD0});
+    // dispatch_chain_body(rcx=chain, rdx=&ctx) — ActiveCallGuard decrements active_calls on return or unwind
+    push_bytes({0x48, 0x89, 0xD9});             // mov rcx, rbx
+    push_bytes({0x48, 0x8D, 0x54, 0x24, 0x20}); // lea rdx, [rsp+0x20]
+    emit_mov_rax_u64(body_addr);
+    push_bytes({0xFF, 0xD0});                   // call rax
 
     // Restore RAX, XMM0
     push_bytes({0x48, 0x8B, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00});
     push_bytes({0xF3, 0x0F, 0x7E, 0x84, 0x24, 0x88, 0x00, 0x00, 0x00});
 
-    // lock sub dword ptr [rbx + active_calls_off], 1
-    push_bytes({0xF0, 0x83, 0xAB});
+    push_bytes({0x48, 0x81, 0xC4, 0xB0, 0x00, 0x00, 0x00});
+    push_bytes({0x5B, 0xC3});
+
+    std::memcpy(page, code.data(), code.size());
+
+    // Emit Win64 UNWIND_INFO at offset 0x200 on the same executable page and register RUNTIME_FUNCTION
+    constexpr uint32_t kUnwindOff = 0x200u;
+    auto* uw = static_cast<uint8_t*>(page) + kUnwindOff;
+    uw[0] = 0x01u; // Version 1, Flags 0
+    uw[1] = 0x08u; // SizeOfProlog = 8 (1B push rbx + 7B sub rsp, 0xB0)
+    uw[2] = 0x03u; // CountOfCodes = 3
+    uw[3] = 0x00u; // FrameRegister = 0, FrameOffset = 0
+    const uint16_t codes[4] = {
+        0x0108u, // offset 8: UWOP_ALLOC_LARGE (op=1, info=0)
+        0x0016u, // 0xB0 / 8 = 22 (0x16)
+        0x3001u, // offset 1: UWOP_PUSH_NONVOL (op=0, reg=3 RBX)
+        0x0000u, // alignment padding
+    };
+    std::memcpy(uw + 4, codes, sizeof(codes));
+
+    chain->win64_rt_fn.begin_address = 0u;
+    chain->win64_rt_fn.end_address = static_cast<uint32_t>(code.size());
+    chain->win64_rt_fn.unwind_data = kUnwindOff;
+    if (RtlAddFunctionTable(
+            reinterpret_cast<PRUNTIME_FUNCTION>(&chain->win64_rt_fn),
+            1u,
+            reinterpret_cast<DWORD64>(page))) {
+        chain->win64_rt_registered = true;
+    }
+    FlushInstructionCache(GetCurrentProcess(), page, code.size());
+#else
+    // SysV x64 ABI dispatcher stub (Prolog = 8 bytes: push rbx ; sub rsp, 0x90)
+    // Stack layout inside stub:
+    //   [rsp+0x00..0x7F]: nm_hook_context_t ctx (0x80 bytes)
+    //   [rsp+0xA0..0xA8]: caller stack args 6..7 (0x90 + 0x08 rbx + 0x08 ret)
+    push_bytes({0x53});
+    push_bytes({0x48, 0x81, 0xEC, 0x90, 0x00, 0x00, 0x00});
+
+    // mov rbx, chain_ptr ; lock add dword ptr [rbx + active_calls_off], 1
+    emit_mov_rbx_u64(chain_ptr);
+    push_bytes({0xF0, 0x83, 0x83});
     emit_u32(code, static_cast<uint32_t>(active_calls_off));
     code.push_back(0x01u);
 
-    push_bytes({0x48, 0x81, 0xC4, 0xB0, 0x00, 0x00, 0x00});
+    // Save rdi, rsi, rdx, rcx, r8, r9 -> ctx.args[0..5] ([rsp+0x00..0x28])
+    push_bytes({0x48, 0x89, 0x3C, 0x24});
+    push_bytes({0x48, 0x89, 0x74, 0x24, 0x08});
+    push_bytes({0x48, 0x89, 0x54, 0x24, 0x10});
+    push_bytes({0x48, 0x89, 0x4C, 0x24, 0x18});
+    push_bytes({0x4C, 0x89, 0x44, 0x24, 0x20});
+    push_bytes({0x4C, 0x89, 0x4C, 0x24, 0x28});
+
+    // Copy caller stack args 6..7 ([rsp+0xA0..0xA8]) -> ctx.args[6..7] ([rsp+0x30..0x38])
+    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xA0, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x30});
+    push_bytes({0x48, 0x8B, 0x84, 0x24, 0xA8, 0x00, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x38});
+
+    // Save xmm0..xmm3 -> ctx.float_args[0..3] ([rsp+0x40..0x58])
+    push_bytes({0x66, 0x0F, 0xD6, 0x44, 0x24, 0x40});
+    push_bytes({0x66, 0x0F, 0xD6, 0x4C, 0x24, 0x48});
+    push_bytes({0x66, 0x0F, 0xD6, 0x54, 0x24, 0x50});
+    push_bytes({0x66, 0x0F, 0xD6, 0x5C, 0x24, 0x58});
+
+    // Zero return_value (0x60), return_float (0x68), skip_original+reserved (0x78)
+    push_bytes({0x33, 0xC0});
+    push_bytes({0x48, 0x89, 0x44, 0x24, 0x60});
+    push_bytes({0x48, 0x89, 0x44, 0x24, 0x68});
+    push_bytes({0x48, 0x89, 0x44, 0x24, 0x78});
+
+    // ctx.target_address (0x70)
+    emit_mov_rax_u64(chain->target_address);
+    push_bytes({0x48, 0x89, 0x44, 0x24, 0x70});
+
+    // dispatch_chain_body(rdi=chain, rsi=&ctx) — ActiveCallGuard decrements active_calls on return or unwind
+    push_bytes({0x48, 0x89, 0xDF}); // mov rdi, rbx
+    push_bytes({0x48, 0x89, 0xE6}); // mov rsi, rsp
+    emit_mov_rax_u64(body_addr);
+    push_bytes({0xFF, 0xD0});
+
+    // Restore RAX, XMM0
+    push_bytes({0x48, 0x8B, 0x44, 0x24, 0x60});
+    push_bytes({0xF3, 0x0F, 0x7E, 0x44, 0x24, 0x68});
+
+    push_bytes({0x48, 0x81, 0xC4, 0x90, 0x00, 0x00, 0x00});
     push_bytes({0x5B, 0xC3});
-#endif
 
     std::memcpy(page, code.data(), code.size());
-#if defined(_WIN32)
-    FlushInstructionCache(GetCurrentProcess(), page, code.size());
-#else
+
+    // Emit DWARF .eh_frame CIE + FDE + 0 terminator at offset 0x200 on the same page
+    constexpr size_t kEhOff = 0x200u;
+    uint8_t* eh = static_cast<uint8_t*>(page) + kEhOff;
+    size_t ep = 0;
+
+    // CIE
+    const size_t cie_start = ep;
+    ep += 4; // length placeholder
+    const uint32_t cie_id = 0;
+    std::memcpy(eh + ep, &cie_id, 4); ep += 4;
+    eh[ep++] = 1u;                                     // version
+    eh[ep++] = 'z'; eh[ep++] = 'R'; eh[ep++] = 0u;     // augmentation "zR"
+    eh[ep++] = 1u;                                     // code_alignment_factor = 1
+    eh[ep++] = 0x78u;                                  // data_alignment_factor = -8 (SLEB128)
+    eh[ep++] = 16u;                                    // return_address_register = RIP (16)
+    eh[ep++] = 1u;                                     // augmentation_data_len = 1
+    eh[ep++] = 0x00u;                                  // DW_EH_PE_absptr
+    eh[ep++] = 0x0Cu; eh[ep++] = 7u; eh[ep++] = 8u;    // DW_CFA_def_cfa rsp, 8
+    eh[ep++] = 0x90u; eh[ep++] = 1u;                   // DW_CFA_offset r16, 1 (-8)
+    while ((ep - cie_start) % 8u != 0u) eh[ep++] = 0x00u;
+    const uint32_t cie_len = static_cast<uint32_t>(ep - cie_start - 4u);
+    std::memcpy(eh + cie_start, &cie_len, 4);
+
+    // FDE
+    const size_t fde_start = ep;
+    ep += 4; // length placeholder
+    const uint32_t cie_ptr = static_cast<uint32_t>(ep - cie_start);
+    std::memcpy(eh + ep, &cie_ptr, 4); ep += 4;
+    const uint64_t pc_begin = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(page));
+    const uint64_t pc_range = static_cast<uint64_t>(code.size());
+    std::memcpy(eh + ep, &pc_begin, 8); ep += 8;
+    std::memcpy(eh + ep, &pc_range, 8); ep += 8;
+    eh[ep++] = 0u;                                     // augmentation_data_len = 0
+    eh[ep++] = 0x41u;                                  // DW_CFA_advance_loc 1 (past push rbx)
+    eh[ep++] = 0x0Eu; eh[ep++] = 16u;                  // DW_CFA_def_cfa_offset 16
+    eh[ep++] = 0x83u; eh[ep++] = 2u;                   // DW_CFA_offset r3 (rbx), 2 (-16)
+    eh[ep++] = 0x47u;                                  // DW_CFA_advance_loc 7 (past sub rsp, 0x90)
+    eh[ep++] = 0x0Eu; eh[ep++] = 0xA0u; eh[ep++] = 0x01u; // DW_CFA_def_cfa_offset 0xA0 (160)
+    while ((ep - fde_start) % 8u != 0u) eh[ep++] = 0x00u;
+    const uint32_t fde_len = static_cast<uint32_t>(ep - fde_start - 4u);
+    std::memcpy(eh + fde_start, &fde_len, 4);
+
+    const uint32_t terminator = 0u;
+    std::memcpy(eh + ep, &terminator, 4);
+
+    chain->eh_frame_fde = eh + fde_start;
+    __register_frame(chain->eh_frame_fde);
     __builtin___clear_cache(static_cast<char*>(page), static_cast<char*>(page) + code.size());
 #endif
     return page;
@@ -1295,6 +1412,17 @@ void HookEngine::free_chain_pages(TargetChain* chain) {
             rd.next_stub = nullptr;
         }
     }
+#if defined(_WIN32)
+    if (chain->win64_rt_registered) {
+        RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(&chain->win64_rt_fn));
+        chain->win64_rt_registered = false;
+    }
+#else
+    if (chain->eh_frame_fde) {
+        __deregister_frame(chain->eh_frame_fde);
+        chain->eh_frame_fde = nullptr;
+    }
+#endif
     if (chain->dispatcher_page) {
         free_exec_page(chain->dispatcher_page, chain->dispatcher_size);
         chain->dispatcher_page = nullptr;
@@ -1825,6 +1953,27 @@ void HookEngine::remove_all() {
     std::lock_guard<std::mutex> lock(mutex_);
     sweep_retired_chains_locked(true);
     sweep_retired_stubs_locked(true);
+}
+
+uint32_t HookEngine::chain_active_calls(nm_hook_kind_t kind, uint64_t target_address) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint64_t key = make_chain_key(kind, target_address);
+    auto it = chains_.find(key);
+    if (it != chains_.end() && it->second != nullptr) {
+        return it->second->active_calls.load(std::memory_order_acquire);
+    }
+    return 0;
+}
+
+size_t HookEngine::retired_chain_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return retired_chains_.size();
+}
+
+void HookEngine::sweep_retired_now(bool force_quiescent) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sweep_retired_chains_locked(force_quiescent);
+    sweep_retired_stubs_locked(force_quiescent);
 }
 
 } // namespace nativemods

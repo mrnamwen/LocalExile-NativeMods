@@ -67,6 +67,7 @@ public:
     nm_status_t ui_set_position(void* control, float x, float y);
     nm_status_t ui_set_size(void* control, float w, float h);
     nm_status_t ui_set_enabled(void* control, int32_t enabled);
+    nm_status_t ui_get_enabled(void* control, int32_t* out_enabled);
     nm_status_t ui_remove_child(void* parent_control, void* child_control);
     nm_status_t ui_destroy_control(void* control);
     nm_status_t ui_textbox_get_text(void* textbox_control, char* out_utf8, size_t capacity, size_t* out_length);

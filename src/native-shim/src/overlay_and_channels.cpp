@@ -60,21 +60,6 @@ bool is_poe_utf16_text_extension(const std::string& normalized_path) {
     return classify_poe_utf16_text_extension(normalized_path) != PoeTextFormat::None;
 }
 
-// Detects plain UTF-8/ASCII text overlays that need UTF-16LE + CRLF transcoding
-// for PoE 3.29's wide parser while leaving existing UTF-16LE (both BOM FF FE and BOM-less
-// .sm/.mat/.amd containing NUL bytes) completely untouched.
-bool needs_utf8_to_utf16le_transcode(const std::string& normalized_path, const uint8_t* data, size_t size) {
-    if (!data || size == 0) return false;
-    if (!is_poe_utf16_text_extension(normalized_path)) return false;
-    if (size >= 2 && ((data[0] == 0xFFu && data[1] == 0xFEu) || (data[0] == 0xFEu && data[1] == 0xFFu))) {
-        return false;
-    }
-    if (std::memchr(data, 0, size) != nullptr) {
-        return false;
-    }
-    return true;
-}
-
 void transcode_utf8_to_utf16le_crlf(
     const uint8_t*        data,
     size_t                size,
@@ -82,8 +67,8 @@ void transcode_utf8_to_utf16le_crlf(
     std::vector<uint8_t>& out) {
     out.clear();
     size_t i = 0;
-    if (size >= 3 && data[0] == 0xEFu && data[1] == 0xBBu && data[2] == 0xBFu) {
-        i = 3;
+    while (i + 3 <= size && data[i] == 0xEFu && data[i + 1] == 0xBBu && data[i + 2] == 0xBFu) {
+        i += 3;
     }
 
     out.reserve((include_bom ? 2u : 0u) + (size - i) * 2 + 16);
@@ -146,15 +131,169 @@ void transcode_utf8_to_utf16le_crlf(
     }
 }
 
-void maybe_transcode_poe_text_inplace(const std::string& normalized_path, std::vector<uint8_t>& bytes) {
-    if (!needs_utf8_to_utf16le_transcode(normalized_path, bytes.data(), bytes.size())) {
-        return;
+void transcode_utf16be_to_utf16le_crlf(
+    const uint8_t*        data,
+    size_t                size,
+    size_t                start_offset,
+    bool                  include_bom,
+    std::vector<uint8_t>& out) {
+    out.clear();
+    out.reserve((include_bom ? 2u : 0u) + (size - start_offset) + 16);
+    if (include_bom) {
+        out.push_back(0xFFu);
+        out.push_back(0xFEu);
     }
-    const bool include_bom =
-        classify_poe_utf16_text_extension(normalized_path) == PoeTextFormat::Utf16LeBomCrlf;
-    std::vector<uint8_t> transcoded;
-    transcode_utf8_to_utf16le_crlf(bytes.data(), bytes.size(), include_bom, transcoded);
-    bytes = std::move(transcoded);
+
+    auto push_u16 = [&out](uint16_t cu) {
+        out.push_back(static_cast<uint8_t>(cu & 0xFFu));
+        out.push_back(static_cast<uint8_t>((cu >> 8) & 0xFFu));
+    };
+
+    size_t i = start_offset;
+    while (i + 1 < size) {
+        const uint16_t cu = static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | data[i + 1]);
+        i += 2;
+        if (cu == static_cast<uint16_t>('\r')) {
+            if (i + 1 < size) {
+                const uint16_t next_cu = static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | data[i + 1]);
+                if (next_cu == static_cast<uint16_t>('\n')) {
+                    i += 2;
+                }
+            }
+            push_u16('\r');
+            push_u16('\n');
+        } else if (cu == static_cast<uint16_t>('\n')) {
+            push_u16('\r');
+            push_u16('\n');
+        } else {
+            push_u16(cu);
+        }
+    }
+}
+
+void normalize_utf16le_crlf(
+    const uint8_t*        data,
+    size_t                size,
+    size_t                start_offset,
+    bool                  include_bom,
+    std::vector<uint8_t>& out) {
+    out.clear();
+    out.reserve((include_bom ? 2u : 0u) + (size - start_offset) + 16);
+    if (include_bom) {
+        out.push_back(0xFFu);
+        out.push_back(0xFEu);
+    }
+
+    auto push_u16 = [&out](uint16_t cu) {
+        out.push_back(static_cast<uint8_t>(cu & 0xFFu));
+        out.push_back(static_cast<uint8_t>((cu >> 8) & 0xFFu));
+    };
+
+    size_t i = start_offset;
+    while (i + 1 < size) {
+        const uint16_t cu = static_cast<uint16_t>(static_cast<uint16_t>(data[i]) | (static_cast<uint16_t>(data[i + 1]) << 8));
+        i += 2;
+        if (cu == static_cast<uint16_t>('\r')) {
+            if (i + 1 < size) {
+                const uint16_t next_cu = static_cast<uint16_t>(
+                    static_cast<uint16_t>(data[i]) | (static_cast<uint16_t>(data[i + 1]) << 8));
+                if (next_cu == static_cast<uint16_t>('\n')) {
+                    i += 2;
+                }
+            }
+            push_u16('\r');
+            push_u16('\n');
+        } else if (cu == static_cast<uint16_t>('\n')) {
+            push_u16('\r');
+            push_u16('\n');
+        } else {
+            push_u16(cu);
+        }
+    }
+    if (i < size) {
+        out.push_back(data[i]);
+    }
+}
+
+bool has_bare_lf_utf16le(const uint8_t* data, size_t size, size_t start_offset) {
+    uint16_t prev = 0;
+    for (size_t i = start_offset; i + 1 < size; i += 2) {
+        const uint16_t cu = static_cast<uint16_t>(static_cast<uint16_t>(data[i]) | (static_cast<uint16_t>(data[i + 1]) << 8));
+        if (cu == static_cast<uint16_t>('\n') && prev != static_cast<uint16_t>('\r')) {
+            return true;
+        }
+        if (prev == static_cast<uint16_t>('\r') && cu != static_cast<uint16_t>('\n')) {
+            return true;
+        }
+        prev = cu;
+    }
+    return prev == static_cast<uint16_t>('\r');
+}
+
+// Normalizes PoE 3.29 text overlays to the exact encoding expected for their extension:
+//   - Utf16LeNoBomCrlf (.sm, .mat, .amd): strips any FF FE / FE FF / EF BB BF BOM, transcodes BE/UTF-8 to BOM-less UTF-16LE + CRLF.
+//   - Utf16LeBomCrlf (.ui, .ot, ...): ensures FF FE BOM is present, transcodes UTF-16BE / UTF-8 to UTF-16LE+BOM+CRLF.
+// Returns true if `out` was populated (modified), or false if `data` is already in exact target format.
+bool try_normalize_poe_text(
+    const std::string&    normalized_path,
+    const uint8_t*        data,
+    size_t                size,
+    std::vector<uint8_t>& out) {
+    out.clear();
+    if (!data || size == 0) return false;
+    const PoeTextFormat fmt = classify_poe_utf16_text_extension(normalized_path);
+    if (fmt == PoeTextFormat::None) return false;
+
+    const bool want_bom = (fmt == PoeTextFormat::Utf16LeBomCrlf);
+
+    // 1. UTF-16LE BOM (FF FE)
+    if (size >= 2 && data[0] == 0xFFu && data[1] == 0xFEu) {
+        size_t start = 2;
+        while (start + 1 < size && data[start] == 0xFFu && data[start + 1] == 0xFEu) {
+            start += 2;
+        }
+        if (want_bom && start == 2 && !has_bare_lf_utf16le(data, size, start)) {
+            return false; // Already single FF FE BOM UTF-16LE + CRLF
+        }
+        normalize_utf16le_crlf(data, size, start, want_bom, out);
+        return true;
+    }
+
+    // 2. UTF-16BE BOM (FE FF)
+    if (size >= 2 && data[0] == 0xFEu && data[1] == 0xFFu) {
+        size_t start = 2;
+        while (start + 1 < size && data[start] == 0xFEu && data[start + 1] == 0xFFu) {
+            start += 2;
+        }
+        transcode_utf16be_to_utf16le_crlf(data, size, start, want_bom, out);
+        return true;
+    }
+
+    // 3. UTF-8 BOM (EF BB BF)
+    if (size >= 3 && data[0] == 0xEFu && data[1] == 0xBBu && data[2] == 0xBFu) {
+        transcode_utf8_to_utf16le_crlf(data, size, want_bom, out);
+        return true;
+    }
+
+    // 4. BOM-less UTF-16LE (contains NUL bytes)
+    if (std::memchr(data, 0, size) != nullptr) {
+        if (!want_bom && !has_bare_lf_utf16le(data, size, 0)) {
+            return false; // Already BOM-less UTF-16LE + CRLF
+        }
+        normalize_utf16le_crlf(data, size, 0, want_bom, out);
+        return true;
+    }
+
+    // 5. Plain UTF-8 / ASCII without BOM
+    transcode_utf8_to_utf16le_crlf(data, size, want_bom, out);
+    return true;
+}
+
+void maybe_transcode_poe_text_inplace(const std::string& normalized_path, std::vector<uint8_t>& bytes) {
+    std::vector<uint8_t> normalized;
+    if (try_normalize_poe_text(normalized_path, bytes.data(), bytes.size(), normalized)) {
+        bytes = std::move(normalized);
+    }
 }
 
 #if defined(_WIN32)
@@ -651,12 +790,11 @@ nm_status_t OverlayAndChannels::has_file_overlay(const char* virtual_path_utf8, 
         size_t size = 0;
         if (cb.cb(normalized.c_str(), &data, &size, cb.user_data) == NM_OK && data != nullptr) {
             size_t final_size = size;
-            if (out_size && needs_utf8_to_utf16le_transcode(normalized, data, size)) {
-                const bool include_bom =
-                    classify_poe_utf16_text_extension(normalized) == PoeTextFormat::Utf16LeBomCrlf;
+            if (out_size) {
                 std::vector<uint8_t> transcoded;
-                transcode_utf8_to_utf16le_crlf(data, size, include_bom, transcoded);
-                final_size = transcoded.size();
+                if (try_normalize_poe_text(normalized, data, size, transcoded)) {
+                    final_size = transcoded.size();
+                }
             }
             if (cb.free_cb) {
                 cb.free_cb(data, cb.user_data);
@@ -790,11 +928,8 @@ nm_status_t OverlayAndChannels::resolve_file_overlay(const char* virtual_path_ut
         uint8_t* data = nullptr;
         size_t size = 0;
         if (cb.cb(normalized.c_str(), &data, &size, cb.user_data) == NM_OK && data != nullptr) {
-            if (needs_utf8_to_utf16le_transcode(normalized, data, size)) {
-                const bool include_bom =
-                    classify_poe_utf16_text_extension(normalized) == PoeTextFormat::Utf16LeBomCrlf;
-                std::vector<uint8_t> transcoded;
-                transcode_utf8_to_utf16le_crlf(data, size, include_bom, transcoded);
+            std::vector<uint8_t> transcoded;
+            if (try_normalize_poe_text(normalized, data, size, transcoded)) {
                 if (cb.free_cb) {
                     cb.free_cb(data, cb.user_data);
                 }
@@ -1057,7 +1192,7 @@ nm_status_t OverlayAndChannels::register_opcode_handler_group(
     nm_opcode_handler_t cb,
     void*               user_data,
     uint64_t*           out_token) {
-    if (cb == nullptr || out_token == nullptr || min_opcode > max_opcode) {
+    if (cb == nullptr || out_token == nullptr || min_opcode < NM_OPCODE_RESERVED_MIN || min_opcode > max_opcode) {
         return NM_ERR_INVALID_ARG;
     }
     std::lock_guard<std::mutex> lock(mutex_);

@@ -184,6 +184,9 @@ public interface INativeBridge : IDisposable
     /// <summary>Sets the enabled state of a live native 3.29 UI control.</summary>
     void SetNativeUiEnabled(nint control, bool enabled) { }
 
+    /// <summary>Reads the enabled state of a live native 3.29 UI control.</summary>
+    bool TryGetNativeUiEnabled(nint control, out bool enabled) { enabled = false; return false; }
+
     /// <summary>Detaches <paramref name="childControl"/> from <paramref name="parentControl"/>.</summary>
     bool RemoveNativeUiChild(nint parentControl, nint childControl) => false;
 
@@ -881,6 +884,12 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     /// <inheritdoc/>
     public int DrainGameThreadQueue(float deltaSeconds = 0f, int maxItems = 256)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxItems);
+        if (maxItems == 0)
+        {
+            return 0;
+        }
+
         int drained = 0;
         bool prev = s_inNativeGameFrame;
         s_inNativeGameFrame = true;
@@ -1275,6 +1284,11 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     /// <inheritdoc/>
     public void SendRawPacket(ushort opcode, ReadOnlySpan<byte> payload)
     {
+        if (payload.Length > 65536)
+        {
+            throw new ArgumentOutOfRangeException(nameof(payload), payload.Length, "Raw packet payload exceeds 65536 bytes.");
+        }
+
         if (_table->SendRawPacket is null)
         {
             return;
@@ -1480,6 +1494,25 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         {
             _table->UiSetEnabled((void*)control, enabled ? 1 : 0);
         }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiEnabled(nint control, out bool enabled)
+    {
+        enabled = false;
+        if (_table->UiGetEnabled is null || control == nint.Zero)
+        {
+            return false;
+        }
+
+        int raw = 0;
+        if (_table->UiGetEnabled((void*)control, &raw) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        enabled = raw != 0;
+        return true;
     }
 
     /// <inheritdoc/>

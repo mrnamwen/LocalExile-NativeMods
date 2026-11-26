@@ -164,6 +164,12 @@ def format_symbol_row(sym: dict[str, Any]) -> str:
     )
 
 
+def format_offset_row(off: dict[str, Any]) -> str:
+    name_lit = c_escape(off["name"]) + ","
+    off_val = int(off["offset"], 16)
+    return f"    {{{name_lit:<37} 0x{off_val:x}u}},"
+
+
 def generate_cpp(doc_3d: dict[str, Any], doc_c: dict[str, Any]) -> str:
     builds: list[dict[str, Any]] = []
     for b in doc_c["builds"] + doc_3d["builds"]:
@@ -177,6 +183,8 @@ def generate_cpp(doc_3d: dict[str, Any], doc_c: dict[str, Any]) -> str:
 
     syms_3d = doc_3d["symbols"]
     syms_3c = doc_c["symbols"]
+    offs_3d = doc_3d["offsets"]
+    offs_3c = doc_c["offsets"]
 
     lines: list[str] = [
         "// GENERATED FILE — DO NOT EDIT MANUALLY.",
@@ -215,6 +223,20 @@ def generate_cpp(doc_3d: dict[str, Any], doc_c: dict[str, Any]) -> str:
     ])
     for sym in syms_3c:
         lines.append(format_symbol_row(sym))
+    lines.extend([
+        "}};",
+        "",
+        f"constexpr std::array<EmbeddedOffset, {len(offs_3d)}> kOffsets3293d = {{{{",
+    ])
+    for off in offs_3d:
+        lines.append(format_offset_row(off))
+    lines.extend([
+        "}};",
+        "",
+        f"constexpr std::array<EmbeddedOffset, {len(offs_3c)}> kOffsets3293c = {{{{",
+    ])
+    for off in offs_3c:
+        lines.append(format_offset_row(off))
     lines.extend([
         "}};",
         "",
@@ -279,6 +301,36 @@ def generate_cpp(doc_3d: dict[str, Any], doc_c: dict[str, Any]) -> str:
         "const EmbeddedSymbol* find_symbol(nm_build_id_t build_id, std::string_view name) {",
         "    uint32_t count = 0;",
         "    const EmbeddedSymbol* table = get_symbol_table(build_id, count);",
+        "    if (!table) {",
+        "        return nullptr;",
+        "    }",
+        "    for (uint32_t i = 0; i < count; ++i) {",
+        "        if (name == table[i].name) {",
+        "            return &table[i];",
+        "        }",
+        "    }",
+        "    return nullptr;",
+        "}",
+        "",
+        "const EmbeddedOffset* get_offset_table(nm_build_id_t build_id, uint32_t& out_count) {",
+        "    switch (build_id) {",
+        "        case NM_BUILD_3_29_3D_328228:",
+        "        case NM_BUILD_SYNTHETIC:",
+        "            out_count = static_cast<uint32_t>(kOffsets3293d.size());",
+        "            return kOffsets3293d.data();",
+        "        case NM_BUILD_3_29_3C_327984:",
+        "        case NM_BUILD_3_29_3C_328126:",
+        "            out_count = static_cast<uint32_t>(kOffsets3293c.size());",
+        "            return kOffsets3293c.data();",
+        "        default:",
+        "            out_count = 0;",
+        "            return nullptr;",
+        "    }",
+        "}",
+        "",
+        "const EmbeddedOffset* find_offset(nm_build_id_t build_id, std::string_view name) {",
+        "    uint32_t count = 0;",
+        "    const EmbeddedOffset* table = get_offset_table(build_id, count);",
         "    if (!table) {",
         "        return nullptr;",
         "    }",

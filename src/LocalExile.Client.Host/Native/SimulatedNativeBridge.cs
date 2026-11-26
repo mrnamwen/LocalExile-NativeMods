@@ -823,6 +823,12 @@ public sealed class SimulatedNativeBridge : INativeBridge
     /// <inheritdoc/>
     public int DrainGameThreadQueue(float deltaSeconds = 0f, int maxItems = 256)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxItems);
+        if (maxItems == 0)
+        {
+            return 0;
+        }
+
         int count = 0;
         using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
         while (count < maxItems && _mainThreadQueue.TryDequeue(out Action? work))
@@ -1003,6 +1009,11 @@ public sealed class SimulatedNativeBridge : INativeBridge
     /// <inheritdoc/>
     public void SendRawPacket(ushort opcode, ReadOnlySpan<byte> payload)
     {
+        if (payload.Length > 65536)
+        {
+            throw new ArgumentOutOfRangeException(nameof(payload), payload.Length, "Raw packet payload exceeds 65536 bytes.");
+        }
+
         OnOutgoingRawPacket?.Invoke(opcode, payload.ToArray());
     }
 
@@ -1303,6 +1314,27 @@ public sealed class SimulatedNativeBridge : INativeBridge
             {
                 ctrl.Enabled = enabled;
             }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiEnabled(nint control, out bool enabled)
+    {
+        enabled = false;
+        if (!EnableSimulatedNativeUi || control == nint.Zero)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl) && !ctrl.Destroyed)
+            {
+                enabled = ctrl.Enabled;
+                return true;
+            }
+
+            return false;
         }
     }
 

@@ -6,6 +6,7 @@ using DualMod.Phase0E2E.Server;
 using DualMod.Phase0E2E.Shared;
 using LocalExile.Client.AssetPipeline.Dat64;
 using LocalExile.Client.Host;
+using LocalExile.Client.Host.Addresses;
 using LocalExile.Client.Host.Native;
 using LocalExile.Client.Host.Services;
 using LocalExile.Client.Sdk;
@@ -108,8 +109,9 @@ public sealed class Phase0E2EIntegrationTests
     {
         string root = FindRepoRoot();
         var lib3d = JsonAddressLibrary.LoadFromFile(Path.Combine(root, "data", "addresses", "3.29.3d.json"));
-        Assert.True(lib3d.TryGetAddress("files.hash_to_wstring_view", out var entry));
-        Assert.Equal(0x0e40af0ul, entry.Rva);
+        Assert.True(lib3d.TryGetEntry("files.hash_to_wstring_view", out var entry));
+        Assert.NotNull(entry);
+        Assert.Equal(0x0e40af0ul, entry!.Rva);
 
         var lib3c = JsonAddressLibrary.LoadFromFile(Path.Combine(root, "data", "addresses", "3.29.3c.json"));
         Assert.NotNull(lib3c);
@@ -124,7 +126,7 @@ public sealed class Phase0E2EIntegrationTests
 
         foreach (string symbol in sim.GetRegisteredSymbolNames())
         {
-            Assert.True(lib3d.TryGetAddress(symbol, out _), $"SimulatedNativeBridge symbol '{symbol}' missing from 3.29.3d.json");
+            Assert.True(lib3d.TryGetEntry(symbol, out _), $"SimulatedNativeBridge symbol '{symbol}' missing from 3.29.3d.json");
         }
     }
 
@@ -148,13 +150,11 @@ public sealed class Phase0E2EIntegrationTests
             RandomNumberGenerator.Fill(original);
             File.WriteAllBytes(Path.Combine(dataDir, "probe.bin"), original);
 
-            string bundlePath = Path.Combine(tempDir, "probe.bundle.bin");
-            string manifestPath = Path.Combine(tempDir, "probe.manifest.json");
-            ModBundlePacker.PackDirectory(inputDir, bundlePath, manifestPath);
+            PackedBundleResult packed = ModBundlePacker.Pack("phase0-pack", "0.2.0", inputDir, tempDir);
 
             using var sim = new SimulatedNativeBridge();
-            using var overlay = new FileOverlayService(sim);
-            using var reg = overlay.RegisterBundle(bundlePath, manifestPath);
+            var overlay = new FileOverlayService(sim);
+            using var reg = overlay.RegisterBundle(packed.BundlePath, packed.ManifestPath);
 
             byte[]? actual = overlay.ReadAllBytes("data/probe.bin");
             Assert.NotNull(actual);
@@ -296,16 +296,25 @@ public sealed class Phase0E2EIntegrationTests
         var sink = new RecordingSink();
         var bridge = new ClientBridgeHost(sink, new ClientBridgeOptions
         {
-            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId,
+            DefaultChannel = Phase0Protocol.ChannelName
         });
         using var serverMod = new Phase0ServerMod(bridge);
         serverMod.Attach();
 
         string handshakeJson = JsonSerializer.Serialize(new ClientHandshake(
-            SdkVersion.Current,
-            "3.29.3d",
-            [Phase0Protocol.ModId, "maxwell", "siphon"],
-            ["ruleset.0x2c9"]));
+            ExtenderVersion: SdkVersion.Current,
+            SdkVersion: SdkVersion.Current,
+            Build: ClientBuildId.Build3293d,
+            BuildVersion: "3.29.3d",
+            ProtocolVersion: SdkVersion.ProtocolVersion,
+            InstalledMods:
+            [
+                new InstalledClientModInfo(Phase0Protocol.ModId, "0.2.0"),
+                new InstalledClientModInfo("maxwell", "0.2.0"),
+                new InstalledClientModInfo("siphon", "0.2.0"),
+            ],
+            Capabilities: ["ruleset.0x2c9"]));
 
         await bridge.HandleIncomingEnvelopeAsync(
             "conn-1",

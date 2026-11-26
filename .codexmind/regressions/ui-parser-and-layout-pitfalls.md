@@ -21,11 +21,15 @@ Source: `07-spike-results.md` (live testing on 3.29.3d under Proton) and `02-arc
 
 - **Leading space before `<DEFINITIONS>`:** Starting a `.ui` file immediately with `<DEFINITIONS>` triggers `Syntax error. You must have a space before <DEFINITIONS>`.
 - **Unknown property names:** Produce a misleading `error: ":" expected` parser exception.
-- **Encoding (`0.2.0` 12 + 3 Contract):**
+- **Encoding (`0.2.0` 12 + 3 Contract & Tier 5 BOM Hardening):**
   - **12 BOM + CRLF:** `.ui`, `.ot`, `.otc`, `.it`, `.itc`, `.ao`, `.aoc`, `.act`, `.epk`, `.ddt`, `.pet`, `.trl` require UTF-16LE with BOM (`0xFF 0xFE`) + CRLF (`\r\n`).
-  - **3 No-BOM + CRLF:** `.sm`, `.mat`, and `.amd` require UTF-16LE **without** BOM + CRLF (`ClientTextEncoding.EncodeTextForPath`, `ModBundlePacker.EncodeClientTextNoBom`, `PoeAstWriter.BuildAmd`, and native `classify_poe_utf16_text_extension`). Multi-BOM stripping uses idempotent `TrimStart('\uFEFF')`.
+  - **3 No-BOM + CRLF:** `.sm`, `.mat`, and `.amd` require UTF-16LE **without** BOM + CRLF (`ClientTextEncoding.EncodeTextForPath`, `ModBundlePacker.EncodeClientTextNoBom`, `PoeAstWriter.BuildAmd`, and native `try_normalize_poe_text` stripping `FF FE`/`FE FF`/`EF BB BF` and normalizing CRLF). `DualModPackageValidator` flags BOMs in loose `.sm`/`.mat`/`.amd` with `ENC001` Error (`WaypointModInstaller.Install` allows auto-normalized `ENC001` during `DeployClientFiles`).
 - **Error visibility under crash:** Because fatal errors are displayed by a second process while the first exits, any diagnostics must be flushed synchronously to disk.
-- **`0.2.0` UI Subscription & Window Lifecycle Cleanup:** `ClientHostRuntime._subscribedUiEvents` removes stale subscriptions on `WindowTreeInvalidated` / `ControlSubtreeRemoved`, and client mods check `IUiWindow.IsOpen` and subscribe `IUiWindow.Closed` so closed/reloaded windows cleanly re-instantiate without stale handles. Control visibility (`Control::SetVisible` `0x1418b0a30`) hides descendants cleanly while `Control::Destroy` (vtable slot 8) tears down the native control.
+- **`0.2.0` / M7 UI Subscription, Slab-Pool Teardown & Vtable Safety:**
+  - `ClientHostRuntime._subscribedUiEvents` removes stale subscriptions on `WindowTreeInvalidated` / `ControlSubtreeRemoved`, and embedded child `UiWindowNode.Close()` / `FinalizeReplacedWindow` call `Destroy()` (`_destroyed = true`).
+  - `Control::SetVisible` (`0x1418b0a30`) hides descendants cleanly; `Control::SetEnabled` (`0x1418b0c70`) sets bit 13 (`0x2000`) in `[control+0x1e8]`.
+  - **Slab-Pool Destroy Hazard:** `ui_destroy_control` MUST call `Control::ReleaseOrDestroy` (`0x18b6810`) for slab-pooled controls (`[control+0x08] != 0`) instead of `vtbl[8]` deleting destructor (heap-only fallback when `+0x08 == 0`).
+  - **`TextBox` / `CheckBox` Vtable Guards & Clamp Sync:** `ui_textbox_*` and `ui_checkbox_*` verify `ui.vtable_textbox` / `ui.vtable_checkbox` inside `invoke_guarded`, returning `NM_ERR_INVALID_ARG` on mismatch; `UiTextBoxNode.OnNativeTextChanged` pushes `MaxLength`-clamped text back to native cleanly with re-entrancy suppression. `LiveEngineHooks::reset` deletes and clears `g_ui_handlers`.
 
 ## 4. Window Sizing Behavior
 

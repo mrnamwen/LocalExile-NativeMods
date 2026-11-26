@@ -1,6 +1,7 @@
 #include "nativemods_abi.h"
 #include "address_table.hpp"
 #include "exception_wall.hpp"
+#include "game_allocator.hpp"
 #include "hook_engine.hpp"
 #include "live_engine_hooks.hpp"
 #include "overlay_and_channels.hpp"
@@ -82,6 +83,7 @@ int test_abi_table_and_build_recognition() {
     CHECK(table->ui_unsubscribe != nullptr);
     CHECK(table->clipboard_get_text != nullptr);
     CHECK(table->clipboard_set_text != nullptr);
+    CHECK(table->ui_get_enabled != nullptr);
 
     // SHA-256 build recognition matches LocalExile ClientBuilds.cs verbatim
     CHECK(nativemods::identify_build_by_sha256("e9ba3d31c4d922e1826ef01d02fd22178a001b29e17264b68fc2446efd41f53d")
@@ -156,6 +158,12 @@ int test_address_table_3293d_and_3293c() {
 
     CHECK(nm_lookup_symbol("nonexistent.symbol", &sym) == NM_ERR_SYMBOL_NOT_FOUND);
 
+    const nativemods::EmbeddedOffset* off_flags_3d =
+        nativemods::find_offset(NM_BUILD_3_29_3D_328228, "ui.control.flags");
+    CHECK(off_flags_3d != nullptr);
+    CHECK(off_flags_3d->offset == 0x1e8u);
+    CHECK(nativemods::find_offset(NM_BUILD_3_29_3D_328228, "nonexistent.offset") == nullptr);
+
     // 3.29.3c: code RVAs resolve, HNC mask resolves to 0x2feaed0, unverified data returns NM_ERR_SYMBOL_UNVERIFIED
     CHECK(nm_initialize_for_build(
               NM_BUILD_3_29_3C_328126,
@@ -186,6 +194,23 @@ int test_address_table_3293d_and_3293c() {
     CHECK(sym.runtime_address == 0ull);
     CHECK(sym.status == NM_SYM_STATUS_UNVERIFIED);
 
+    const nativemods::EmbeddedOffset* off_flags_3c =
+        nativemods::find_offset(NM_BUILD_3_29_3C_328126, "ui.control.flags");
+    CHECK(off_flags_3c != nullptr);
+    CHECK(off_flags_3c->offset == 0x1e8u);
+
+    CHECK(nm_shutdown() == NM_OK);
+
+    // Synthetic mode: ui_get_enabled returns INVALID_ARG / NOT_SUPPORTED_ON_PLATFORM cleanly
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+    {
+        uint8_t dummy_ctrl[64] = {};
+        int32_t enabled = 123;
+        CHECK(nm_ui_get_enabled(nullptr, &enabled) == NM_ERR_INVALID_ARG);
+        CHECK(nm_ui_get_enabled(dummy_ctrl, nullptr) == NM_ERR_INVALID_ARG);
+        CHECK(nm_ui_get_enabled(dummy_ctrl, &enabled) == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+        CHECK(enabled == 0);
+    }
     CHECK(nm_shutdown() == NM_OK);
     ++g_tests_passed;
     return 0;
@@ -1485,6 +1510,262 @@ int test_concurrent_vtable_chain_install_remove_stress() {
     return 0;
 }
 
+namespace {
+NM_NOINLINE int64_t NM_CALL unwind_chain_target(int64_t x) {
+    volatile int64_t a = x * 3 + 7;
+    volatile int64_t b = a ^ 0x12345LL;
+    if (x < 0) {
+        throw std::runtime_error("chain-target-throw");
+    }
+    return a + b;
+}
+} // namespace
+
+int test_short_function_and_midinsn_relocate_rejection() {
+    using nativemods::HookEngine;
+    nativemods::HookEngine engine;
+
+    // 1. Short <14B leaf function followed by int3 + adjacent FuncB must be rejected without touching FuncB
+    void* exec_page = HookEngine::alloc_exec_page(4096);
+    CHECK(exec_page != nullptr);
+    auto* mem = static_cast<uint8_t*>(exec_page);
+    std::memset(mem, 0x90, 256);
+    // FuncA at +0: mov eax, edi (2B); ret (1B); int3 (1B)
+    mem[0] = 0x89; mem[1] = 0xF8; mem[2] = 0xC3;
+    mem[3] = 0xCC;
+    // FuncB at +4: mov eax, 42 (5B); ret (1B) -> starts well inside 14-byte steal window!
+    const uint8_t funcb_orig[6] = {0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3};
+    std::memcpy(mem + 4, funcb_orig, sizeof(funcb_orig));
+
+    CHECK(HookEngine::compute_stolen_length(mem, 14) == 0);
+    auto dummy_detour = +[](int x) -> int { return x + 1; };
+    void* orig_ptr = nullptr;
+    nm_hook_handle_t bad_h = NM_HOOK_INVALID;
+    CHECK(engine.install_inline(
+              reinterpret_cast<uint64_t>(mem),
+              nullptr,
+              reinterpret_cast<void*>(dummy_detour),
+              &orig_ptr,
+              &bad_h) == NM_ERR_INVALID_ARG);
+    CHECK(bad_h == NM_HOOK_INVALID);
+    CHECK(std::memcmp(mem + 4, funcb_orig, sizeof(funcb_orig)) == 0);
+    using LeafFn = int(*)();
+    CHECK(reinterpret_cast<LeafFn>(mem + 4)() == 42);
+
+    // 2. Unconditional JMP thunk (<14B) must also be rejected
+    const uint8_t jmp_thunk[16] = {0xE9, 0x10, 0x00, 0x00, 0x00, 0xCC, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+    CHECK(HookEngine::compute_stolen_length(jmp_thunk, 14) == 0);
+
+    // 3. Conditional branch jumping past an earlier ret allows continuing past ret cleanly
+    const uint8_t cond_skip_ret[16] = {
+        0x85, 0xFF,                         // test edi, edi (2B -> 2)
+        0x75, 0x03,                         // jnz +3 -> off 7 (2B -> 4)
+        0xB0, 0x01,                         // mov al, 1 (2B -> 6)
+        0xC3,                               // ret (1B -> 7; jnz target == 7 so allowed!)
+        0xB8, 0x2A, 0x00, 0x00, 0x00,       // mov eax, 42 (5B -> 12)
+        0x90, 0x90, 0x90, 0xC3,             // nops + ret (-> 16)
+    };
+    CHECK(HookEngine::compute_stolen_length(cond_skip_ret, 14) >= 14);
+
+    // 4. Mid-instruction internal jump in relocate_instructions must return false
+    const uint8_t mid_insn_jmp[9] = {
+        0xEB, 0x01,                         // jmp +1 -> off 3 (lands INSIDE 48 89 E5 at 2..5!)
+        0x48, 0x89, 0xE5,                   // mov rbp, rsp (off 2..5)
+        0x48, 0x83, 0xEC, 0x20,             // sub rsp, 0x20 (off 5..9)
+    };
+    std::vector<uint8_t> relocated;
+    CHECK(!HookEngine::relocate_instructions(0x100000000ull, mid_insn_jmp, sizeof(mid_insn_jmp), 0x100020000ull, relocated));
+
+    HookEngine::free_exec_page(exec_page, 4096);
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_chained_hook_exception_unwind_and_active_calls() {
+    nativemods::HookEngine engine;
+    const uint64_t target_u64 = reinterpret_cast<uint64_t>(&unwind_chain_target);
+
+    // Check inline chain unwind when target, PRE, and POST callbacks throw C++ exceptions
+    auto pre_cb = [](nm_hook_context_t* ctx, void*) {
+        if (ctx->args[0] == 111) {
+            throw std::runtime_error("pre-throw");
+        }
+        if (ctx->args[0] == 222) {
+            ctx->args[0] = static_cast<uint64_t>(-1LL); // causes target to throw
+        }
+    };
+    auto post_cb = [](nm_hook_context_t* ctx, void*) {
+        if (ctx->args[0] == 333) {
+            throw std::runtime_error("post-throw");
+        }
+        ctx->return_value += 1;
+    };
+
+    nm_hook_handle_t h_pre = NM_HOOK_INVALID;
+    nm_hook_handle_t h_post = NM_HOOK_INVALID;
+    CHECK(engine.install_inline_chain(target_u64, nullptr, NM_HOOK_PHASE_PRE, 0, pre_cb, nullptr, &h_pre) == NM_OK);
+    CHECK(engine.install_inline_chain(target_u64, nullptr, NM_HOOK_PHASE_POST, 0, post_cb, nullptr, &h_post) == NM_OK);
+
+    // Normal execution
+    const int64_t ok_res = unwind_chain_target(5);
+    CHECK(ok_res != 0);
+    CHECK(engine.chain_active_calls(NM_HOOK_INLINE_DETOUR, target_u64) == 0u);
+
+    // 1. Exception in PRE callback
+    bool caught_pre = false;
+    try {
+        (void)unwind_chain_target(111);
+    } catch (const std::runtime_error& e) {
+        caught_pre = (std::string(e.what()) == "pre-throw");
+    }
+    CHECK(caught_pre);
+    CHECK(engine.chain_active_calls(NM_HOOK_INLINE_DETOUR, target_u64) == 0u);
+
+    // 2. Exception in original_callable target
+    bool caught_target = false;
+    try {
+        (void)unwind_chain_target(222);
+    } catch (const std::runtime_error& e) {
+        caught_target = (std::string(e.what()) == "chain-target-throw");
+    }
+    CHECK(caught_target);
+    CHECK(engine.chain_active_calls(NM_HOOK_INLINE_DETOUR, target_u64) == 0u);
+
+    // 3. Exception in POST callback
+    bool caught_post = false;
+    try {
+        (void)unwind_chain_target(333);
+    } catch (const std::runtime_error& e) {
+        caught_post = (std::string(e.what()) == "post-throw");
+    }
+    CHECK(caught_post);
+    CHECK(engine.chain_active_calls(NM_HOOK_INLINE_DETOUR, target_u64) == 0u);
+
+    // 4. Clean retirement after exception unwind (no leaked active_calls)
+    CHECK(engine.remove(h_pre) == NM_OK);
+    CHECK(engine.remove(h_post) == NM_OK);
+    engine.sweep_retired_now();
+    CHECK(engine.retired_chain_count() == 0u);
+
+    // 5. Same check for vtable chain
+    void* vt[2] = {nullptr, reinterpret_cast<void*>(&unwind_chain_target)};
+    nm_hook_handle_t hv = NM_HOOK_INVALID;
+    CHECK(engine.install_vtable_chain(vt, 1u, NM_HOOK_PHASE_PRE, 0, pre_cb, nullptr, &hv) == NM_OK);
+    bool caught_vt = false;
+    try {
+        using Fn = int64_t(NM_CALL*)(int64_t);
+        (void)reinterpret_cast<Fn>(vt[1])(222);
+    } catch (const std::runtime_error& e) {
+        caught_vt = (std::string(e.what()) == "chain-target-throw");
+    }
+    CHECK(caught_vt);
+    CHECK(engine.chain_active_calls(NM_HOOK_VTABLE_SLOT, reinterpret_cast<uint64_t>(&vt[1])) == 0u);
+    CHECK(engine.remove(hv) == NM_OK);
+    engine.sweep_retired_now();
+    CHECK(engine.retired_chain_count() == 0u);
+
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_poe_bom_stripping_and_net_bounds() {
+    CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x10000000ull, 0x10000u, nullptr) == NM_OK);
+
+    // 1. BOM handling for .sm/.mat/.amd (strip BOM) and .ui/.ot (ensure FF FE BOM + CRLF)
+    struct SampleCase {
+        const char* path;
+        std::vector<uint8_t> input;
+        std::vector<uint8_t> expected;
+    };
+    const std::vector<SampleCase> cases = {
+        // UTF-16LE BOM supplied for .sm -> BOM stripped, LF -> CRLF
+        {"mods/test/a.sm", {0xFF, 0xFE, 'a', 0x00, '\n', 0x00, 'b', 0x00}, {'a', 0x00, '\r', 0x00, '\n', 0x00, 'b', 0x00}},
+        // UTF-16BE BOM supplied for .mat -> transcoded to LE without BOM + CRLF
+        {"mods/test/a.mat", {0xFE, 0xFF, 0x00, 'a', 0x00, '\n', 0x00, 'b'}, {'a', 0x00, '\r', 0x00, '\n', 0x00, 'b', 0x00}},
+        // UTF-8 BOM supplied for .amd -> BOM stripped, transcoded to LE without BOM + CRLF
+        {"mods/test/a.amd", {0xEF, 0xBB, 0xBF, 'a', '\n', 'b'}, {'a', 0x00, '\r', 0x00, '\n', 0x00, 'b', 0x00}},
+        // BOM-less UTF-16LE supplied for .ui -> gets FF FE BOM + CRLF
+        {"mods/test/a.ui", {'a', 0x00, '\n', 0x00, 'b', 0x00}, {0xFF, 0xFE, 'a', 0x00, '\r', 0x00, '\n', 0x00, 'b', 0x00}},
+        // UTF-16BE supplied for .ot -> transcoded to UTF-16LE WITH FF FE BOM + CRLF
+        {"mods/test/a.ot", {0xFE, 0xFF, 0x00, 'a', 0x00, '\n', 0x00, 'b'}, {0xFF, 0xFE, 'a', 0x00, '\r', 0x00, '\n', 0x00, 'b', 0x00}},
+    };
+
+    for (const auto& sc : cases) {
+        uint64_t tok = 0;
+        const auto* vec_ptr = &sc.input;
+        auto cb = [](const char*, uint8_t** out_data, size_t* out_size, void* ud) -> nm_status_t {
+            const auto* v = static_cast<const std::vector<uint8_t>*>(ud);
+            *out_data = const_cast<uint8_t*>(v->data());
+            *out_size = v->size();
+            return NM_OK;
+        };
+        CHECK(nm_register_file_overlay(cb, nullptr, const_cast<std::vector<uint8_t>*>(vec_ptr), &tok) == NM_OK);
+        uint8_t* resolved = nullptr;
+        size_t resolved_len = 0;
+        CHECK(nm_resolve_file_overlay(sc.path, &resolved, &resolved_len) == NM_OK);
+        CHECK(resolved_len == sc.expected.size());
+        CHECK(std::memcmp(resolved, sc.expected.data(), resolved_len) == 0);
+        CHECK(nm_free_file_overlay_buffer(resolved) == NM_OK);
+        CHECK(nm_unregister_file_overlay(tok) == NM_OK);
+    }
+
+    // 2. Opcode handler group min_opcode < 0x02FC rejected
+    uint64_t grp_tok = 0;
+    auto raw_cb = [](uint16_t, void*, const uint8_t*, uint32_t, void*) -> int { return 0; };
+    CHECK(nm_register_opcode_handler_group(0x02FBu, 0x02FEu, raw_cb, nullptr, &grp_tok) == NM_ERR_INVALID_ARG);
+    CHECK(nm_register_opcode_handler_group(0x0000u, 0x02FCu, raw_cb, nullptr, &grp_tok) == NM_ERR_INVALID_ARG);
+    CHECK(nm_register_opcode_handler_group(0x02FCu, 0x02FFu, raw_cb, nullptr, &grp_tok) == NM_OK);
+    CHECK(nm_unregister_opcode_handler_group(grp_tok) == NM_OK);
+
+    // 3. nm_send_raw_packet length bounds (0 / nullptr -> NM_ERR_INVALID_ARG, > 65536 -> NM_ERR_PAYLOAD_TOO_LARGE)
+    uint8_t sample_pkt[4] = {1, 2, 3, 4};
+    CHECK(nm_send_raw_packet(0x02FCu, sample_pkt, 0u) == NM_ERR_INVALID_ARG);
+    CHECK(nm_send_raw_packet(0x02FCu, nullptr, 4u) == NM_ERR_INVALID_ARG);
+    std::vector<uint8_t> oversized(65537u, 0xAAu);
+    CHECK(nm_send_raw_packet(0x02FCu, oversized.data(), static_cast<uint32_t>(oversized.size())) == NM_ERR_PAYLOAD_TOO_LARGE);
+
+    CHECK(nm_shutdown() == NM_OK);
+    ++g_tests_passed;
+    return 0;
+}
+
+int test_live_ui_vtable_mismatch_guards() {
+#if defined(_WIN32)
+    nativemods::HookEngine hooks;
+    nativemods::GameAllocator alloc;
+    nativemods::OverlayAndChannels ov;
+    nativemods::LiveEngineHooks live;
+    live.install_live_hooks(NM_BUILD_3_29_3D_328228, 0x140000000ull, hooks, alloc, ov);
+
+    struct alignas(16) FakeControl {
+        void**  vtbl;
+        uint8_t body[2048];
+    };
+    void* dummy_vtable[160]{};
+    FakeControl fake{};
+    fake.vtbl = dummy_vtable;
+    std::memset(fake.body, 0, sizeof(fake.body));
+
+    char buf[64]{};
+    size_t out_len = 0;
+    int32_t checked = 0;
+    uint64_t tok = 0;
+    auto dummy_cb = [](void*, void*) {};
+
+    CHECK(live.ui_textbox_get_text(&fake, buf, sizeof(buf), &out_len) == NM_ERR_INVALID_ARG);
+    CHECK(live.ui_textbox_set_text(&fake, "hello") == NM_ERR_INVALID_ARG);
+    CHECK(live.ui_textbox_subscribe_changed(&fake, dummy_cb, nullptr, &tok) == NM_ERR_INVALID_ARG);
+    CHECK(live.ui_textbox_subscribe_submitted(&fake, dummy_cb, nullptr, &tok) == NM_ERR_INVALID_ARG);
+    CHECK(live.ui_checkbox_get_checked(&fake, &checked) == NM_ERR_INVALID_ARG);
+    CHECK(live.ui_checkbox_set_checked(&fake, 1) == NM_ERR_INVALID_ARG);
+    CHECK(live.ui_checkbox_subscribe_changed(&fake, dummy_cb, nullptr, &tok) == NM_ERR_INVALID_ARG);
+
+    live.reset(&hooks);
+#endif
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -1506,6 +1787,10 @@ int main() {
     if (test_relocate_internal_jump_over_2gb() != 0) return 1;
     if (test_raw_detour_self_removal() != 0) return 1;
     if (test_concurrent_vtable_chain_install_remove_stress() != 0) return 1;
+    if (test_short_function_and_midinsn_relocate_rejection() != 0) return 1;
+    if (test_chained_hook_exception_unwind_and_active_calls() != 0) return 1;
+    if (test_poe_bom_stripping_and_net_bounds() != 0) return 1;
+    if (test_live_ui_vtable_mismatch_guards() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

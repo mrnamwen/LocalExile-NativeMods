@@ -124,7 +124,6 @@ begin Frame
 			id = probe_slot_host;
 			size = $w - 2 * $pad, 180;
 			pixel_border_colour = Colours.BorderColour;
-			clip_children = true;
 		end
 	end
 end

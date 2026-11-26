@@ -36,3 +36,8 @@ Source: `10-verification.md` (overrides `08-deep-analysis.md` and `09-native-mod
 - **Closed tables (`10` §5):** `ItemClasses` is bound to a compiled 103-entry enum (`0x142fe0b80`); `ActiveSkills` action classes are bound to 2,155 compiled C++ classes; appended `Stats` rows are inert to compiled game logic (display/stat-gated UI only).
 - **Unknown object type:** Throws rather than merely logging.
 - **Unclaimed packet ID / escaped handler exception:** Always fatal (`Unable to deserialise packet with pid N` → `RaiseException(0xE06D7363)` → disconnect). Never send a reserved packet ID (`>= 0x2fc`) to a client without a registered handler group (`network.register_handler_group` `0x29a7710`, wired as `nm_register_opcode_handler_group` in `0.2.0`), and never let an exception escape a handler group.
+- **M7 Tier 5 Protocol, Manifest & Registry Bounds:**
+  - `OverlayAndChannels::register_opcode_handler_group` enforces `min_opcode >= 0x02FC`; `nm_send_raw_packet` & `send_live_raw_packet` enforce `1..65536` (`NM_ERR_INVALID_ARG` / `NM_ERR_PAYLOAD_TOO_LARGE`).
+  - `ClientModManifest` separates `BundleSha256` (`bundleSha256`/`integrity.packageSha256`) from `PayloadHash` (`payloadHash`/`assemblyPayloadHash`/`assemblySha256`) so dual-side mods shipping `assembly` + `bundleSha256` aren't falsely rejected by DLL hash verification.
+  - `ContentRegistry` rejects duplicate `(TableName, EntryKey)` / `MetadataPath` registrations.
+  - `data/addresses/3.29.3{c,d}.json` `ui.control.flags` (`+0x1e8`) explicitly documents bit 13 (`0x2000` enabled, `Control::SetEnabled 0x18b0c70`).

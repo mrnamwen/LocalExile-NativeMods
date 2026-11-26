@@ -17,6 +17,11 @@ struct EmbeddedSymbol {
     const char*        expected_bytes_hex;
 };
 
+struct EmbeddedOffset {
+    const char* name;
+    size_t      offset;
+};
+
 struct BuildDescriptor {
     nm_build_id_t build_id;
     const char*   version;
@@ -31,6 +36,8 @@ const char*   build_version_string(nm_build_id_t build_id);
 // Address table accessors for the active build.
 const EmbeddedSymbol* get_symbol_table(nm_build_id_t build_id, uint32_t& out_count);
 const EmbeddedSymbol* find_symbol(nm_build_id_t build_id, std::string_view name);
+const EmbeddedOffset* get_offset_table(nm_build_id_t build_id, uint32_t& out_count);
+const EmbeddedOffset* find_offset(nm_build_id_t build_id, std::string_view name);
 
 // Verifies bytes in memory at `address` against a hex pattern (supports '??' wildcards).
 nm_status_t verify_memory_bytes(uint64_t address, const char* expected_bytes_hex);

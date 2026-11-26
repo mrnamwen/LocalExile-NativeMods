@@ -123,6 +123,7 @@ const nm_abi_table_t kAbiTable = {
     &nm_ui_unsubscribe,
     &nm_clipboard_get_text,
     &nm_clipboard_set_text,
+    &nm_ui_get_enabled,
 };
 
 #if defined(_WIN32)
@@ -798,6 +799,11 @@ NM_API nm_status_t NM_CALL nm_ui_set_enabled(void* control, int32_t enabled) {
     return state().live_hooks.ui_set_enabled(control, enabled);
 }
 
+NM_API nm_status_t NM_CALL nm_ui_get_enabled(void* control, int32_t* out_enabled) {
+    if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
+    return state().live_hooks.ui_get_enabled(control, out_enabled);
+}
+
 NM_API nm_status_t NM_CALL nm_ui_remove_child(void* parent_control, void* child_control) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
     return state().live_hooks.ui_remove_child(parent_control, child_control);
@@ -920,8 +926,8 @@ NM_API nm_status_t NM_CALL nm_send_chat_line(const char* text_utf8) {
 
 NM_API nm_status_t NM_CALL nm_send_raw_packet(uint16_t opcode, const uint8_t* payload, uint32_t length) {
     if (!state().initialized) return NM_ERR_NOT_INITIALIZED;
-    if (length > 1048576u) return NM_ERR_PAYLOAD_TOO_LARGE;
-    if (length > 0 && payload == nullptr) return NM_ERR_INVALID_ARG;
+    if (length == 0 || payload == nullptr) return NM_ERR_INVALID_ARG;
+    if (length > 65536u) return NM_ERR_PAYLOAD_TOO_LARGE;
     const nm_status_t st = state().channels.try_send_raw_packet_override(opcode, payload, length);
     if (st == NM_ERR_NOT_SUPPORTED_ON_PLATFORM) {
         return state().live_hooks.send_live_raw_packet(opcode, payload, length);

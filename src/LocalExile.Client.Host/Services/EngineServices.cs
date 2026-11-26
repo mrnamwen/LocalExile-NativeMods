@@ -1376,7 +1376,17 @@ public sealed class ContentRegistry(FileOverlayService files) : IContentRegistry
     public IDisposable DeclareDatRow(DatRowDeclaration row)
     {
         ArgumentNullException.ThrowIfNull(row);
-        lock (_gate) { _datRows.Add(row); }
+        lock (_gate)
+        {
+            if (_datRows.Any(d =>
+                string.Equals(d.TableName, row.TableName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(d.EntryKey, row.EntryKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate DatRow declaration for table '{row.TableName}', key '{row.EntryKey}'.");
+            }
+            _datRows.Add(row);
+        }
         return new ActionDisposable(() => { lock (_gate) { _datRows.Remove(row); } });
     }
 
@@ -1384,7 +1394,15 @@ public sealed class ContentRegistry(FileOverlayService files) : IContentRegistry
     public IDisposable DeclareItemBase(ItemBaseDeclaration itemBase)
     {
         ArgumentNullException.ThrowIfNull(itemBase);
-        lock (_gate) { _itemBases.Add(itemBase); }
+        lock (_gate)
+        {
+            if (_itemBases.Any(b => string.Equals(b.MetadataPath, itemBase.MetadataPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate ItemBase declaration for metadata path '{itemBase.MetadataPath}'.");
+            }
+            _itemBases.Add(itemBase);
+        }
         return new ActionDisposable(() => { lock (_gate) { _itemBases.Remove(itemBase); } });
     }
 
@@ -1392,16 +1410,33 @@ public sealed class ContentRegistry(FileOverlayService files) : IContentRegistry
     public IDisposable DeclareWorldObject(WorldObjectDeclaration worldObject)
     {
         ArgumentNullException.ThrowIfNull(worldObject);
-        IDisposable? overlaySub = null;
-        if (!string.IsNullOrWhiteSpace(worldObject.OtOverlayContent))
+        lock (_gate)
         {
-            string otPath = worldObject.MetadataPath.EndsWith(".ot", StringComparison.OrdinalIgnoreCase)
-                ? worldObject.MetadataPath
-                : worldObject.MetadataPath + ".ot";
-            overlaySub = files.RegisterVirtualTextFile(otPath, worldObject.OtOverlayContent);
+            if (_worldObjects.Any(w => string.Equals(w.MetadataPath, worldObject.MetadataPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate WorldObject declaration for metadata path '{worldObject.MetadataPath}'.");
+            }
+            _worldObjects.Add(worldObject);
         }
 
-        lock (_gate) { _worldObjects.Add(worldObject); }
+        IDisposable? overlaySub = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(worldObject.OtOverlayContent))
+            {
+                string otPath = worldObject.MetadataPath.EndsWith(".ot", StringComparison.OrdinalIgnoreCase)
+                    ? worldObject.MetadataPath
+                    : worldObject.MetadataPath + ".ot";
+                overlaySub = files.RegisterVirtualTextFile(otPath, worldObject.OtOverlayContent);
+            }
+        }
+        catch
+        {
+            lock (_gate) { _worldObjects.Remove(worldObject); }
+            throw;
+        }
+
         return new ActionDisposable(() =>
         {
             overlaySub?.Dispose();

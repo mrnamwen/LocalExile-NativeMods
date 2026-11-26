@@ -9,6 +9,7 @@ using Xunit;
 
 namespace LocalExile.Client.Tests;
 
+[Collection("NativeEntryPointSerial")]
 public sealed class AddressLibraryTests
 {
     private const string Sample3293dJson = """
@@ -183,7 +184,7 @@ public sealed class AddressLibraryTests
         Assert.Equal(528, sizeof(NmExceptionInfo));
         Assert.Equal(128, sizeof(NmHookContext));
         Assert.Equal(104, sizeof(NmNativeCallDesc));
-        Assert.Equal(552, sizeof(NmAbiTable));
+        Assert.Equal(560, sizeof(NmAbiTable));
         Assert.Equal(0x00000200u, NativeShimConstants.AbiVersion);
         Assert.Equal("LocalExile.Client.Host.NativeEntryPoint", typeof(NativeEntryPoint).FullName);
 
@@ -215,6 +216,7 @@ public sealed class AddressLibraryTests
         table.UiSetVisible = &MockUiSetVisible;
         table.UiSetText = &MockUiSetText;
         table.UiSubscribeClick = &MockUiSubscribeClick;
+        table.UiGetEnabled = &MockUiGetEnabled;
 
         _lastSentRulesetLen = 0;
         _lastSentChat = null;
@@ -671,6 +673,13 @@ public sealed class AddressLibraryTests
         _mockClickCb = cb;
         _mockClickUd = ud;
         *outToken = 1;
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockUiGetEnabled(void* control, int* outEnabled)
+    {
+        *outEnabled = 1;
         return NmStatus.Ok;
     }
 }

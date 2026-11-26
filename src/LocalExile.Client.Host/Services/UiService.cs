@@ -196,9 +196,15 @@ public class UiControlNode : IUiControl
         get
         {
             ThrowIfDestroyed();
-            if (NativeControlHandle != nint.Zero && NativeBridge is not null && NativeBridge.TryGetNativeUiRect(NativeControlHandle, out UiRect nativeRect))
+            if (NativeControlHandle != nint.Zero && NativeBridge is not null)
             {
-                _rect = nativeRect;
+                if (NativeBridge.TryGetNativeUiRect(NativeControlHandle, out UiRect nativeRect))
+                {
+                    _rect = nativeRect;
+                    return _rect;
+                }
+
+                return default;
             }
 
             return _rect;
@@ -211,6 +217,18 @@ public class UiControlNode : IUiControl
         get
         {
             ThrowIfDestroyed();
+            if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+            {
+                if (NativeBridge.TryGetNativeUiEnabled(NativeControlHandle, out bool nativeEnabled))
+                {
+                    _enabled = nativeEnabled;
+                    _properties["enabled"] = nativeEnabled ? "true" : "false";
+                    return nativeEnabled;
+                }
+
+                return false;
+            }
+
             return _enabled;
         }
         set
@@ -722,6 +740,19 @@ public sealed class UiTextBoxNode(string id, UiControlNode? parent) : UiControlN
         }
 
         string next = ClampText(nativeText);
+        if (next.Length < nativeText.Length && NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            _suppressNativeTextChanged = true;
+            try
+            {
+                NativeBridge.SetNativeUiTextBoxText(NativeControlHandle, next);
+            }
+            finally
+            {
+                _suppressNativeTextChanged = false;
+            }
+        }
+
         if (!string.Equals(RawBaseText, next, StringComparison.Ordinal))
         {
             SetBaseTextSilent(next);
@@ -914,21 +945,17 @@ public sealed class UiWindowNode : UiControlNode, IUiWindow
             return;
         }
 
+        if (IsEmbeddedChildWindow)
+        {
+            Destroy();
+            return;
+        }
+
         IsOpen = false;
         ReleaseNativeSubscriptions();
         DestroyCustomRecursive();
         _closeAction(this);
-        try
-        {
-            Closed?.Invoke();
-        }
-        finally
-        {
-            if (IsEmbeddedChildWindow && !IsDestroyed)
-            {
-                DestroyNativeHandlesRecursive();
-            }
-        }
+        Closed?.Invoke();
     }
 
     /// <inheritdoc/>
@@ -1237,7 +1264,8 @@ public sealed class UiService : IUiService
         {
             if (replaced.IsEmbeddedChildWindow && !replaced.IsDestroyed)
             {
-                replaced.DestroyNativeHandlesRecursive();
+                replaced.IsOpen = false;
+                replaced.Destroy();
             }
         }
     }

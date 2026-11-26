@@ -2,6 +2,7 @@
   <PropertyGroup>
     <RootNamespace>LocalExile.Client.Host</RootNamespace>
     <AssemblyName>LocalExile.Client.Host</AssemblyName>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <Description>Managed client host runtime for LocalExile NativeMods.</Description>

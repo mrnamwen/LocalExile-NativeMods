@@ -237,7 +237,7 @@ public unsafe struct NmNativeCallDesc
 }
 
 /// <summary>
-/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.2.0, 68 function pointers, 552 bytes).
+/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.2.0, 69 function pointers, 560 bytes).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct NmAbiTable
@@ -344,5 +344,8 @@ public unsafe struct NmAbiTable
     /* ABI 0.2.0: Clipboard (2) */
     public delegate* unmanaged[Cdecl]<byte*, nuint, nuint*, NmStatus> ClipboardGetText;
     public delegate* unmanaged[Cdecl]<byte*, NmStatus> ClipboardSetText;
+
+    /* ABI 0.2.0: Control enabled readback (1) */
+    public delegate* unmanaged[Cdecl]<void*, int*, NmStatus> UiGetEnabled;
 }
 

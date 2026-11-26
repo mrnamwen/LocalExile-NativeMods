@@ -880,4 +880,61 @@ public sealed class FileOverlayAndUiTests
             Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    [Fact]
+    public void UiTextBox_OnNativeTextChanged_SyncsClampedTextBackToNative_AndEmbeddedChildCloseMarksDestroyed()
+    {
+        const string parentUi = """
+            begin Frame
+                id = host_parent;
+                visible = true;
+            end
+            """;
+        const string childUi = """
+            begin Frame
+                id = child_panel;
+                visible = true;
+                begin TextBox
+                    id = input_box;
+                    max_length = 4;
+                    text = "ab";
+                end
+            end
+            """;
+
+        using var bridge = new SimulatedNativeBridge { EnableSimulatedNativeUi = true };
+        using var host = new ClientHostRuntime(bridge);
+        using IDisposable ovParent = host.FileOverlayService.RegisterVirtualTextFile("Metadata/UI/Mods/Clamp/Parent.ui", parentUi);
+        using IDisposable ovChild = host.FileOverlayService.RegisterVirtualTextFile("Metadata/UI/Mods/Clamp/Child.ui", childUi);
+
+        IUiWindow parentWin = host.Ui.Load("Metadata/UI/Mods/Clamp/Parent.ui");
+        IUiWindow childWin = host.Ui.CreateWindowInto(parentWin, "Metadata/UI/Mods/Clamp/Child.ui", "child_panel_win");
+        ITextBox tb = childWin.Require<ITextBox>("input_box");
+        tb.MaxLength = 4;
+
+        int changedCount = 0;
+        string? observedText = null;
+        tb.TextChanged += t =>
+        {
+            changedCount++;
+            observedText = t;
+        };
+
+        var nativeTb = bridge.GetSimulatedNativeUiControl("Metadata/UI/Mods/Clamp/Parent.ui", "input_box")!;
+        Assert.NotNull(nativeTb);
+        bridge.SetNativeUiTextBoxText(nativeTb.Handle, "abcdef");
+
+        Assert.Equal("abcd", tb.Text);
+        Assert.Equal("abcd", nativeTb.Text);
+        Assert.Equal(1, changedCount);
+        Assert.Equal("abcd", observedText);
+
+        var nativeChildCtrl = bridge.GetSimulatedNativeUiControl("Metadata/UI/Mods/Clamp/Parent.ui", "metadata/ui/mods/clamp/child.ui")!;
+        Assert.NotNull(nativeChildCtrl);
+        childWin.Close();
+        Assert.False(childWin.IsOpen);
+        Assert.True(nativeChildCtrl.Destroyed);
+        Assert.Throws<ObjectDisposedException>(() => _ = tb.Text);
+        Assert.Throws<ObjectDisposedException>(() => _ = childWin.Visible);
+    }
 }
