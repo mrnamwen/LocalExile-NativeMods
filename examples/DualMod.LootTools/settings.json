@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "settings": {
+    "magnetRadius": {
+      "type": "number",
+      "default": 60,
+      "min": 5,
+      "max": 80,
+      "label": "Loot Magnet Radius (Cells)",
+      "description": "Maximum grid-cell radius around the player for filter-aware Loot Magnet relocation (server-clamped to 80)."
+    },
+    "pickupRadius": {
+      "type": "number",
+      "default": 50,
+      "min": 5,
+      "max": 80,
+      "label": "AoE Pickup Radius (Cells)",
+      "description": "Maximum grid-cell radius around the player for filter-aware AoE Pickup (server-clamped to 80)."
+    },
+    "mergeRadius": {
+      "type": "number",
+      "default": 60,
+      "min": 5,
+      "max": 80,
+      "label": "Loot Merger Radius (Cells)",
+      "description": "Maximum grid-cell radius around the player for ground stack merging (server-clamped to 80)."
+    },
+    "maxBatchSize": {
+      "type": "number",
+      "default": 64,
+      "min": 1,
+      "max": 64,
+      "label": "Max Entities Per Trigger",
+      "description": "Hard server-enforced cap on ground item entities processed per RPC trigger."
+    },
+    "autoMergeEnabled": {
+      "type": "bool",
+      "default": false,
+      "label": "Auto-Merge Nearby Stacks",
+      "description": "Automatically merges nearby compatible ground stacks on a throttled area tick."
+    },
+    "autoMergeIntervalSeconds": {
+      "type": "number",
+      "default": 1.0,
+      "min": 0.5,
+      "max": 10.0,
+      "label": "Auto-Merge Tick Interval (Seconds)",
+      "description": "Minimum elapsed seconds between automatic ground stack merge passes."
+    },
+    "scopeMergeToFilter": {
+      "type": "bool",
+      "default": false,
+      "label": "Scope Manual Merge To Filter-Visible Items",
+      "description": "When true, manual Loot Merge only merges stackables currently visible under the client's active item filter."
+    },
+    "zoomOverrideEnabled": {
+      "type": "bool",
+      "default": false,
+      "label": "Enable Camera Zoom Override",
+      "description": "Applies a custom camera zoom override via ICameraService (automatically restored to stock on unload)."
+    },
+    "zoomOverrideValue": {
+      "type": "number",
+      "default": 1.35,
+      "min": 0.25,
+      "max": 3.0,
+      "label": "Camera Zoom Override Factor",
+      "description": "Camera zoom factor written to CameraController when Camera Zoom Override is enabled."
+    }
+  }
+}
