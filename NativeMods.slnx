@@ -23,6 +23,9 @@
     <Project Path="examples/DualMod.SkipCampaign/Shared/DualMod.SkipCampaign.Shared.csproj" />
     <Project Path="examples/DualMod.SkipCampaign/Server/DualMod.SkipCampaign.Server.csproj" />
     <Project Path="examples/DualMod.SkipCampaign/Client/DualMod.SkipCampaign.Client.csproj" />
+    <Project Path="examples/DualMod.LootTools/Shared/DualMod.LootTools.Shared.csproj" />
+    <Project Path="examples/DualMod.LootTools/Server/DualMod.LootTools.Server.csproj" />
+    <Project Path="examples/DualMod.LootTools/Client/DualMod.LootTools.Client.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LocalExile.Client.Tests/LocalExile.Client.Tests.csproj" />
@@ -33,6 +36,7 @@
     <Project Path="tests/LocalExile.Client.SiphonOrb.Tests/LocalExile.Client.SiphonOrb.Tests.csproj" />
     <Project Path="tests/DualMod.StashQol.Tests/DualMod.StashQol.Tests.csproj" />
     <Project Path="tests/DualMod.SkipCampaign.Tests/DualMod.SkipCampaign.Tests.csproj" />
+    <Project Path="tests/DualMod.LootTools.Tests/DualMod.LootTools.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Shared/DualMod.Phase0E2E.Shared.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Client/DualMod.Phase0E2E.Client.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Server/DualMod.Phase0E2E.Server.csproj" />

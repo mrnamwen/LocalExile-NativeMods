@@ -1,22 +1,23 @@
 # NativeMods Modding Reference (Humans & AI Agents)
 
-A complete, copy-paste-ready guide to building, testing, packaging, and verifying **Path of Exile 3.29** mods for [LocalExile](https://github.com/LocalExile/LocalExile) using **NativeMods** (`SdkVersion 0.3.0`, C ABI `0.3.0`).
+A complete, copy-paste-ready guide to building, testing, packaging, and verifying **Path of Exile 3.29** mods for [LocalExile](https://github.com/LocalExile/LocalExile) using **NativeMods** (`SdkVersion 0.4.0`, C ABI `0.4.0`).
 
 > **For AI Coding Agents — Fast Orientation**
 > - **Frozen target builds:** Path of Exile **3.29.3c** and **3.29.3d** only (Win64 / Proton).
 > - **Never modify stock client files:** Never write to `Client/Game.exe`, `Client/Content.ggpk`, or `Client/Bundles2/`. All mod assets ship as loose overlays (`NATIVEMODS_OVERLAY_DIR` / `Mods/Client/<id>/files/`) or stored-block `NMB1` bundles.
-> - **Reference implementations in this repo (`0.3.0`):**
+> - **Reference implementations in this repo (`0.4.0`):**
 >   - `examples/DualMod.HarvestGarden/` — Dual-side mod with custom UI control (`GrowthGauge`), GEAL built-in (`GardenRipen`), custom ruleset (`0xA1`), async `On<T>` handlers, and graceful vanilla chat fallback.
 >   - `examples/DualMod.MaxwellPet/` — Brand-new Pet MTX mod (appended `.datc64` rows, event-driven `LocalExileGatewayHost` + `OnCosmeticChanged` Cosmetics `K` menu integration, `.ui` panel with `ITextBox.MaxLength` / `ICheckBox`, looping `.ogg` audio, `.glb`/`.dds`/`.ast` pipeline via `scripts/build-maxwell-assets.sh`).
 >   - `examples/DualMod.SiphonOrb/` — Brand-new dual-stage Custom Currency mod (**Orb of Siphoning** + **Charged Orb of Siphoning**): `LocalExileGatewayHost` + `LocalExileGatewayTransactions` + `LocalExileItemAffixService`, appended `BaseItemTypes`/`ItemVisualIdentity`/`CurrencyItems` `.datc64` rows, flood-fill alpha-cutout `78x78` RGBA8 currency icons, Recombinator-style `SiphonPicker.ui`, persistent `ModSection.Enchant` stored affix on the Charged Orb, and `C->S 0x0071`/`0x0072` currency routing via `scripts/build-siphon-assets.sh`.
 >   - `examples/DualMod.StashQol/` — Phase 1 (`0.3.0`) in-game QoL showcase implementing all 8 features (Deposit All, Vendor All, Inventory Sort, Map Tier Upgrade, Blight Oil Upgrade, Regex Roller, `Ctrl+Shift+RMB` Bulk Stack Use, PoB Passive Import + HUD Toasts) using `IScreensService`, `IInputService`/`IKeybindRegistry`, `IHoverService`, `IToastService`, and `LocalExile` Part 2a Gateway hooks.
 >   - `examples/DualMod.SkipCampaign/` — Phase 1 (`0.3.0`) pre-game character creation showcase registering a `Skip Campaign` checkbox on `ScreenSlot.LeagueCardModes` & `ScreenSlot.CreateCharacterBar`, injecting `skip_campaign=1` into `CreateCharacter.S78` via `IPreGameService`, and configuring spawn/progression via `GameEvents.CharacterCreated`.
+>   - `examples/DualMod.LootTools/` — Phase 2 (`0.4.0`) flagship loot & world showcase implementing Filter-Aware Loot Magnet (`Alt+M`), AoE Pickup (`Alt+G`), Atomic Ground Loot Merger (`Alt+R` + `GameEvents.AreaTick` auto-merge), quick Item Filter reload (`Alt+F`), `LootToolsPanel.ui` (`Alt+L`), and collectible-ALC-safe Camera Zoom Override using `IWorldService`, `IItemFilterService`, `IGameLifecycle` area events, and `ICameraService` with zero LocalExile server changes.
 > - **Key libraries:**
->   - Client mods compile against **`LocalExile.Client.Sdk`** (`0.3.0`) *only* (never `LocalExile.Client.Host`).
->   - Server mods use **`LocalExile.Client.ServerBridge`** (`0.3.0`: `LocalExileGatewayHost`, Tier 1 `IClientPhase1Session`, async `On<T>` / `OnClientReady`, UI batching, `Window.Closed`, `LocalExileGatewayTransactions`, Pet MTX & custom currency registration, and item affix manipulation).
+>   - Client mods compile against **`LocalExile.Client.Sdk`** (`0.4.0`) *only* (never `LocalExile.Client.Host`).
+>   - Server mods use **`LocalExile.Client.ServerBridge`** (`0.4.0`: `LocalExileGatewayHost`, Tier 1 `IClientPhase1Session` & `IClientPhase2Session`, async `On<T>` / `OnClientReady`, UI batching, `Window.Closed`, `LocalExileGatewayTransactions`, Pet MTX & custom currency registration, and item affix manipulation).
 >   - Asset conversion & `.datc64` row appending use **`LocalExile.Client.AssetPipeline`**.
 >   - Validation, `.ui` linting, `NMB1` bundling, and installation use **`LocalExile.Client.Waypoint`**.
-> - **Build & test gate:** `dotnet build NativeMods.slnx -c Release` and `dotnet test NativeMods.slnx -c Release --no-build` (`TreatWarningsAsErrors=true`, `net10.0`; `33` projects across `src/`, `examples/`, and `tests/`).
+> - **Build & test gate:** `dotnet build NativeMods.slnx -c Release` and `dotnet test NativeMods.slnx -c Release --no-build` (`TreatWarningsAsErrors=true`, `net10.0`; `37` projects across `src/`, `examples/`, and `tests/`, `10` test suites).
 
 ---
 
@@ -36,6 +37,7 @@ A complete, copy-paste-ready guide to building, testing, packaging, and verifyin
    - [3.6 Adding Brand-New In-Game Content (NOT Replacers)](#36-adding-brand-new-in-game-content-not-replacers)
    - [3.7 Using `Raw` Memory & Native Hooks Safely](#37-using-raw-memory--native-hooks-safely)
    - [3.8 Phase 1 (`0.3.0`) APIs: Stock Screens, Input/Keybinds, Hover, Toasts, Pre-Game & Tier 1 ServerBridge](#38-phase-1-030-apis-stock-screens-inputkeybinds-hover-toasts-pre-game--tier-1-serverbridge)
+   - [3.9 Phase 2 (`0.4.0`) APIs: World Entities, Live Stats, Area Lifecycle, Item Filter, Camera & Tier 1 ServerBridge `0.4.0`](#39-phase-2-040-apis-world-entities-live-stats-area-lifecycle-item-filter-camera--tier-1-serverbridge-040)
 4. [Testing, Cross-Compilation & Live Proton Verification](#4-testing-cross-compilation--live-proton-verification)
    - [4.1 Fast Deterministic Unit & E2E Testing](#41-fast-deterministic-unit--e2e-testing)
    - [4.2 Cross-Compiling Win64 DLLs & Wine Smoke Test](#42-cross-compiling-win64-dlls--wine-smoke-test)
@@ -334,7 +336,7 @@ Violating any of these verified 3.29.3c/d invariants causes hard crashes, infini
 
 ### 1. Frozen 3.29.3c & 3.29.3d Target Only
 - `nativeClient.supportedBuilds` must only contain `"3.29.3d"` and/or `"3.29.3c"` (any other build fails validation with `NC004`).
-- Under Proton/Wine and Windows ASLR, `Game.patched.exe` relocates (empirically observed at `0x6FFFF8A30000` instead of `0x140000000`). **Never hardcode absolute addresses** — always resolve symbols via `context.Addresses` (`IAddressLibrary`), which rebases verified RVAs against `ImageBase`. `data/addresses/3.29.3d.json` (`240` symbols, `160` offsets, `18` constants) is code-generated directly into `src/native-shim/src/address_table.cpp` (`scripts/generate-address-table.py --check`).
+- Under Proton/Wine and Windows ASLR, `Game.patched.exe` relocates (empirically observed at `0x6FFFF8A30000` instead of `0x140000000`). **Never hardcode absolute addresses** — always resolve symbols via `context.Addresses` (`IAddressLibrary`), which rebases verified RVAs against `ImageBase`. `data/addresses/3.29.3d.json` (`319` symbols, `300` offsets, `18` constants) is code-generated directly into `src/native-shim/src/address_table.cpp` (`scripts/generate-address-table.py --check`).
 
 ### 2. Zero Edits to Stock `Client/` Files
 - Never modify `Client/Game.exe`, `Client/Content.ggpk`, or `Client/Bundles2/`.
@@ -1174,6 +1176,91 @@ context.Game.PreGame.CharacterCreating += createCtx =>
 
 - **Tier 1 Server-Only Parity (`IClientPhase1Session` in `LocalExile.Client.ServerBridge`):** Server-only Roslyn mods can drive Phase 1 client capabilities without shipping a client `.dll` via `OnSlotButtonClickAsync`, `ShowToastAsync`, `RegisterHotkeyAsync`/`OnHotkeyAsync`, `OnScreenChangedAsync`, and `OnHoverChangedAsync` (handled automatically on the client by `ServerBridgeTier1Handler` with ref-counted multi-mod cleanup).
 - **Reference Showcases:** See `examples/DualMod.StashQol/` (all 8 in-game QoL workflows) and `examples/DualMod.SkipCampaign/` (pre-game `LeagueOverlay` + `CreateCharacterBar` + `GameEvents.CharacterCreated`).
+
+---
+
+### 3.9 Phase 2 (`0.4.0`) APIs: World Entities, Live Stats, Area Lifecycle, Item Filter, Camera & Tier 1 ServerBridge `0.4.0`
+
+Phase 2 (`SdkVersion 0.4.0`, C ABI `0.4.0` `0x00000400u`) wires live `3.29.3d` engine implementations for `IWorldService`, `IStatsService`, `IGameLifecycle` area transitions, `IItemFilterService`, and `ICameraService` on `context.Game` (`IGameServices`), plus full Tier 1 `ServerBridge 0.4.0` parity (`IClientPhase2Session`):
+
+```csharp
+using LocalExile.Client.Sdk.Engine;
+
+// 1. Live World Entities & Filter-Visible Ground Loot (IWorldService — ClientWorld+0xa18 EntityManager)
+WorldEntitySnapshot? player = context.Game.World.GetLocalPlayer();
+IReadOnlyList<WorldEntitySnapshot> visibleLoot = context.Game.World.GetWorldItems(
+    filterVisibleOnly: true,
+    maxDistance: 800f);
+
+// Query monsters, chests, NPCs, portals, or custom prefixes across all 14 wired components:
+IReadOnlyList<WorldEntitySnapshot> nearbyAliveMonsters = context.Game.World.GetEntities(new WorldEntityQuery(
+    RequiredKind: WorldEntityKind.Monster | WorldEntityKind.Alive,
+    MaxDistance: 600f,
+    MaxResults: 32));
+
+// Spawn & remove a client-only visual object (raw mimalloc ClientEntity 0x248, invisible to server):
+uint markerId = context.Game.World.SpawnClientObject("Metadata/MiscellaneousObjects/Mods/MyMod/Marker.ot", 120f, 240f, 0f);
+context.Game.World.RemoveClientObject(markerId);
+
+// 2. Live Entity & Player Stats (IStatsService — StatsComponent+0xf0, incl. high-ID >= 0x10000)
+int maxLife = context.Game.Stats.ReadLocalPlayerStat(statId: 1); // entityId 0 = local player
+int customStat = context.Game.Stats.ReadStat(entityId: 0u, statId: 0x10001);
+IReadOnlyDictionary<int, int> allPlayerStats = context.Game.Stats.GetLocalPlayerStats();
+context.Game.Stats.SetLocalStat(entityId: 0u, statId: 0x10001, value: 42); // display-only local stat
+
+// 3. Live Area Enter/Leave Lifecycle (IGameLifecycle)
+context.Game.Lifecycle.AreaEntered += ev =>
+{
+    AreaInfo? area = ev.Area ?? context.Game.Lifecycle.CurrentArea;
+    context.Logger.Info($"Entered {ev.AreaId} ({area?.AreaName}, L{area?.EffectiveLevel}, town={area?.IsTown})");
+};
+context.Game.Lifecycle.AreaLeft += prevAreaId => context.Logger.Info($"Left {prevAreaId}");
+
+// 4. Client Item Filter Bridge (IItemFilterService — Documents\My Games\Path of Exile)
+ItemFilterState filterState = context.Game.ItemFilter.GetState();
+context.Game.ItemFilter.FilterReloaded += ev =>
+    context.Game.Toasts.Show("Item Filter", $"{ev.State.FilterName} (loaded={ev.Succeeded})", ToastSeverity.Info);
+
+if (visibleLoot.Count > 0)
+{
+    ItemFilterResult style = context.Game.ItemFilter.GetWorldItemResult(visibleLoot[0].EntityId);
+    // style.TextRgba / BorderRgba / BackgroundRgba use packed 0xRRGGBBAA
+}
+context.Game.ItemFilter.Reload(); // Triggers Options::Tick -> SelectApply -> NotifyLoaded on game thread
+
+// 5. Camera Projection & Collectible-ALC-Safe Zoom Override (ICameraService — FollowCamera+0x100, v_row * M)
+CameraState cam = context.Game.Camera.GetState();
+if (player is not null && context.Game.Camera.TryWorldToScreen(player.Position, out float sx, out float sy))
+{
+    context.Logger.Debug($"Player screen pos: ({sx:0.0}, {sy:0.0}), zoom={cam.Zoom:0.00}");
+}
+context.Game.Camera.SetZoomOverride(1.35f); // Restored automatically to stock (-1.0f) on SetZoomOverride(null) or ALC unload!
+```
+
+#### Tier 1 Server-Only Parity (`IClientPhase2Session` in `LocalExile.Client.ServerBridge` `0.4.0`)
+Single-`.cs` Roslyn server mods (with zero client `.dll`) can query live world/loot/stats/area/filter/camera state and control camera zoom via `session.Phase2`:
+
+```csharp
+using LocalExile.Client.ServerBridge;
+
+// Query client's filter-visible ground items over HostRuleset or ChatFallback:
+IReadOnlyList<ClientWorldEntitySnapshot> loot = await session.Phase2.QueryVisibleGroundItemsAsync(maxDistance: 800f, cancellationToken: ct);
+ClientEntityStatsSnapshot stats = await session.Phase2.QueryEntityStatsAsync(entityId: 0u, cancellationToken: ct);
+AreaInfo? area = await session.Phase2.QueryAreaInfoAsync(cancellationToken: ct);
+ItemFilterState filter = await session.Phase2.QueryItemFilterStateAsync(cancellationToken: ct);
+CameraState camera = await session.Phase2.QueryCameraStateAsync(cancellationToken: ct);
+
+// Opt-in ref-counted area & filter-reload push notifications:
+IDisposable areaSub = await session.Phase2.OnAreaChangedAsync((s, ev) =>
+    Console.WriteLine($"{s.ConnectionId} {ev.Kind}: {ev.AreaId}"));
+IDisposable filterSub = await session.Phase2.OnFilterReloadedAsync((s, ev) =>
+    Console.WriteLine($"{s.ConnectionId} reloaded {ev.State.FilterName}"));
+
+// Owner-scoped ("server-bridge") zoom override — automatically restored on disconnect/dispose:
+await session.Phase2.SetCameraZoomOverrideAsync(1.25f, cancellationToken: ct);
+```
+
+> **Server-Side Ground-Item Relocation Rule (`DualMod.LootTools`):** When pulling or merging `WorldItem`s on the LocalExile server, **never** send `InstanceProtocol.Teleport` (`0x01B7`) — `InstanceGround` does not update `_cells`, which breaks pickup reach and leaves ghost labels. Always use atomic `Ground.Take(id, item)` → `Ground.Add(relocated, origin.By, origin.Shared, justDropped: false)` followed by `Game.SendWorldRemoval` (`0x02BD`) and `Game.SendGroundItem(..., justDropped: false)` (`0x02BB` + `0x01A9`). See `examples/DualMod.LootTools/` for the complete zero-server-edit blueprint.
 
 ---
 
