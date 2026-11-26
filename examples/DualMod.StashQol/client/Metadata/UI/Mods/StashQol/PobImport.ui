@@ -1,0 +1,209 @@
+// Stash & Inventory QoL — Native 3.29.3d PoB Passive Tree Import Dialog.
+// Supports clipboard paste, auto-apply on level-up toggle, and immediate allocation.
+
+<DEFINITIONS>
+
+const $w = 700;
+const $pad = 24;
+const $inner = 652;
+
+begin Frame
+	id = stashqol_pob_import;
+	aspect_mode = scaley;
+	size = $w, 430;
+	min_size = $w, 380;
+	auto_size = false, true;
+	float = centre;
+	y = 140;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	background_colour = argb( 236, 12, 13, 18 );
+	pixel_border_colour = rgb( 137, 100, 64 );
+
+	begin StackLayout
+		id = body;
+		auto_size = true, true;
+		margin = $pad, 16, $pad, 18;
+		float = centre;
+
+		begin Frame
+			id = title_bar;
+			size = $inner, 44;
+			margin = 0, 0, 0, 8;
+
+			begin Label
+				id = title_label;
+				location = 44, 0;
+				size = $inner - 88, 44;
+				auto_size = false;
+				text_align = MiddleCentre;
+				font = Fonts.LargeSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				outline_colour = rgb( 0, 0, 0 );
+				text = "PoB Passive Tree Auto-Apply";
+			end
+
+			begin BasicButton
+				id = close_button;
+				location = $inner - 41, 2;
+				size = 41, 41;
+				mouse_enabled = true;
+				background = "Art/2DArt/UIImages/Common/ButtonCloseNormal", stretch;
+			end
+		end
+
+		begin Frame
+			id = header_divider;
+			float = centre;
+			background = "Art/2DArt/UIImages/InGame/Divider", stretch;
+			size = $inner - 24, 8;
+			margin = 0, 0, 0, 10;
+		end
+
+		begin Frame
+			id = input_row;
+			size = $inner, 108;
+			margin = 0, 0, 0, 10;
+
+			begin Label
+				id = pob_caption;
+				location = 0, 0;
+				size = $inner - 170, 26;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormalSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				text = "PoB Code / XML / Node IDs";
+			end
+
+			begin BasicButton
+				id = paste_clipboard_button;
+				location = $inner - 160, 0;
+				size = 160, 32;
+				mouse_enabled = true;
+				background_colour = argb( 225, 36, 46, 62 );
+				pixel_border_colour = rgb( 116, 152, 196 );
+
+				begin Label
+					id = paste_clipboard_label;
+					location = 0, 0;
+					size = 160, 32;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 218, 236, 255 );
+					mouse_enabled = false;
+					text = "Paste Clipboard";
+				end
+			end
+
+			begin TextBox
+				id = pob_code_textbox;
+				location = 0, 38;
+				size = $inner, 64;
+				max_length = 65536;
+				multiline = true;
+				font = Fonts.SmallNormal;
+				foreground_colour = rgb( 245, 245, 245 );
+				background_colour = argb( 230, 8, 9, 13 );
+				pixel_border_colour = rgb( 120, 96, 68 );
+				text = "";
+			end
+		end
+
+		begin Frame
+			id = toggle_row;
+			size = $inner, 40;
+			margin = 0, 0, 0, 10;
+
+			begin CheckBox
+				id = auto_apply_checkbox;
+				location = 0, 4;
+				size = 380, 32;
+				checked = true;
+				text = "Auto-allocate connected passives on level up";
+			end
+		end
+
+		begin Frame
+			id = action_bar;
+			size = $inner, 46;
+			margin = 0, 4, 0, 8;
+
+			begin BasicButton
+				id = import_button;
+				location = 0, 0;
+				size = 208, 44;
+				mouse_enabled = true;
+				background_colour = argb( 235, 36, 72, 46 );
+				pixel_border_colour = rgb( 120, 200, 140 );
+
+				begin Label
+					id = import_button_label;
+					location = 0, 0;
+					size = 208, 44;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.NormalSC;
+					foreground_colour = rgb( 235, 255, 235 );
+					mouse_enabled = false;
+					text = "Import & Apply";
+				end
+			end
+
+			begin BasicButton
+				id = clear_plan_button;
+				location = 222, 0;
+				size = 208, 44;
+				mouse_enabled = true;
+				background_colour = argb( 225, 58, 46, 26 );
+				pixel_border_colour = rgb( 168, 138, 86 );
+
+				begin Label
+					id = clear_plan_label;
+					location = 0, 0;
+					size = 208, 44;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.NormalSC;
+					foreground_colour = rgb( 242, 224, 184 );
+					mouse_enabled = false;
+					text = "Clear Plan";
+				end
+			end
+
+			begin BasicButton
+				id = cancel_button;
+				location = 444, 0;
+				size = 208, 44;
+				mouse_enabled = true;
+				background_colour = argb( 230, 62, 28, 28 );
+				pixel_border_colour = rgb( 170, 96, 86 );
+
+				begin Label
+					id = cancel_button_label;
+					location = 0, 0;
+					size = 208, 44;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.NormalSC;
+					foreground_colour = rgb( 245, 220, 215 );
+					mouse_enabled = false;
+					text = "Close";
+				end
+			end
+		end
+
+		begin Label
+			id = status_label;
+			size = $inner, 32;
+			auto_size = false;
+			text_align = MiddleLeft;
+			font = Fonts.SmallNormal;
+			foreground_colour = rgb( 196, 204, 216 );
+			text = "Paste a PoB code, XML tree, or comma-separated passive node IDs.";
+		end
+	end
+end

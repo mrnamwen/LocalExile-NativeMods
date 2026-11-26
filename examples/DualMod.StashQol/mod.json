@@ -1,0 +1,42 @@
+{
+  "id": "stashqol",
+  "name": "Stash & Inventory QoL",
+  "description": "Adds native toolbar buttons, Ctrl+Shift+RMB bulk stack use, Regex Roller, and PoB auto-apply passive tree dialogs for stash and inventory quality-of-life.",
+  "author": "LocalExile Community",
+  "version": "1.0.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "stashqol.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": false,
+    "sdkVersionRange": ">=0.3.0 <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "assembly": "stashqol.Client.dll",
+    "payloadDir": "client",
+    "overlays": [
+      "Metadata/UI/Mods/StashQol/RegexRoller.ui",
+      "Metadata/UI/Mods/StashQol/PobImport.ui"
+    ],
+    "replaces": [],
+    "rawAccess": false,
+    "customOpcodes": [],
+    "gealBuiltins": [],
+    "customControls": [],
+    "contentRegistries": [],
+    "serverHalf": {
+      "id": "stashqol",
+      "minVersion": "1.0.0",
+      "supportsGracefulFallback": true,
+      "channelName": "stashqol"
+    }
+  }
+}
