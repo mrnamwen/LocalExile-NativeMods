@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>nativemods</AssemblyName>
+    <RootNamespace>LocalExile.Client.Cli</RootNamespace>
+    <Description>NativeMods developer CLI for scaffolding Tier 1, Tier 2 dual-side, and declarative .datpatch.json content mods, validating packages and .ui layouts, and merging multi-mod .datc64 content packs.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LocalExile.Client.AssetPipeline\LocalExile.Client.AssetPipeline.csproj" />
+    <ProjectReference Include="..\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+    <ProjectReference Include="..\LocalExile.Client.Waypoint\LocalExile.Client.Waypoint.csproj" />
+  </ItemGroup>
+</Project>

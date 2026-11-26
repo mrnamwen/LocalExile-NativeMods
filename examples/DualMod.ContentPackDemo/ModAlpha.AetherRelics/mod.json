@@ -1,0 +1,53 @@
+{
+  "id": "aether-relics",
+  "name": "Mod Alpha: Aether Relics",
+  "description": "Independent declarative content pack appending the Aether Shard custom currency, a unique-style Aether Relic modifier, and a dead-slot Stats allocation with Route A StatDescriptions tooltip overlay.",
+  "author": "LocalExile Community",
+  "version": "1.0.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "aether-relics.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": true,
+    "sdkVersionRange": ">=0.4.0 <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "payloadDir": "client/overlay",
+    "overlays": [],
+    "replaces": [],
+    "rawAccess": false,
+    "customOpcodes": [],
+    "gealBuiltins": [],
+    "customControls": [],
+    "contentRegistries": [
+      {
+        "table": "ItemVisualIdentity",
+        "entryId": "AetherShardVisual",
+        "mode": "append"
+      },
+      {
+        "table": "BaseItemTypes",
+        "entryId": "Metadata/Items/Currency/Mods/aether-relics/AetherShard",
+        "mode": "append"
+      },
+      {
+        "table": "CurrencyItems",
+        "entryId": "Metadata/Items/Currency/Mods/aether-relics/AetherShard",
+        "mode": "append"
+      },
+      {
+        "table": "Mods",
+        "entryId": "AetherRelicUniqueMod1",
+        "mode": "append"
+      }
+    ]
+  }
+}

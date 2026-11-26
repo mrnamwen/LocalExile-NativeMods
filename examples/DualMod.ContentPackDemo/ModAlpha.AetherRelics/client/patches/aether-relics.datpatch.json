@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "modId": "aether-relics",
+  "allocateDeadStat": [
+    {
+      "key": "aether_resonance_pct",
+      "isPublic": true,
+      "isLocal": false,
+      "isWeaponLocal": false,
+      "semantics": 1,
+      "description": {
+        "variants": [
+          {
+            "condition": "1|#",
+            "text": "{0:+d}% increased Aether Resonance"
+          },
+          {
+            "condition": "#|-1",
+            "text": "{0:d}% reduced Aether Resonance",
+            "handlers": [
+              "negate 1"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "tables": {
+    "ItemVisualIdentity": {
+      "append": [
+        {
+          "key": "aether_shard_visual",
+          "cloneFromRow": 0,
+          "fields": {
+            "Id": "AetherShardVisual",
+            "DDSFile": "Art/2DItems/Currency/Mods/aether-relics/AetherShard.dds",
+            "AOFile": "Metadata/Items/Currency/CurrencyOrb.ao",
+            "InventorySoundEffect": 33
+          }
+        }
+      ]
+    },
+    "BaseItemTypes": {
+      "append": [
+        {
+          "key": "aether_shard",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "Id": "Metadata/Items/Currency/Mods/aether-relics/AetherShard",
+            "Name": "Aether Shard",
+            "ItemVisualIdentity": "$ref:ItemVisualIdentity:aether_shard_visual",
+            "Implicit_ModsKeys": [
+              "$ref:Mods:aether_relic_unique_mod"
+            ]
+          }
+        }
+      ]
+    },
+    "CurrencyItems": {
+      "append": [
+        {
+          "key": "aether_shard_currency",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "BaseItemTypesKey": "$ref:BaseItemTypes:aether_shard",
+            "StackSize": 20,
+            "CurrencyTab_StackSize": 5000,
+            "Description": "Imbues an item with Aether Resonance from the Aether Relics content pack"
+          }
+        }
+      ]
+    },
+    "Mods": {
+      "append": [
+        {
+          "key": "aether_relic_unique_mod",
+          "cloneFromId": "Strength1",
+          "fields": {
+            "Id": "AetherRelicUniqueMod1",
+            "Name": "of Aether Resonance",
+            "Level": 1,
+            "StatsKey1": "$ref:Stats:aether_resonance_pct",
+            "Stat1Min": 8,
+            "Stat1Max": 24
+          }
+        }
+      ]
+    }
+  }
+}

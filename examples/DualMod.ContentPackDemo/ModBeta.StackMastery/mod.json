@@ -1,0 +1,53 @@
+{
+  "id": "stack-mastery",
+  "name": "Mod Beta: Stack Mastery",
+  "description": "Independent declarative content pack appending the Stack Catalyst custom currency, raising stock currency stack sizes to 65,535 in-place, and allocating a second dead Stats slot with its own Route A StatDescriptions overlay.",
+  "author": "LocalExile Community",
+  "version": "1.0.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "stack-mastery.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": true,
+    "sdkVersionRange": ">=0.4.0 <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "payloadDir": "client/overlay",
+    "overlays": [],
+    "replaces": [],
+    "rawAccess": false,
+    "customOpcodes": [],
+    "gealBuiltins": [],
+    "customControls": [],
+    "contentRegistries": [
+      {
+        "table": "ItemVisualIdentity",
+        "entryId": "StackCatalystVisual",
+        "mode": "append"
+      },
+      {
+        "table": "BaseItemTypes",
+        "entryId": "Metadata/Items/Currency/Mods/stack-mastery/StackCatalyst",
+        "mode": "append"
+      },
+      {
+        "table": "CurrencyItems",
+        "entryId": "Metadata/Items/Currency/Mods/stack-mastery/StackCatalyst",
+        "mode": "append"
+      },
+      {
+        "table": "Mods",
+        "entryId": "StackMasteryBoon1",
+        "mode": "append"
+      }
+    ]
+  }
+}

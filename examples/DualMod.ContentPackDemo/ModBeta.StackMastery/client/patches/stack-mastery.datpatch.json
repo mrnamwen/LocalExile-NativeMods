@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "modId": "stack-mastery",
+  "allocateDeadStat": [
+    {
+      "key": "stack_mastery_drop_qty_pct",
+      "isPublic": true,
+      "isLocal": false,
+      "isWeaponLocal": false,
+      "semantics": 1,
+      "description": {
+        "template": "{0:+d}% increased Stacked Currency Quantity"
+      }
+    }
+  ],
+  "tables": {
+    "ItemVisualIdentity": {
+      "append": [
+        {
+          "key": "stack_catalyst_visual",
+          "cloneFromRow": 0,
+          "fields": {
+            "Id": "StackCatalystVisual",
+            "DDSFile": "Art/2DItems/Currency/Mods/stack-mastery/StackCatalyst.dds",
+            "AOFile": "Metadata/Items/Currency/CurrencyOrb.ao",
+            "InventorySoundEffect": 33
+          }
+        }
+      ]
+    },
+    "BaseItemTypes": {
+      "append": [
+        {
+          "key": "stack_catalyst",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "Id": "Metadata/Items/Currency/Mods/stack-mastery/StackCatalyst",
+            "Name": "Stack Catalyst",
+            "ItemVisualIdentity": "$ref:ItemVisualIdentity:stack_catalyst_visual",
+            "Implicit_ModsKeys": [
+              "$ref:Mods:stack_mastery_boon"
+            ]
+          }
+        }
+      ]
+    },
+    "CurrencyItems": {
+      "append": [
+        {
+          "key": "stack_catalyst_currency",
+          "cloneFromId": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "BaseItemTypesKey": "$ref:BaseItemTypes:stack_catalyst",
+            "StackSize": 65535,
+            "CurrencyTab_StackSize": 65535,
+            "Description": "Compresses compatible currency stacks up to the 65,535 protocol ceiling"
+          }
+        }
+      ],
+      "modify": [
+        {
+          "id": "Metadata/Items/Currency/CurrencyRemoveMod",
+          "fields": {
+            "StackSize": 65535,
+            "CurrencyTab_StackSize": 65535
+          }
+        }
+      ]
+    },
+    "Mods": {
+      "append": [
+        {
+          "key": "stack_mastery_boon",
+          "cloneFromId": "Strength1",
+          "fields": {
+            "Id": "StackMasteryBoon1",
+            "Name": "of Hoarding",
+            "Level": 1,
+            "StatsKey1": "$ref:Stats:stack_mastery_drop_qty_pct",
+            "Stat1Min": 5,
+            "Stat1Max": 15
+          }
+        }
+      ]
+    }
+  }
+}
