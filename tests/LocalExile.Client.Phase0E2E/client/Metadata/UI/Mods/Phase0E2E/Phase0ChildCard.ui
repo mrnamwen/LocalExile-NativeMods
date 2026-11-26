@@ -1,0 +1,34 @@
+// Phase 0 E2E Child Card UI — dynamically parented via CreateWindowInto(probe_slot_host, ...).
+
+<DEFINITIONS>
+
+begin Frame
+	id = phase0_child_card;
+	size = 420, 120;
+	location = 20, 20;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+	pixel_border_colour = Colours.BorderColour;
+	background = "Art/2DArt/UIImages/Common/Background1", tile;
+
+	begin StackLayout
+		id = child_card_body;
+		auto_size = true, true;
+		margin = 14, 12, 14, 12;
+
+		begin Label
+			id = child_card_label;
+			font = Fonts.NormalSC;
+			foreground_colour = Colours.White;
+			text = "Phase0 Dynamic Child Card";
+			margin = 0, 0, 0, 8;
+		end
+
+		begin Button
+			id = child_card_ping_button;
+			size = 180, 40;
+			text = "Child Ping";
+		end
+	end
+end

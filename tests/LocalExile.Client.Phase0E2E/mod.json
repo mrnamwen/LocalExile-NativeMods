@@ -1,0 +1,77 @@
+{
+  "id": "phase0-e2e",
+  "name": "Phase 0 E2E Verification Mod",
+  "description": "Independent dual-side verification mod exercising 0.2.0 SDK, C ABI, hook chaining, UI/clipboard/file/network APIs, ServerBridge 0.2.0, and LocalExile Part 1 core hooks on 3.29.3d.",
+  "author": "LocalExile Contributors",
+  "version": "0.2.0",
+  "compatibleClientVersions": [
+    "0.5.2-beta"
+  ],
+  "kind": "feature",
+  "depends": [
+    "Game"
+  ],
+  "assembly": "phase0-e2e.dll",
+  "enabled": true,
+  "nativeClient": {
+    "required": false,
+    "sdkVersionRange": ">=0.2.0 <2.0.0",
+    "supportedBuilds": [
+      "3.29.3d",
+      "3.29.3c"
+    ],
+    "assembly": "phase0-e2e.Client.dll",
+    "payloadDir": "client",
+    "rawAccess": true,
+    "rawAccessJustification": "Phase 0 E2E verification of IRawMemory pre/post hook chaining, multi-slot vtable hooks, and 8-arg/float guarded native calls.",
+    "overlays": [
+      "Metadata/UI/Mods/Phase0E2E/Phase0Probe.ui",
+      "Metadata/UI/Mods/Phase0E2E/Phase0ChildCard.ui",
+      "Metadata/UI/Mods/Phase0E2E/test_bom_free.sm",
+      "Metadata/UI/Mods/Phase0E2E/test_bom_free.mat",
+      "Metadata/UI/Mods/Phase0E2E/test_bom_free.amd"
+    ],
+    "replaces": [],
+    "customOpcodes": [
+      {
+        "id": 1301,
+        "name": "Phase0Ping",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1302,
+        "name": "Phase0Pong",
+        "direction": "ServerToClient"
+      },
+      {
+        "id": 1303,
+        "name": "Phase0RunProbesRequest",
+        "direction": "ServerToClient"
+      },
+      {
+        "id": 1304,
+        "name": "Phase0ProbeReport",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1305,
+        "name": "Phase0ItemTestRequest",
+        "direction": "ClientToServer"
+      },
+      {
+        "id": 1306,
+        "name": "Phase0ItemTestResult",
+        "direction": "ServerToClient"
+      }
+    ],
+    "gealBuiltins": [],
+    "customControls": [],
+    "contentRegistries": [],
+    "serverHalf": {
+      "id": "phase0-e2e",
+      "minVersion": "0.2.0",
+      "supportsGracefulFallback": true,
+      "channelName": "phase0-e2e"
+    }
+  }
+}

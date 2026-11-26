@@ -1,0 +1,130 @@
+// Phase 0 E2E Probe UI — 3.29.3d stock controls only, unique sibling IDs, no Picture margin in StackLayout.
+
+<DEFINITIONS>
+
+const $w = 960;
+const $pad = 24;
+
+begin Frame
+	id = phase0_probe_window;
+	aspect_mode = scaley;
+	size = $w, 640;
+	float = centre;
+	y = 180;
+	visible = false;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	border = normal,
+		"Art/2DArt/UIImages/Common/OrnateTopLeft", "Art/2DArt/UIImages/Common/OrnateTop", "Art/2DArt/UIImages/Common/OrnateTopRight",
+		"Art/2DArt/UIImages/Common/OrnateLeft", "Art/2DArt/UIImages/Common/OrnateRight",
+		"Art/2DArt/UIImages/Common/OrnateBottomLeft", "Art/2DArt/UIImages/Common/OrnateBottom", "Art/2DArt/UIImages/Common/OrnateBottomRight";
+	border_position = outside;
+	background = "Art/2DArt/UIImages/Common/Background1", tile;
+
+	begin StackLayout
+		id = probe_body;
+		auto_size = true, true;
+		margin = $pad, 20, $pad, 20;
+		float = centre;
+
+		begin Label
+			id = probe_title;
+			font = Fonts.NormalSC;
+			foreground_colour = rgb( 255, 224, 130 );
+			float = centre;
+			text = "NativeMods Phase 0 E2E Probe (0.2.0)";
+			margin = 0, 0, 0, 10;
+		end
+
+		begin Label
+			id = probe_status_label;
+			width = $w - 2 * $pad;
+			auto_size = true;
+			foreground_colour = Colours.White;
+			font = Fonts.Normal;
+			text = "Ready for Phase 0 E2E probes.";
+			margin = 0, 0, 0, 14;
+		end
+
+		begin Frame
+			id = probe_input_row;
+			size = $w - 2 * $pad, 56;
+			margin = 0, 0, 0, 12;
+			pixel_border_colour = Colours.BorderColour;
+
+			begin Label
+				id = probe_textbox_label;
+				location = 12, 0;
+				size = 240, 56;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.NormalSC;
+				foreground_colour = Colours.LabelTextColour;
+				text = "TextBox Probe";
+			end
+
+			begin TextBox
+				id = probe_textbox;
+				location = 264, 4;
+				size = 620, 48;
+				font = Fonts[ "TextBox" ].Normal;
+				caret_colour = Colours.White;
+				pixel_border_colour = argb( 0, 0, 0, 0 );
+				text = "initial";
+			end
+		end
+
+		begin CheckBox
+			id = probe_checkbox;
+			font = Fonts.NormalSC;
+			foreground_colour = Colours.LabelTextColour;
+			size = 620, 42;
+			text_side = right;
+			text = "Phase 0 CheckBox Probe";
+			margin = 0, 0, 0, 14;
+		end
+
+		begin Frame
+			id = probe_action_row;
+			size = $w - 2 * $pad, 48;
+			margin = 0, 0, 0, 14;
+			propagate_properties = false;
+
+			begin Button
+				id = probe_run_button;
+				location = 0, 2;
+				size = 210, 44;
+				text = "Run Probes";
+			end
+
+			begin Button
+				id = probe_attach_button;
+				location = 230, 2;
+				size = 210, 44;
+				text = "Attach Child";
+			end
+
+			begin Button
+				id = probe_detach_button;
+				location = 460, 2;
+				size = 210, 44;
+				text = "Detach Child";
+			end
+
+			begin Button
+				id = probe_close_button;
+				location = 690, 2;
+				size = 210, 44;
+				text = "Close";
+			end
+		end
+
+		begin Frame
+			id = probe_slot_host;
+			size = $w - 2 * $pad, 180;
+			pixel_border_colour = Colours.BorderColour;
+			clip_children = true;
+		end
+	end
+end

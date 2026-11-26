@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.Phase0E2E.Client</RootNamespace>
+    <AssemblyName>phase0-e2e.Client</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Compile Shared/ message records directly into phase0-e2e.Client.dll for collectible ALC loading. -->
+    <Compile Include="..\Shared\*.cs" Link="Shared\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+  </ItemGroup>
+</Project>

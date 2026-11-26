@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.Host\LocalExile.Client.Host.csproj" />
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.Waypoint\LocalExile.Client.Waypoint.csproj" />
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.AssetPipeline\LocalExile.Client.AssetPipeline.csproj" />
+    <ProjectReference Include="..\Shared\DualMod.Phase0E2E.Shared.csproj" />
+    <ProjectReference Include="..\Server\DualMod.Phase0E2E.Server.csproj" />
+    <!-- Built alongside tests without binding into the default ALC so ClientModLoader can test
+         collectible AssemblyLoadContext loading & GC unloading cleanly. -->
+    <ProjectReference Include="..\Client\DualMod.Phase0E2E.Client.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

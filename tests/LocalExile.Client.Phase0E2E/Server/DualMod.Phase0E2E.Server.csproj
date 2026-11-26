@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.Phase0E2E.Server</RootNamespace>
+    <AssemblyName>phase0-e2e</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Phase0LocalExileEntry.cs is compiled by LocalExile's ModHost Roslyn loader against live Gateway assemblies. -->
+    <Compile Remove="Phase0LocalExileEntry.cs" />
+    <None Include="Phase0LocalExileEntry.cs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\DualMod.Phase0E2E.Shared.csproj" />
+    <ProjectReference Include="..\..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
+  </ItemGroup>
+</Project>

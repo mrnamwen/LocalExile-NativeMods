@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.Phase0E2E.Shared</RootNamespace>
+    <AssemblyName>DualMod.Phase0E2E.Shared</AssemblyName>
+  </PropertyGroup>
+</Project>
