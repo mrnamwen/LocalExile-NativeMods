@@ -1,0 +1,33 @@
+// DualMod.SkipCampaign — CreateCharacterBar mirror toggle for PoE 3.29.3d.
+// Mirrors the LeagueOverlay "Skip Campaign" mode checkbox when a Character Select
+// league filter skips auto-opening LeagueOverlay.
+
+<DEFINITIONS>
+
+begin Frame
+	id = skip_campaign_bar;
+	size = 320, 36;
+	visible = true;
+	mouse_enabled = true;
+
+	begin CheckBox
+		id = skip_campaign_checkbox;
+		location = 6, 4;
+		size = 180, 28;
+		text = "Skip Campaign";
+		checked = false;
+		enabled = true;
+		visible = true;
+		tooltip = "Skip Acts 1-10 and start directly in Karui Shores.";
+	end
+
+	begin Label
+		id = skip_campaign_status;
+		location = 192, 6;
+		size = 122, 24;
+		auto_size = false;
+		text_align = MiddleLeft;
+		foreground_colour = rgb( 185, 178, 162 );
+		text = "Normal Start";
+	end
+end

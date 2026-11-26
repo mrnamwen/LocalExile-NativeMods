@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.SkipCampaign.Shared</RootNamespace>
+    <AssemblyName>DualMod.SkipCampaign.Shared</AssemblyName>
+  </PropertyGroup>
+</Project>

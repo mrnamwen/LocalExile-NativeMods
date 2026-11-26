@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LocalExile.Client.Waypoint\LocalExile.Client.Waypoint.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.Sdk\LocalExile.Client.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.Host\LocalExile.Client.Host.csproj" />
+    <ProjectReference Include="..\..\src\LocalExile.Client.ServerBridge\LocalExile.Client.ServerBridge.csproj" />
+    <ProjectReference Include="..\..\examples\DualMod.SkipCampaign\Shared\DualMod.SkipCampaign.Shared.csproj" />
+    <ProjectReference Include="..\..\examples\DualMod.SkipCampaign\Server\DualMod.SkipCampaign.Server.csproj" />
+    <!-- Built alongside tests without binding into the default ALC so ClientModLoader can load
+         skip-campaign.Client.dll in a collectible AssemblyLoadContext and verify clean unload. -->
+    <ProjectReference Include="..\..\examples\DualMod.SkipCampaign\Client\DualMod.SkipCampaign.Client.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>
