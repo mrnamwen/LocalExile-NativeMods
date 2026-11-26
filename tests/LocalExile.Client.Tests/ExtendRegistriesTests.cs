@@ -93,23 +93,24 @@ public sealed class ExtendRegistriesTests
         using var bridge = new SimulatedNativeBridge();
         using var host = new ClientHostRuntime(bridge);
 
-        // Ruleset registry (slots 0x00..0xAE; > 0xAE rejected).
+        // Ruleset registry (verified free slots in 0x00..0xAE; > 0xAE and occupied stock slots like 0xA0 rejected).
         TestGardenRuleset? ruleset = null;
-        using IDisposable rsReg = host.Rulesets.Register(0xA1, () =>
+        using IDisposable rsReg = host.Rulesets.Register(IRulesetRegistry.FirstFreeNativeRulesetId, () =>
         {
             ruleset = new TestGardenRuleset();
             return ruleset;
         });
 
         Assert.Throws<ArgumentOutOfRangeException>(() => host.Rulesets.Register(0xAF, () => new TestGardenRuleset()));
+        Assert.Throws<InvalidOperationException>(() => host.Rulesets.Register(IRulesetRegistry.DefaultHostChannelRulesetId, () => new TestGardenRuleset()));
 
-        host.NotifyAreaEntered("HarvestGrove", seed: 12345, activeRulesets: [0xA1]);
+        host.NotifyAreaEntered("HarvestGrove", seed: 12345, activeRulesets: [IRulesetRegistry.FirstFreeNativeRulesetId]);
         Assert.Equal("HarvestGrove", ruleset!.LastArea);
 
-        Assert.True(bridge.SimulateIncomingRulesetPacket(0xA1, new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }));
+        Assert.True(bridge.SimulateIncomingRulesetPacket(IRulesetRegistry.FirstFreeNativeRulesetId, new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }));
         Assert.Equal(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }, ruleset.LastPayload);
         // Absent ruleset drops silently (returns false).
-        Assert.False(bridge.SimulateIncomingRulesetPacket(0xA2, new byte[] { 1, 2 }));
+        Assert.False(bridge.SimulateIncomingRulesetPacket(0xAA, new byte[] { 1, 2 }));
 
         host.TickFrame(0.016f);
         Assert.Equal(1, ruleset.FrameCount);
@@ -176,7 +177,7 @@ public sealed class ExtendRegistriesTests
 
     private sealed class TestGardenRuleset : IClientRuleset
     {
-        public byte RulesetId => 0xA1;
+        public byte RulesetId => IRulesetRegistry.FirstFreeNativeRulesetId;
         public string Name => "TestGarden";
         public string? LastArea { get; private set; }
         public byte[]? LastPayload { get; private set; }

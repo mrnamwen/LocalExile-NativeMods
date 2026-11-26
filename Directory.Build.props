@@ -9,7 +9,7 @@
     <AnalysisLevel>latest-recommended</AnalysisLevel>
     <NoWarn>$(NoWarn);CA1711;CA1716;CA1720</NoWarn>
     <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
-    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionPrefix>1.1.0</VersionPrefix>
     <Authors>LocalExile Contributors</Authors>
     <Product>LocalExile NativeMods</Product>
     <IsPackable>false</IsPackable>

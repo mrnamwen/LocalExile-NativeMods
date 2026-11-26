@@ -195,8 +195,8 @@ public sealed class AddressLibraryTests
         Assert.Equal(784, sizeof(NmItemFilterState));
         Assert.Equal(72, sizeof(NmItemFilterResult));
         Assert.Equal(120, sizeof(NmCameraState));
-        Assert.Equal(864, sizeof(NmAbiTable));
-        Assert.Equal(0x00000400u, NativeShimConstants.AbiVersion);
+        Assert.Equal(1120, sizeof(NmAbiTable));
+        Assert.Equal(0x00000500u, NativeShimConstants.AbiVersion);
         Assert.Equal("LocalExile.Client.Host.NativeEntryPoint", typeof(NativeEntryPoint).FullName);
 
         NmAbiTable table = default;
@@ -557,9 +557,16 @@ public sealed class AddressLibraryTests
         Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(legacy030Ptr));
         Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(legacy030Ptr));
 
+        NmAbiTable legacy040 = default;
+        legacy040.StructSize = (uint)sizeof(NmAbiTable);
+        legacy040.AbiVersion = 0x00000400u;
+        nint legacy040Ptr = (nint)(&legacy040);
+        Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(legacy040Ptr));
+        Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(legacy040Ptr));
+
         NmAbiTable future = default;
         future.StructSize = (uint)sizeof(NmAbiTable);
-        future.AbiVersion = 0x00000500u;
+        future.AbiVersion = 0x00000600u;
         nint futurePtr = (nint)(&future);
         Assert.Equal((int)NmStatus.ErrInvalidArg, NativeEntryPoint.InitializeManaged(futurePtr));
         Assert.Throws<InvalidOperationException>(() => new NativeShimBridge(futurePtr));

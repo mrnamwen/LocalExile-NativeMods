@@ -13,13 +13,13 @@ namespace LocalExile.Client.Sdk;
 public static class SdkVersion
 {
     /// <summary>The current semantic version string of the Client SDK.</summary>
-    public const string Current = "1.0.0";
+    public const string Current = "1.1.0";
 
     /// <summary>The current binary/envelope wire protocol version.</summary>
     public const int ProtocolVersion = 1;
 
     /// <summary>The parsed major.minor.patch version of the Client SDK.</summary>
-    public static Version Parsed { get; } = new(1, 0, 0);
+    public static Version Parsed { get; } = new(1, 1, 0);
 
     /// <summary>
     /// Evaluates whether <see cref="Current"/> satisfies a simplified SemVer range string
@@ -486,6 +486,12 @@ public interface IGameServices
 
     /// <summary>Live camera projection, world-to-screen coordinate transform, and zoom override service.</summary>
     ICameraService Camera { get; }
+
+    /// <summary>Stock item tooltip augmentation and custom anchored mod tooltip overlay service.</summary>
+    ITooltipService Tooltips { get; }
+
+    /// <summary>Ctrl+Click custom stash affinity routing and stock affinity bitset extension service.</summary>
+    IStashAffinityService StashAffinity { get; }
 
     /// <summary>Registry for extending the GEAL VM with custom built-in functions.</summary>
     IGealBuiltinRegistry GealBuiltins { get; }

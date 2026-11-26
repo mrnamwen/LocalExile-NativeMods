@@ -4,12 +4,18 @@ using LocalExile.Client.Sdk.Addresses;
 namespace LocalExile.Client.Host.Native;
 
 /// <summary>
-/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.4.0).
+/// C ABI constants matching <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.5.0).
 /// </summary>
 public static class NativeShimConstants
 {
-    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (4 &lt;&lt; 8) | 0</c>.</summary>
-    public const uint AbiVersion = 0x00000400u;
+    /// <summary>Packed ABI version <c>(0 &lt;&lt; 16) | (5 &lt;&lt; 8) | 0</c>.</summary>
+    public const uint AbiVersion = 0x00000500u;
+
+    /// <summary>Highest verified unoccupied native ruleset slot (<c>0xAE</c>; <c>0xA0</c> is occupied on 3.29.3d).</summary>
+    public const byte RulesetFirstFreeNativeId = 0xAE;
+
+    /// <summary>Maximum number of custom stash affinity targets carried in <see cref="NmAffinityRouteResult"/>.</summary>
+    public const int AffinityMaxTargets = 4;
 
     /// <summary>Maximum number of active ruleset identifiers carried in <see cref="NmAreaInfo"/>.</summary>
     public const int AreaMaxRulesets = 16;
@@ -71,6 +77,8 @@ public enum NmStatus : int
     ErrRuntimeBootFailed = -13,
     ErrNotSupportedOnPlatform = -14,
     ErrPayloadTooLarge = -15,
+    ErrAlreadyExists = -16,
+    ErrNotFound = -17,
 }
 
 /// <summary>Matches <c>nm_host_flags_t</c> in <c>nativemods_abi.h</c>.</summary>
@@ -217,6 +225,30 @@ public enum NmAreaEventKind : int
 {
     Entered = 1,
     Left = 2,
+}
+
+/// <summary>Matches <c>nm_ui_control_kind_t</c> in <c>nativemods_abi.h</c> (ABI 0.5.0).</summary>
+public enum NmUiControlKind : int
+{
+    Frame = 0,
+    Label = 1,
+    Button = 2,
+    TextBox = 3,
+    CheckBox = 4,
+    Picture = 5,
+    StackLayout = 6,
+    ScrollableFrame = 7,
+    TabContainer = 8,
+    ComboBox = 9,
+    ListBox = 10,
+}
+
+/// <summary>Matches <c>nm_affinity_route_action_t</c> in <c>nativemods_abi.h</c> (ABI 0.5.0).</summary>
+public enum NmAffinityRouteAction : int
+{
+    Stock = 0,
+    Override = 1,
+    Append = 2,
 }
 
 /// <summary>Matches <c>nm_host_info_t</c> in <c>nativemods_abi.h</c>.</summary>
@@ -669,8 +701,78 @@ public unsafe struct NmCameraState
     public fixed float ViewProj[16];
 }
 
+/// <summary>Matches <c>nm_affinity_target_t</c> (4 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.5.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct NmAffinityTarget
+{
+    public ushort TabIndex;
+    public byte AffinityId;
+    public byte Reserved;
+}
+
+/// <summary>Matches <c>nm_affinity_route_result_t</c> (32 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.5.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct NmAffinityRouteResult
+{
+    public uint StructSize;
+    public int Action;
+    public uint TargetCount;
+    public uint StockAffinityBitmask;
+    public NmAffinityTarget Target0;
+    public NmAffinityTarget Target1;
+    public NmAffinityTarget Target2;
+    public NmAffinityTarget Target3;
+
+    public void SetTarget(int index, NmAffinityTarget target)
+    {
+        switch (index)
+        {
+            case 0: Target0 = target; break;
+            case 1: Target1 = target; break;
+            case 2: Target2 = target; break;
+            case 3: Target3 = target; break;
+            default: throw new ArgumentOutOfRangeException(nameof(index));
+        }
+    }
+
+    public readonly NmAffinityTarget GetTarget(int index) => index switch
+    {
+        0 => Target0,
+        1 => Target1,
+        2 => Target2,
+        3 => Target3,
+        _ => throw new ArgumentOutOfRangeException(nameof(index)),
+    };
+}
+
+/// <summary>Matches <c>nm_native_ruleset_callbacks_t</c> (64 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.5.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmNativeRulesetCallbacks
+{
+    public uint StructSize;
+    public uint Reserved;
+    public delegate* unmanaged[Cdecl]<uint, void*, void*, void> OnCreated;
+    public delegate* unmanaged[Cdecl]<uint, uint, void*, void> OnAreaEntered;
+    public delegate* unmanaged[Cdecl]<uint, uint, byte*, void*, void> OnScriptEvent;
+    public delegate* unmanaged[Cdecl]<uint, float, void*, void> OnFrame;
+    public delegate* unmanaged[Cdecl]<uint, float, void*, void> OnTick;
+    public delegate* unmanaged[Cdecl]<uint, byte*, uint, void*, void> OnRulesetUpdate;
+    public delegate* unmanaged[Cdecl]<uint, void*, void> OnAreaLeft;
+}
+
+/// <summary>Matches <c>nm_custom_ui_control_callbacks_t</c> (32 bytes on x64) in <c>nativemods_abi.h</c> (ABI 0.5.0).</summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct NmCustomUiControlCallbacks
+{
+    public uint StructSize;
+    public uint Reserved;
+    public delegate* unmanaged[Cdecl]<byte*, void*, void*, void> OnCreated;
+    public delegate* unmanaged[Cdecl]<void*, byte*, byte*, void*, void> OnProperty;
+    public delegate* unmanaged[Cdecl]<void*, void*, void> OnDestroyed;
+}
+
 /// <summary>
-/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.4.0, 107 function pointers, 864 bytes).
+/// Binary layout matching <c>nm_abi_table_t</c> in <c>src/native-shim/include/nativemods_abi.h</c> (ABI 0.5.0, 139 function pointers, 1120 bytes).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct NmAbiTable
@@ -838,4 +940,44 @@ public unsafe struct NmAbiTable
     public delegate* unmanaged[Cdecl]<NmCameraState*, NmStatus> CameraGetState;
     public delegate* unmanaged[Cdecl]<float, float, float, float*, float*, int*, NmStatus> CameraWorldToScreen;
     public delegate* unmanaged[Cdecl]<float, NmStatus> CameraSetZoomOverride;
+
+    /* ABI 0.5.0: Programmatic & Rich UI Controls (22; slots 107..128) */
+    public delegate* unmanaged[Cdecl]<int, void*, byte*, void**, NmStatus> UiCreateControl;
+    public delegate* unmanaged[Cdecl]<void*, byte*, NmStatus> UiPictureSetTexture;
+    public delegate* unmanaged[Cdecl]<void*, float*, float*, NmStatus> UiScrollableGetScroll;
+    public delegate* unmanaged[Cdecl]<void*, float, NmStatus> UiScrollableSetScroll;
+    public delegate* unmanaged[Cdecl]<void*, void**, NmStatus> UiScrollableGetContent;
+    public delegate* unmanaged[Cdecl]<void*, uint*, NmStatus> UiTabContainerGetCount;
+    public delegate* unmanaged[Cdecl]<void*, int*, NmStatus> UiTabContainerGetActive;
+    public delegate* unmanaged[Cdecl]<void*, int, NmStatus> UiTabContainerSelect;
+    public delegate* unmanaged[Cdecl]<void*, byte*, uint, int, void**, NmStatus> UiTabContainerAddTab;
+    public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, int, void*, void>, void*, ulong*, NmStatus> UiTabContainerSubscribeChanged;
+    public delegate* unmanaged[Cdecl]<void*, uint*, NmStatus> UiComboBoxGetCount;
+    public delegate* unmanaged[Cdecl]<void*, int*, NmStatus> UiComboBoxGetSelected;
+    public delegate* unmanaged[Cdecl]<void*, int, NmStatus> UiComboBoxSetSelected;
+    public delegate* unmanaged[Cdecl]<void*, byte*, int, uint, uint*, NmStatus> UiComboBoxAddItem;
+    public delegate* unmanaged[Cdecl]<void*, NmStatus> UiComboBoxClear;
+    public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, int, void*, void>, void*, ulong*, NmStatus> UiComboBoxSubscribeChanged;
+    public delegate* unmanaged[Cdecl]<void*, uint*, NmStatus> UiListBoxGetCount;
+    public delegate* unmanaged[Cdecl]<void*, int*, NmStatus> UiListBoxGetSelected;
+    public delegate* unmanaged[Cdecl]<void*, int, NmStatus> UiListBoxSetSelected;
+    public delegate* unmanaged[Cdecl]<void*, uint, void*, ulong, NmStatus> UiListBoxInsertItem;
+    public delegate* unmanaged[Cdecl]<void*, NmStatus> UiListBoxClear;
+    public delegate* unmanaged[Cdecl]<void*, delegate* unmanaged[Cdecl]<void*, int, void*, void>, void*, ulong*, NmStatus> UiListBoxSubscribeChanged;
+
+    /* ABI 0.5.0: Stock Item Tooltip Augmentation (2; slots 129..130) */
+    public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<void*, NmItemSnapshot*, int, void*, void>, void*, NmStatus> TooltipSetItemAugmentCallback;
+    public delegate* unmanaged[Cdecl]<void*, byte*, uint, int, NmStatus> TooltipAddItemSection;
+
+    /* ABI 0.5.0: Custom Stash Affinity Router (1; slot 131) */
+    public delegate* unmanaged[Cdecl]<delegate* unmanaged[Cdecl]<NmItemSnapshot*, int, NmAffinityRouteResult*, void*, int>, void*, NmStatus> AffinitySetRouterCallback;
+
+    /* ABI 0.5.0: Native Extend Registries (7; slots 132..138) */
+    public delegate* unmanaged[Cdecl]<byte*, uint, uint, int, delegate* unmanaged[Cdecl]<uint, byte*, byte*, nuint, nuint*, void*, NmStatus>, void*, ulong*, NmStatus> GealRegisterBuiltin;
+    public delegate* unmanaged[Cdecl]<ulong, NmStatus> GealUnregisterBuiltin;
+    public delegate* unmanaged[Cdecl]<uint, byte*, byte*, byte*, nuint, nuint*, NmStatus> GealInvokeFunction;
+    public delegate* unmanaged[Cdecl]<uint, NmNativeRulesetCallbacks*, void*, ulong*, NmStatus> RulesetRegisterNative;
+    public delegate* unmanaged[Cdecl]<ulong, NmStatus> RulesetUnregisterNative;
+    public delegate* unmanaged[Cdecl]<byte*, NmCustomUiControlCallbacks*, void*, ulong*, NmStatus> UiRegisterCustomControlKind;
+    public delegate* unmanaged[Cdecl]<ulong, NmStatus> UiUnregisterCustomControlKind;
 }

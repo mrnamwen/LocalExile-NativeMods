@@ -166,6 +166,12 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Live camera projection, world-to-screen transform, and per-mod zoom override service.</summary>
     public CameraService Camera { get; }
 
+    /// <summary>Stock item tooltip augmentation and custom anchored tooltip overlay service.</summary>
+    public TooltipService Tooltips { get; }
+
+    /// <summary>Custom Ctrl+Click stash affinity router and stock affinity bitset service.</summary>
+    public StashAffinityService StashAffinity { get; }
+
     /// <summary>Client-side Tier 1 ServerBridge 0.3.0/0.4.0 protocol dispatcher (slots, toasts, hotkeys, screen/hover/world/stats/area/filter/camera).</summary>
     public ServerBridgeTier1Handler Tier1Handler { get; }
 
@@ -208,13 +214,13 @@ public sealed class ClientHostRuntime : IDisposable
         Addresses = _options.AddressLibrary ?? JsonAddressLibrary.FromBridge(_bridge);
         Scheduler = new GameThreadScheduler(_bridge);
         FileOverlayService = new FileOverlayService(_bridge);
-        UiControls = new UiControlRegistry();
+        UiControls = new UiControlRegistry(_bridge);
         Ui = new UiService(FileOverlayService, UiControls, _bridge);
         Ui.WindowTreeInvalidated += DetachWindowUiEvents;
         Ui.ControlSubtreeRemoved += DetachControlSubtreeUiEvents;
         Clipboard = new ClipboardService(_bridge);
         Chat = new ChatService(_bridge);
-        GealBuiltins = new GealBuiltinRegistry();
+        GealBuiltins = new GealBuiltinRegistry(_bridge);
         Scripts = new ScriptService(_bridge, GealBuiltins, Chat);
         Audio = new AudioService(_bridge);
         Stats = new StatsService(_bridge);
@@ -223,6 +229,9 @@ public sealed class ClientHostRuntime : IDisposable
         Keybinds = new KeybindRegistry(_options.KeybindsPath, Log);
         Input = new InputService(_bridge, Keybinds);
         Hover = new HoverService(_bridge, Ui);
+        Tooltips = new TooltipService(_bridge, Ui, FileOverlayService, Hover);
+        Ui.AttachPhase4Services(Tooltips, Input);
+        StashAffinity = new StashAffinityService(_bridge);
         Toasts = new ToastService(Ui, FileOverlayService, Screens);
         PreGame = new PreGameService(_bridge, Log);
         World = new WorldService(_bridge, Lifecycle);
@@ -367,6 +376,13 @@ public sealed class ClientHostRuntime : IDisposable
                 "itemfilter.live",
                 "camera.projection",
                 "content.row-map",
+                "ui.rich-controls",
+                "ui.item-grid",
+                "tooltips.augment",
+                "stash.affinity",
+                "geal.native-builtins",
+                "rulesets.native",
+                "ui.custom-controls",
             ],
             ContentRowMapDigest: Content.ContentRowMapDigest);
 
@@ -441,6 +457,7 @@ public sealed class ClientHostRuntime : IDisposable
     {
         Tier1Handler.HandleDisconnected();
         Toasts.HandleDisconnected();
+        Tooltips.HandleDisconnected();
         Lifecycle.RaiseDisconnected(reason);
     }
 
@@ -790,6 +807,8 @@ public sealed class ClientHostRuntime : IDisposable
         Interlocked.Exchange(ref _mergedCacheOverlayHandle, null)?.Dispose();
         Tier1Handler.Dispose();
         Loader.Dispose();
+        StashAffinity.Dispose();
+        Tooltips.Dispose();
         Camera.Dispose();
         ItemFilter.Dispose();
         Toasts.Dispose();

@@ -19,16 +19,17 @@ public sealed class Phase2SdkAndHost040Tests
     [Fact]
     public void SdkVersion_040_MaintainsBackwardCompatibilityWith020And030Ranges()
     {
-        Assert.Equal("1.0.0", SdkVersion.Current);
-        Assert.Equal(new Version(1, 0, 0), SdkVersion.Parsed);
+        Assert.Equal("1.1.0", SdkVersion.Current);
+        Assert.Equal(new Version(1, 1, 0), SdkVersion.Parsed);
         Assert.Equal(1, SdkVersion.ProtocolVersion);
 
         Assert.True(SdkVersion.IsCompatible(">=0.2.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=0.3.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=0.4.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=1.0.0 <2.0.0"));
+        Assert.True(SdkVersion.IsCompatible(">=1.1.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible("^1.0.0"));
-        Assert.True(SdkVersion.IsCompatible("~1.0.0"));
+        Assert.True(SdkVersion.IsCompatible("~1.1.0"));
         Assert.False(SdkVersion.IsCompatible(">=0.3.0 <0.4.0"));
         Assert.False(SdkVersion.IsCompatible(">=2.0.0"));
     }
@@ -509,8 +510,8 @@ public sealed class Phase2SdkAndHost040Tests
     [Fact]
     public unsafe void NativeShimBridge_Abi040StructSizesOffsetsAndAllSlots89To106RoundTrip()
     {
-        // Exact C ABI 0.4.0 struct sizes and key offsets matching nativemods_abi.h (x64).
-        Assert.Equal(0x00000400u, NativeShimConstants.AbiVersion);
+        // Exact C ABI 0.4.0/0.5.0 struct sizes and key offsets matching nativemods_abi.h (x64).
+        Assert.Equal(0x00000500u, NativeShimConstants.AbiVersion);
         Assert.Equal(160, sizeof(NmWorldEntityQuery));
         Assert.Equal(760, sizeof(NmWorldEntitySnapshot));
         Assert.Equal(8, sizeof(NmStatEntry));
@@ -518,7 +519,7 @@ public sealed class Phase2SdkAndHost040Tests
         Assert.Equal(784, sizeof(NmItemFilterState));
         Assert.Equal(72, sizeof(NmItemFilterResult));
         Assert.Equal(120, sizeof(NmCameraState));
-        Assert.Equal(864, sizeof(NmAbiTable));
+        Assert.Equal(1120, sizeof(NmAbiTable));
 
         Assert.Equal(32, (int)Marshal.OffsetOf<NmWorldEntityQuery>(nameof(NmWorldEntityQuery.MetadataPrefix)));
         Assert.Equal(56, (int)Marshal.OffsetOf<NmWorldEntitySnapshot>(nameof(NmWorldEntitySnapshot.MetadataPath)));

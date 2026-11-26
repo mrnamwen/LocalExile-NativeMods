@@ -120,6 +120,13 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly Dictionary<uint, ItemFilterResult> _simulatedEvaluatedFilterResults = [];
     private readonly List<Action<bool, string, ItemFilterState?>> _filterReloadCallbacks = [];
     private readonly List<float> _simulatedZoomOverrideHistory = [];
+    private readonly List<Func<ItemTooltipContext, IReadOnlyList<TooltipSection>>> _tooltipAugmentCallbacks = [];
+    private readonly List<Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>>> _affinityRouteCallbacks = [];
+    private readonly List<Func<StashAffinityItemContext, uint>> _affinityBitsetCallbacks = [];
+    private readonly Dictionary<string, (bool HasReturnValue, Func<uint, GealArguments, GealValue> Handler)> _nativeGealBuiltins = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<byte, (Action<AreaEventArgs> OnEntered, Action<ReadOnlyMemory<byte>> OnUpdate, Action<float> OnFrame, Action OnLeft)> _nativeRulesets = [];
+    private readonly Dictionary<string, (Action<nint> OnCreated, Action<nint, string, string> OnProperty, Action<nint> OnDestroyed)> _nativeCustomUiKinds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<nint, string> _nativeCustomUiInstanceKinds = [];
     private readonly nint _simulatedUiRootHandle = 0x0F00;
     private readonly Lock _gate = new();
 
@@ -175,6 +182,18 @@ public sealed class SimulatedNativeBridge : INativeBridge
         public Action? ActiveTextChangedHandler { get; set; }
         public Action? ActiveSubmittedHandler { get; set; }
         public Action? ActiveCheckedChangedHandler { get; set; }
+        public UiControlKind? ControlKind { get; set; }
+        public string? TexturePath { get; set; }
+        public float ScrollOffset { get; set; }
+        public float MaxScrollOffset { get; set; }
+        public List<(string Title, nint PageHandle, bool Hidden)> Tabs { get; } = [];
+        public int ActiveTabIndex { get; set; } = -1;
+        public Action<int>? ActiveTabChangedHandler { get; set; }
+        public List<(string Text, bool Enabled, uint Tag)> ComboItems { get; } = [];
+        public int SelectedIndex { get; set; } = -1;
+        public Action<int>? ActiveComboSelectionChangedHandler { get; set; }
+        public List<(nint ChildHandle, ulong UserData)> ListBoxItems { get; } = [];
+        public Action<int>? ActiveListBoxSelectionChangedHandler { get; set; }
         public bool Destroyed { get; set; }
     }
 
@@ -427,18 +446,25 @@ public sealed class SimulatedNativeBridge : INativeBridge
         }
     }
 
-    /// <summary>Delivers a simulated S→C <c>0x2c9</c> ruleset payload into registered receivers.</summary>
+    /// <summary>Delivers a simulated S→C <c>0x2c9</c> ruleset payload into registered receivers and native rulesets.</summary>
     public bool SimulateIncomingRulesetPacket(byte rulesetId, ReadOnlyMemory<byte> payload)
     {
         Action<ReadOnlyMemory<byte>>[] receivers;
+        Action<ReadOnlyMemory<byte>>? nativeRulesetUpdate = null;
         lock (_gate)
         {
-            if (!_rulesetReceivers.TryGetValue(rulesetId, out List<Action<ReadOnlyMemory<byte>>>? list) || list.Count == 0)
+            receivers = _rulesetReceivers.TryGetValue(rulesetId, out List<Action<ReadOnlyMemory<byte>>>? list) && list.Count > 0
+                ? [.. list]
+                : [];
+            if (_nativeRulesets.TryGetValue(rulesetId, out var nativeEntry))
             {
-                return false;
+                nativeRulesetUpdate = nativeEntry.OnUpdate;
             }
+        }
 
-            receivers = [.. list];
+        if (receivers.Length == 0 && nativeRulesetUpdate is null)
+        {
+            return false;
         }
 
         using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
@@ -447,6 +473,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
             rx(payload);
         }
 
+        nativeRulesetUpdate?.Invoke(payload);
         return true;
     }
 
@@ -2912,6 +2939,747 @@ public sealed class SimulatedNativeBridge : INativeBridge
             _simulatedZoomOverrideHistory.Add(normalized);
             _simulatedCameraState = _simulatedCameraState with { ZoomOverride = normalized };
         }
+    }
+
+    // ── Phase 4 (ABI 0.5.0): Rich UI Controls, Tooltips, Stash Affinity & Native Extend Simulation ──
+
+    /// <summary>Names of custom GEAL built-ins currently registered on the simulated native bridge.</summary>
+    public IReadOnlyCollection<string> RegisteredNativeGealBuiltins
+    {
+        get { lock (_gate) { return [.. _nativeGealBuiltins.Keys]; } }
+    }
+
+    /// <summary>Slot IDs of native rulesets currently registered in simulated <c>rulesets.creator_table</c>.</summary>
+    public IReadOnlyCollection<byte> RegisteredNativeRulesetIds
+    {
+        get { lock (_gate) { return [.. _nativeRulesets.Keys]; } }
+    }
+
+    /// <summary>Custom UI control type names currently registered in simulated <c>g_uiControlFactoryMap</c>.</summary>
+    public IReadOnlyCollection<string> RegisteredNativeCustomUiControlKinds
+    {
+        get { lock (_gate) { return [.. _nativeCustomUiKinds.Keys]; } }
+    }
+
+    /// <inheritdoc/>
+    public nint CreateNativeUiControl(nint parentControl, UiControlKind kind, string? id = null)
+    {
+        if (!EnableSimulatedNativeUi || parentControl == nint.Zero)
+        {
+            return nint.Zero;
+        }
+
+        lock (_gate)
+        {
+            if (!_nativeUiControls.ContainsKey(parentControl))
+            {
+                return nint.Zero;
+            }
+
+            nint handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            string key = !string.IsNullOrWhiteSpace(id) ? id.Trim() : $"{kind}_{handle:X}";
+            var ctrl = new SimulatedNativeUiControl
+            {
+                Handle = handle,
+                ParentHandle = parentControl,
+                Key = key,
+                ControlKind = kind,
+                Visible = true,
+                Enabled = true,
+            };
+            _nativeUiControls[handle] = ctrl;
+            _nativeUiChildren[(parentControl, key)] = handle;
+            return handle;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiPictureTexture(nint pictureControl, string texturePath, bool resizeToImage = false)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(pictureControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.TexturePath = texturePath;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiScrollState(nint scrollableControl, out float offset, out float maxOffset)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(scrollableControl, out SimulatedNativeUiControl? ctrl))
+            {
+                offset = ctrl.ScrollOffset;
+                maxOffset = ctrl.MaxScrollOffset;
+                return true;
+            }
+        }
+
+        offset = 0f;
+        maxOffset = 0f;
+        return false;
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiScrollOffset(nint scrollableControl, float offset)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(scrollableControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.ScrollOffset = ctrl.MaxScrollOffset > 0f
+                    ? Math.Clamp(offset, 0f, ctrl.MaxScrollOffset)
+                    : Math.Max(0f, offset);
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiScrollRange(nint scrollableControl, float minOffset, float maxOffset)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(scrollableControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.MaxScrollOffset = Math.Max(0f, maxOffset);
+                ctrl.ScrollOffset = Math.Clamp(ctrl.ScrollOffset, 0f, ctrl.MaxScrollOffset);
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public void UpdateNativeUiScrollContentBounds(nint scrollableControl)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(scrollableControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.LayoutUpdateCount++;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint AddNativeUiTab(nint tabContainerControl, string title, string? iconPath = null, bool hidden = false)
+    {
+        lock (_gate)
+        {
+            if (!_nativeUiControls.TryGetValue(tabContainerControl, out SimulatedNativeUiControl? ctrl))
+            {
+                return nint.Zero;
+            }
+
+            nint pageHandle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            string key = $"tab_page_{ctrl.Tabs.Count}";
+            _nativeUiControls[pageHandle] = new SimulatedNativeUiControl
+            {
+                Handle = pageHandle,
+                ParentHandle = tabContainerControl,
+                Key = key,
+                ControlKind = UiControlKind.Frame,
+                Visible = !hidden && ctrl.Tabs.Count == 0,
+            };
+            ctrl.Tabs.Add((title, pageHandle, hidden));
+            if (ctrl.ActiveTabIndex < 0 && !hidden)
+            {
+                ctrl.ActiveTabIndex = ctrl.Tabs.Count - 1;
+            }
+
+            return pageHandle;
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SelectNativeUiTab(nint tabContainerControl, int index)
+    {
+        Action<int>? handler = null;
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(tabContainerControl, out SimulatedNativeUiControl? ctrl) &&
+                index >= 0 && index < ctrl.Tabs.Count)
+            {
+                ctrl.ActiveTabIndex = index;
+                handler = ctrl.ActiveTabChangedHandler;
+            }
+        }
+
+        if (handler is not null)
+        {
+            using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+            handler(index);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void ClearNativeUiTabs(nint tabContainerControl)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(tabContainerControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.Tabs.Clear();
+                ctrl.ActiveTabIndex = -1;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiTabState(nint tabContainerControl, out int count, out int activeIndex)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(tabContainerControl, out SimulatedNativeUiControl? ctrl))
+            {
+                count = ctrl.Tabs.Count;
+                activeIndex = ctrl.ActiveTabIndex;
+                return true;
+            }
+        }
+
+        count = 0;
+        activeIndex = -1;
+        return false;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiTabChanged(nint tabContainerControl, Action<int> onChanged)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(tabContainerControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.ActiveTabChangedHandler = onChanged;
+                ctrl.NativeSubscribeCount++;
+            }
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                if (_nativeUiControls.TryGetValue(tabContainerControl, out SimulatedNativeUiControl? ctrl) &&
+                    ReferenceEquals(ctrl.ActiveTabChangedHandler, onChanged))
+                {
+                    ctrl.ActiveTabChangedHandler = null;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public int AddNativeUiComboBoxItem(nint comboBoxControl, string text, bool enabled = true, uint tag = 0)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(comboBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                int idx = ctrl.ComboItems.Count;
+                ctrl.ComboItems.Add((text, enabled, tag));
+                return idx;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <inheritdoc/>
+    public void ClearNativeUiComboBoxItems(nint comboBoxControl)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(comboBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.ComboItems.Clear();
+                ctrl.SelectedIndex = -1;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SetNativeUiComboBoxSelectedIndex(nint comboBoxControl, int index)
+    {
+        Action<int>? handler = null;
+        bool updated = false;
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(comboBoxControl, out SimulatedNativeUiControl? ctrl) &&
+                index >= 0 && index < ctrl.ComboItems.Count)
+            {
+                ctrl.SelectedIndex = index;
+                handler = ctrl.ActiveComboSelectionChangedHandler;
+                updated = true;
+            }
+        }
+
+        if (updated && handler is not null)
+        {
+            using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+            handler(index);
+        }
+
+        return updated;
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiComboBoxState(nint comboBoxControl, out int count, out int selectedIndex, out string? selectedText)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(comboBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                count = ctrl.ComboItems.Count;
+                selectedIndex = ctrl.SelectedIndex;
+                selectedText = selectedIndex >= 0 && selectedIndex < ctrl.ComboItems.Count
+                    ? ctrl.ComboItems[selectedIndex].Text
+                    : null;
+                return true;
+            }
+        }
+
+        count = 0;
+        selectedIndex = -1;
+        selectedText = null;
+        return false;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiComboBoxSelectionChanged(nint comboBoxControl, Action<int> onChanged)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(comboBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.ActiveComboSelectionChangedHandler = onChanged;
+                ctrl.NativeSubscribeCount++;
+            }
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                if (_nativeUiControls.TryGetValue(comboBoxControl, out SimulatedNativeUiControl? ctrl) &&
+                    ReferenceEquals(ctrl.ActiveComboSelectionChangedHandler, onChanged))
+                {
+                    ctrl.ActiveComboSelectionChangedHandler = null;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public bool InsertNativeUiListBoxItem(nint listBoxControl, int index, nint childControl, ulong userData = 0)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(listBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                int clamped = Math.Clamp(index, 0, ctrl.ListBoxItems.Count);
+                ctrl.ListBoxItems.Insert(clamped, (childControl, userData));
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <inheritdoc/>
+    public void ClearNativeUiListBoxItems(nint listBoxControl)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(listBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.ListBoxItems.Clear();
+                ctrl.SelectedIndex = -1;
+            }
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool SetNativeUiListBoxSelectedIndex(nint listBoxControl, int index)
+    {
+        Action<int>? handler = null;
+        bool updated = false;
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(listBoxControl, out SimulatedNativeUiControl? ctrl) &&
+                index >= 0 && index < ctrl.ListBoxItems.Count)
+            {
+                ctrl.SelectedIndex = index;
+                handler = ctrl.ActiveListBoxSelectionChangedHandler;
+                updated = true;
+            }
+        }
+
+        if (updated && handler is not null)
+        {
+            using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+            handler(index);
+        }
+
+        return updated;
+    }
+
+    /// <inheritdoc/>
+    public void ClearNativeUiListBoxSelection(nint listBoxControl)
+    {
+        Action<int>? handler = null;
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(listBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.SelectedIndex = -1;
+                handler = ctrl.ActiveListBoxSelectionChangedHandler;
+            }
+        }
+
+        if (handler is not null)
+        {
+            using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+            handler(-1);
+        }
+    }
+
+    /// <inheritdoc/>
+    public bool TryGetNativeUiListBoxState(nint listBoxControl, out int count, out int selectedIndex)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(listBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                count = ctrl.ListBoxItems.Count;
+                selectedIndex = ctrl.SelectedIndex;
+                return true;
+            }
+        }
+
+        count = 0;
+        selectedIndex = -1;
+        return false;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable SubscribeNativeUiListBoxSelectionChanged(nint listBoxControl, Action<int> onChanged)
+    {
+        lock (_gate)
+        {
+            if (_nativeUiControls.TryGetValue(listBoxControl, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.ActiveListBoxSelectionChangedHandler = onChanged;
+                ctrl.NativeSubscribeCount++;
+            }
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                if (_nativeUiControls.TryGetValue(listBoxControl, out SimulatedNativeUiControl? ctrl) &&
+                    ReferenceEquals(ctrl.ActiveListBoxSelectionChangedHandler, onChanged))
+                {
+                    ctrl.ActiveListBoxSelectionChangedHandler = null;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterItemTooltipBuildCallback(Func<ItemTooltipContext, IReadOnlyList<TooltipSection>> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_gate)
+        {
+            _tooltipAugmentCallbacks.Add(callback);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _tooltipAugmentCallbacks.Remove(callback);
+            }
+        });
+    }
+
+    /// <summary>Simulates native <c>ui.item_popup_build_sections</c> firing on the game thread and returns all augmented sections.</summary>
+    public IReadOnlyList<TooltipSection> SimulateItemTooltipBuild(HoveredItemInfo item, bool isAltHeld = false, nint popupHandle = 0)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        Func<ItemTooltipContext, IReadOnlyList<TooltipSection>>[] callbacks;
+        lock (_gate)
+        {
+            callbacks = [.. _tooltipAugmentCallbacks];
+        }
+
+        var ctx = new ItemTooltipContext(item, isAltHeld, popupHandle);
+        var sections = new List<TooltipSection>();
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Func<ItemTooltipContext, IReadOnlyList<TooltipSection>> cb in callbacks)
+        {
+            IReadOnlyList<TooltipSection>? result = cb(ctx);
+            if (result is not null)
+            {
+                sections.AddRange(result);
+            }
+        }
+
+        return sections;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterStashAffinityRouteCallback(Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_gate)
+        {
+            _affinityRouteCallbacks.Add(callback);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _affinityRouteCallbacks.Remove(callback);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterStashAffinityBitsetCallback(Func<StashAffinityItemContext, uint> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_gate)
+        {
+            _affinityBitsetCallbacks.Add(callback);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _affinityBitsetCallbacks.Remove(callback);
+            }
+        });
+    }
+
+    /// <summary>Simulates native <c>ui.stash_get_affinity_targets</c> (<c>0xa83460</c>) firing on the game thread.</summary>
+    public IReadOnlyList<StashAffinityRoute> SimulateStashAffinityRoute(StashAffinityItemContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>>[] callbacks;
+        lock (_gate)
+        {
+            callbacks = [.. _affinityRouteCallbacks];
+        }
+
+        var routes = new List<StashAffinityRoute>();
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Func<StashAffinityItemContext, IReadOnlyList<StashAffinityRoute>> cb in callbacks)
+        {
+            IReadOnlyList<StashAffinityRoute>? matched = cb(context);
+            if (matched is not null)
+            {
+                routes.AddRange(matched);
+            }
+        }
+
+        return routes;
+    }
+
+    /// <summary>Simulates native <c>items.compute_affinity_bitset</c> (<c>0x1589b20</c>) firing on the game thread.</summary>
+    public uint SimulateStashAffinityBitset(StashAffinityItemContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        Func<StashAffinityItemContext, uint>[] callbacks;
+        lock (_gate)
+        {
+            callbacks = [.. _affinityBitsetCallbacks];
+        }
+
+        uint mask = 0u;
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        foreach (Func<StashAffinityItemContext, uint> cb in callbacks)
+        {
+            mask |= cb(context);
+        }
+
+        return mask & 0x003FFFFFu;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNativeGealBuiltin(string name, bool hasReturnValue, Func<uint, GealArguments, GealValue> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(handler);
+        string trimmed = name.Trim();
+        lock (_gate)
+        {
+            _nativeGealBuiltins[trimmed] = (hasReturnValue, handler);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _nativeGealBuiltins.Remove(trimmed);
+            }
+        });
+    }
+
+    /// <summary>Simulates a <c>.ot</c> script invoking a natively registered custom GEAL built-in on the game thread.</summary>
+    public GealInvocationResult SimulateNativeGealBuiltinCall(string name, uint objectId, params GealValue[] args)
+    {
+        (bool HasReturnValue, Func<uint, GealArguments, GealValue> Handler) entry;
+        lock (_gate)
+        {
+            if (!_nativeGealBuiltins.TryGetValue(name, out entry))
+            {
+                return new GealInvocationResult(false, GealValue.Null, $"Native GEAL built-in '{name}' is not registered.");
+            }
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        GealValue val = entry.Handler(objectId, new GealArguments(args));
+        return new GealInvocationResult(true, entry.HasReturnValue ? val : GealValue.Null);
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNativeRuleset(
+        byte rulesetId,
+        Action<AreaEventArgs> onAreaEntered,
+        Action<ReadOnlyMemory<byte>> onRulesetUpdate,
+        Action<float> onFrame,
+        Action onAreaLeft)
+    {
+        if (!IRulesetRegistry.IsNativeSlotFree(rulesetId))
+        {
+            throw new InvalidOperationException($"Simulated native ruleset slot 0x{rulesetId:X2} is occupied by a stock 3.29.3d ruleset.");
+        }
+
+        lock (_gate)
+        {
+            if (_nativeRulesets.ContainsKey(rulesetId))
+            {
+                throw new InvalidOperationException($"Simulated native ruleset slot 0x{rulesetId:X2} is already registered.");
+            }
+
+            _nativeRulesets[rulesetId] = (onAreaEntered, onRulesetUpdate, onFrame, onAreaLeft);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _nativeRulesets.Remove(rulesetId);
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNativeCustomUiControlKind(
+        string controlTypeName,
+        Action<nint> onCreated,
+        Action<nint, string, string> onPropertyChanged,
+        Action<nint> onDestroyed)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controlTypeName);
+        string trimmed = controlTypeName.Trim();
+        lock (_gate)
+        {
+            _nativeCustomUiKinds[trimmed] = (onCreated, onPropertyChanged, onDestroyed);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_gate)
+            {
+                _nativeCustomUiKinds.Remove(trimmed);
+            }
+        });
+    }
+
+    /// <summary>Simulates native <c>ui.parser_create_control</c> creating a custom control kind instance.</summary>
+    public nint SimulateNativeCustomControlCreated(string controlTypeName, string? id = null)
+    {
+        Action<nint>? onCreated;
+        nint handle;
+        lock (_gate)
+        {
+            if (!_nativeCustomUiKinds.TryGetValue(controlTypeName, out var entry))
+            {
+                return nint.Zero;
+            }
+
+            onCreated = entry.OnCreated;
+            handle = (nint)Interlocked.Increment(ref _nextNativeUiHandle);
+            _nativeUiControls[handle] = new SimulatedNativeUiControl
+            {
+                Handle = handle,
+                ParentHandle = _simulatedUiRootHandle,
+                Key = id ?? $"{controlTypeName}_{handle:X}",
+                Visible = true,
+            };
+            _nativeCustomUiInstanceKinds[handle] = controlTypeName;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        onCreated(handle);
+        return handle;
+    }
+
+    /// <summary>Simulates native <c>ui.parser_parse_property</c> dispatching a custom property assignment.</summary>
+    public bool SimulateNativeCustomControlProperty(nint handle, string key, string value)
+    {
+        Action<nint, string, string>? onProp = null;
+        lock (_gate)
+        {
+            if (_nativeCustomUiInstanceKinds.TryGetValue(handle, out string? kind) &&
+                _nativeCustomUiKinds.TryGetValue(kind, out var entry))
+            {
+                onProp = entry.OnProperty;
+            }
+        }
+
+        if (onProp is null)
+        {
+            return false;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        onProp(handle, key, value);
+        return true;
+    }
+
+    /// <summary>Simulates native <c>ui.control_release_or_destroy</c> destroying a custom control instance.</summary>
+    public bool SimulateNativeCustomControlDestroyed(nint handle)
+    {
+        Action<nint>? onDestroyed = null;
+        lock (_gate)
+        {
+            if (_nativeCustomUiInstanceKinds.Remove(handle, out string? kind) &&
+                _nativeCustomUiKinds.TryGetValue(kind, out var entry))
+            {
+                onDestroyed = entry.OnDestroyed;
+            }
+
+            if (_nativeUiControls.TryGetValue(handle, out SimulatedNativeUiControl? ctrl))
+            {
+                ctrl.Destroyed = true;
+            }
+        }
+
+        if (onDestroyed is null)
+        {
+            return false;
+        }
+
+        using var _ = EnterSimulatedGameThreadScope(captureGameThreadId: true);
+        onDestroyed(handle);
+        return true;
     }
 
     /// <inheritdoc/>

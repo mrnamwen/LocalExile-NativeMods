@@ -17,13 +17,14 @@ public sealed class Phase1SdkAndHost030Tests
     [Fact]
     public void SdkVersion_Is040WithProtocolVersion1AndBackwardCompatibleRanges()
     {
-        Assert.Equal("1.0.0", SdkVersion.Current);
-        Assert.Equal(new Version(1, 0, 0), SdkVersion.Parsed);
+        Assert.Equal("1.1.0", SdkVersion.Current);
+        Assert.Equal(new Version(1, 1, 0), SdkVersion.Parsed);
         Assert.Equal(1, SdkVersion.ProtocolVersion);
         Assert.True(SdkVersion.IsCompatible(">=0.2.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=0.3.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=0.4.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible(">=1.0.0 <2.0.0"));
+        Assert.True(SdkVersion.IsCompatible(">=1.1.0 <2.0.0"));
         Assert.True(SdkVersion.IsCompatible("^1.0.0"));
         Assert.False(SdkVersion.IsCompatible("<1.0.0"));
     }

@@ -610,12 +610,20 @@ public sealed class FileOverlayService : IFileOverlayService, IStockFileProvider
 }
 
 /// <summary>
-/// Registry of custom GEAL built-in functions callable from <c>.ot</c> client scripts.
+/// Registry of custom GEAL built-in functions callable from <c>.ot</c> client scripts,
+/// wired live to 3.29 <c>geal.builtin_factory_table</c> when running on the native shim.
 /// </summary>
 public sealed class GealBuiltinRegistry : IGealBuiltinRegistry
 {
-    private readonly Dictionary<string, Func<uint, GealArguments, GealValue>> _builtins = new(StringComparer.OrdinalIgnoreCase);
+    private readonly INativeBridge? _bridge;
+    private readonly Dictionary<string, (Func<uint, GealArguments, GealValue> Handler, bool HasReturnValue, IDisposable NativeSub)> _builtins = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _gate = new();
+
+    /// <summary>Creates a new <see cref="GealBuiltinRegistry"/> optionally backed by <paramref name="bridge"/>.</summary>
+    public GealBuiltinRegistry(INativeBridge? bridge = null)
+    {
+        _bridge = bridge;
+    }
 
     /// <inheritdoc/>
     public IReadOnlyCollection<string> RegisteredNames
@@ -624,46 +632,69 @@ public sealed class GealBuiltinRegistry : IGealBuiltinRegistry
     }
 
     /// <inheritdoc/>
-    public IDisposable Register(string name, Func<uint, GealArguments, GealValue> handler)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(handler);
-        lock (_gate)
-        {
-            if (_builtins.ContainsKey(name))
-            {
-                throw new InvalidOperationException($"GEAL built-in '{name}' is already registered.");
-            }
-
-            _builtins[name] = handler;
-        }
-
-        return new ActionDisposable(() =>
-        {
-            lock (_gate)
-            {
-                _builtins.Remove(name);
-            }
-        });
-    }
+    public IDisposable Register(string name, Func<uint, GealArguments, GealValue> handler) =>
+        RegisterCore(name, hasReturnValue: true, handler);
 
     /// <inheritdoc/>
     public IDisposable Register(string name, Action<uint, GealArguments> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        return Register(name, (objId, args) =>
+        return RegisterCore(name, hasReturnValue: false, (objId, args) =>
         {
             handler(objId, args);
             return GealValue.Null;
         });
     }
 
+    private ActionDisposable RegisterCore(string name, bool hasReturnValue, Func<uint, GealArguments, GealValue> handler)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        string trimmedName = name.Trim();
+        IDisposable nativeSub = NoopDisposable.Instance;
+        lock (_gate)
+        {
+            if (_builtins.ContainsKey(trimmedName))
+            {
+                throw new InvalidOperationException($"GEAL built-in '{trimmedName}' is already registered.");
+            }
+
+            if (_bridge is not null)
+            {
+                nativeSub = _bridge.RegisterNativeGealBuiltin(trimmedName, hasReturnValue, handler);
+            }
+
+            _builtins[trimmedName] = (handler, hasReturnValue, nativeSub);
+        }
+
+        return new ActionDisposable(() =>
+        {
+            IDisposable? toDispose = null;
+            lock (_gate)
+            {
+                if (_builtins.TryGetValue(trimmedName, out var entry))
+                {
+                    toDispose = entry.NativeSub;
+                    _builtins.Remove(trimmedName);
+                }
+            }
+
+            toDispose?.Dispose();
+        });
+    }
+
     /// <inheritdoc/>
     public bool IsRegistered(string name)
     {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
         lock (_gate)
         {
-            return _builtins.ContainsKey(name);
+            return _builtins.ContainsKey(name.Trim());
         }
     }
 
@@ -673,7 +704,7 @@ public sealed class GealBuiltinRegistry : IGealBuiltinRegistry
         Func<uint, GealArguments, GealValue>? handler;
         lock (_gate)
         {
-            _builtins.TryGetValue(name, out handler);
+            handler = _builtins.TryGetValue(name, out var entry) ? entry.Handler : null;
         }
 
         if (handler is null)
@@ -1286,11 +1317,15 @@ public sealed class GameLifecycle : IGameLifecycle
     }
 }
 
-/// <summary>Managed <see cref="IRulesetRegistry"/> implementation for 3.29 creator table slots (<c>0x00..0xAE</c>).</summary>
+/// <summary>
+/// Managed <see cref="IRulesetRegistry"/> implementation for 3.29 native <c>rulesets.creator_table</c>
+/// free slots (<c>0x00..0xAE</c>). Rejects occupied stock slots (including <c>0xA0</c>, which remains
+/// reserved exclusively for the <c>0x02C9</c> filter-hook host transport channel).
+/// </summary>
 public sealed class RulesetRegistry : IRulesetRegistry
 {
     private readonly INativeBridge _bridge;
-    private readonly Dictionary<byte, (Func<IClientRuleset> Factory, IClientRuleset Instance, IDisposable NativeSub)> _rulesets = [];
+    private readonly Dictionary<byte, (Func<IClientRuleset> Factory, IClientRuleset Instance, IDisposable NativeSub, bool IsNativeCreatorTable)> _rulesets = [];
     private readonly Lock _gate = new();
 
     /// <summary>Creates a new <see cref="RulesetRegistry"/>.</summary>
@@ -1313,12 +1348,35 @@ public sealed class RulesetRegistry : IRulesetRegistry
     }
 
     /// <inheritdoc/>
-    public IDisposable Register(byte rulesetId, Func<IClientRuleset> factory)
+    public IDisposable Register(byte rulesetId, Func<IClientRuleset> factory) =>
+        RegisterInternal(rulesetId, factory, requireNativeCreatorTableSlot: false);
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNative<TRuleset>() where TRuleset : class, IClientRuleset, new()
+    {
+        var probe = new TRuleset();
+        return RegisterNative(probe.RulesetId, static () => new TRuleset());
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterNative(byte rulesetId, Func<IClientRuleset> factory) =>
+        RegisterInternal(rulesetId, factory, requireNativeCreatorTableSlot: true);
+
+    private ActionDisposable RegisterInternal(byte rulesetId, Func<IClientRuleset> factory, bool requireNativeCreatorTableSlot)
     {
         ArgumentNullException.ThrowIfNull(factory);
         if (rulesetId > IRulesetRegistry.MaxRulesetId)
         {
             throw new ArgumentOutOfRangeException(nameof(rulesetId), $"Ruleset id 0x{rulesetId:X2} exceeds 3.29 creator table max 0x{IRulesetRegistry.MaxRulesetId:X2}.");
+        }
+
+        bool isFreeNativeSlot = IRulesetRegistry.IsNativeSlotFree(rulesetId);
+        if (rulesetId == IRulesetRegistry.DefaultHostChannelRulesetId || (requireNativeCreatorTableSlot && !isFreeNativeSlot))
+        {
+            throw new InvalidOperationException(
+                $"Ruleset slot 0x{rulesetId:X2} is occupied by a stock 3.29.3d ruleset in rulesets.creator_table " +
+                $"(0xA0 is reserved only for the 0x02C9 filter-hook host transport). " +
+                $"Use IRulesetRegistry.FirstFreeNativeRulesetId (0x{IRulesetRegistry.FirstFreeNativeRulesetId:X2}) or another verified free slot (0xAE, 0xAA, 0xA9, 0xA3, 0x9C, 0x90).");
         }
 
         IClientRuleset instance = factory();
@@ -1329,12 +1387,36 @@ public sealed class RulesetRegistry : IRulesetRegistry
                 throw new InvalidOperationException($"Ruleset slot 0x{rulesetId:X2} is already registered.");
             }
 
-            IDisposable sub = _bridge.RegisterRulesetReceiver(rulesetId, payload =>
-            {
-                try { instance.OnRulesetUpdate(payload.Span); }
-                catch { }
-            });
-            _rulesets[rulesetId] = (factory, instance, sub);
+            IDisposable sub = isFreeNativeSlot
+                ? _bridge.RegisterNativeRuleset(
+                    rulesetId,
+                    area =>
+                    {
+                        try { instance.OnAreaEntered(area); }
+                        catch { }
+                    },
+                    payload =>
+                    {
+                        try { instance.OnRulesetUpdate(payload.Span); }
+                        catch { }
+                    },
+                    dt =>
+                    {
+                        try { instance.OnFrame(dt); }
+                        catch { }
+                    },
+                    () =>
+                    {
+                        try { instance.OnAreaLeft(); }
+                        catch { }
+                    })
+                : _bridge.RegisterRulesetReceiver(rulesetId, payload =>
+                {
+                    try { instance.OnRulesetUpdate(payload.Span); }
+                    catch { }
+                });
+
+            _rulesets[rulesetId] = (factory, instance, sub, isFreeNativeSlot);
         }
 
         return new ActionDisposable(() =>
@@ -1384,9 +1466,10 @@ public sealed class RulesetRegistry : IRulesetRegistry
     internal void NotifyAreaEntered(AreaEventArgs args)
     {
         IClientRuleset[] instances;
+        bool nativeDrives = _bridge.DrivesNativeRulesetLifecycle;
         lock (_gate)
         {
-            instances = [.. _rulesets.Values.Select(v => v.Instance)];
+            instances = [.. _rulesets.Values.Where(v => !(nativeDrives && v.IsNativeCreatorTable)).Select(v => v.Instance)];
         }
 
         foreach (IClientRuleset rs in instances)
@@ -1399,9 +1482,10 @@ public sealed class RulesetRegistry : IRulesetRegistry
     internal void NotifyFrame(float dt)
     {
         IClientRuleset[] instances;
+        bool nativeDrives = _bridge.DrivesNativeRulesetLifecycle;
         lock (_gate)
         {
-            instances = [.. _rulesets.Values.Select(v => v.Instance)];
+            instances = [.. _rulesets.Values.Where(v => !(nativeDrives && v.IsNativeCreatorTable)).Select(v => v.Instance)];
         }
 
         foreach (IClientRuleset rs in instances)
@@ -1414,9 +1498,10 @@ public sealed class RulesetRegistry : IRulesetRegistry
     internal void NotifyAreaLeft()
     {
         IClientRuleset[] instances;
+        bool nativeDrives = _bridge.DrivesNativeRulesetLifecycle;
         lock (_gate)
         {
-            instances = [.. _rulesets.Values.Select(v => v.Instance)];
+            instances = [.. _rulesets.Values.Where(v => !(nativeDrives && v.IsNativeCreatorTable)).Select(v => v.Instance)];
         }
 
         foreach (IClientRuleset rs in instances)

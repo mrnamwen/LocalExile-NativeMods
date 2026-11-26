@@ -106,8 +106,41 @@ public interface IRulesetRegistry
     /// <summary>Maximum valid ruleset slot id (<c>0xaf - 1 = 0xae</c>).</summary>
     const byte MaxRulesetId = 0xAE;
 
-    /// <summary>Default unoccupied ruleset id reserved for the NativeMods host channel.</summary>
+    /// <summary>
+    /// Default ruleset id reserved for the NativeMods <c>0x02C9</c> filter-hook host transport channel
+    /// (intercepted before <c>rulesets.creator_table</c>, preserving backward compatibility with <c>ServerBridge</c> / <c>LocalExile</c>).
+    /// Do NOT register native <c>rulesets.creator_table</c> entries at <c>0xA0</c>; use <see cref="FirstFreeNativeRulesetId"/> (<c>0xAE</c>) or another verified free slot instead.
+    /// </summary>
     const byte DefaultHostChannelRulesetId = 0xA0;
+
+    /// <summary>
+    /// Highest verified free slot (<c>0xAE</c>) in 3.29.3d <c>rulesets.creator_table</c> recommended for native ruleset registration.
+    /// Other verified free high slots include <c>0xAA</c>, <c>0xA9</c>, <c>0xA3</c>, <c>0x9C</c>, and <c>0x90</c>.
+    /// </summary>
+    const byte FirstFreeNativeRulesetId = 0xAE;
+
+    /// <summary>
+    /// Returns <c>true</c> if <paramref name="rulesetId"/> is a verified unoccupied slot in 3.29.3d <c>rulesets.creator_table</c>
+    /// safe for native ruleset registration (107 free slots out of <c>0x00..0xAE</c>; <c>0xA0</c> is occupied by a stock ruleset).
+    /// </summary>
+    static bool IsNativeSlotFree(byte rulesetId) => rulesetId switch
+    {
+        <= 0x10 => true,
+        >= 0x12 and <= 0x3F => true,
+        >= 0x41 and <= 0x45 => true,
+        >= 0x47 and <= 0x48 => true,
+        >= 0x4D and <= 0x50 => true,
+        >= 0x52 and <= 0x57 => true,
+        >= 0x61 and <= 0x62 => true,
+        >= 0x6C and <= 0x6E => true,
+        0x71 or 0x73 or 0x79 or 0x7B => true,
+        >= 0x80 and <= 0x84 => true,
+        >= 0x8A and <= 0x8B => true,
+        0x90 => true,
+        >= 0x92 and <= 0x96 => true,
+        0x9C or 0xA3 or 0xA9 or 0xAA or 0xAE => true,
+        _ => false,
+    };
 
     /// <summary>All ruleset ids currently registered by the host or client mods.</summary>
     IReadOnlyCollection<byte> RegisteredIds { get; }
@@ -115,8 +148,27 @@ public interface IRulesetRegistry
     /// <summary>Registers a custom ruleset class using its <see cref="IClientRuleset.RulesetId"/>.</summary>
     IDisposable Register<TRuleset>() where TRuleset : class, IClientRuleset, new();
 
-    /// <summary>Registers a custom ruleset factory for <paramref name="rulesetId"/>.</summary>
+    /// <summary>
+    /// Registers a custom ruleset factory for <paramref name="rulesetId"/>.
+    /// Verified free slots (see <see cref="IsNativeSlotFree"/>) register natively in 3.29 <c>rulesets.creator_table</c>;
+    /// <see cref="DefaultHostChannelRulesetId"/> (<c>0xA0</c>) is rejected; legacy pre-1.1.0 occupied non-host slots
+    /// fall back to <c>0x02C9</c> filter-hook dispatch without touching <c>rulesets.creator_table</c>.
+    /// </summary>
     IDisposable Register(byte rulesetId, Func<IClientRuleset> factory);
+
+    /// <summary>
+    /// Strictly registers a custom ruleset class into an unoccupied slot of native 3.29 <c>rulesets.creator_table</c>,
+    /// rejecting all 68 stock-occupied slots (including <c>0xA0</c>).
+    /// </summary>
+    IDisposable RegisterNative<TRuleset>() where TRuleset : class, IClientRuleset, new() =>
+        Register<TRuleset>();
+
+    /// <summary>
+    /// Strictly registers a custom ruleset factory into an unoccupied slot of native 3.29 <c>rulesets.creator_table</c>,
+    /// rejecting all 68 stock-occupied slots (including <c>0xA0</c>) with a clear error pointing to verified free slots (<c>0xAE</c>, <c>0xAA</c>, <c>0xA9</c>, <c>0xA3</c>).
+    /// </summary>
+    IDisposable RegisterNative(byte rulesetId, Func<IClientRuleset> factory) =>
+        Register(rulesetId, factory);
 
     /// <summary>Returns <c>true</c> if a custom ruleset is registered at <paramref name="rulesetId"/>.</summary>
     bool IsRegistered(byte rulesetId);
