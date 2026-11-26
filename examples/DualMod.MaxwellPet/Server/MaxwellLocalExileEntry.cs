@@ -1,10 +1,9 @@
-// Thin LocalExile Gateway IMod entry point for Maxwell the Cat Pet MTX.
-// Delegates Pet MTX catalog registration, S->C 0x0204 ownership grant encoding, and real-time
-// Cosmetics (K) menu equip/unequip detection to LocalExilePetMtxRegistrar in LocalExile.Client.ServerBridge
-// so ZERO edits to LocalExile core and ZERO duplicated catalog reflection are needed.
+// Thin LocalExile Gateway IMod entry point for Maxwell the Cat Pet MTX (SDK 0.2.0 / ServerBridge 0.2.0).
+// Delegates Gateway lifecycle + 0x02CA / /nm / GatewayBridgeBus wiring + GameEvents.CosmeticChanged
+// to LocalExileGatewayHost, and Pet MTX catalog registration / S->C 0x0204 ownership grant /
+// Cosmetics (K) menu equip detection to LocalExilePetMtxRegistrar (event-driven, zero per-tick polling!).
 
 using System;
-using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using DualMod.MaxwellPet.Server;
@@ -16,138 +15,101 @@ using LocalExile.Client.ServerBridge;
 
 public sealed class MaxwellLocalExileEntry : IMod, IDisposable
 {
-    private readonly ConcurrentDictionary<string, Player> _players = new(StringComparer.Ordinal);
-    private ClientBridgeHost? _bridge;
-    private GatewayBridgeRegistration? _busRegistration;
+    private LocalExileGatewayHost? _gatewayHost;
     private LocalExilePetMtxRegistrar? _registrar;
     private MaxwellServerMod? _serverMod;
+    private Action<string>? _log;
 
     public void Load(IModContext mod)
     {
-        string id = mod.Manifest.Id;
-
-        _bridge = new ClientBridgeHost(new LocalExileGatewaySink(_players), new ClientBridgeOptions
-        {
-            ServerVersion = "LocalExile-3.29.3d",
-            HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
-        });
-
+        _log = mod.Log;
         _registrar = new LocalExilePetMtxRegistrar();
-        var backend = new LocalExileMaxwellWorldBackend(_players, _registrar, mod.Log);
-        _serverMod = new MaxwellServerMod(_bridge, backend, _registrar);
+
+        _gatewayHost = LocalExileGatewayHost.Create(mod, builder => builder
+            .WithBridgeOptions(new ClientBridgeOptions
+            {
+                ServerVersion = "LocalExile-3.29.3d",
+                HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId
+            })
+            .WithBus(
+                attach: true,
+                onDispatchError: (owner, ex) => mod.Log($"[gateway-bus] participant '{owner}' failed: {ex.Message}"))
+            .OnGatewayContext((connId, character, _) =>
+            {
+                if (!string.IsNullOrWhiteSpace(character))
+                    _serverMod?.BindConnection(connId, character);
+            })
+            .OnPlayerEntered(async ctx =>
+            {
+                await SyncGatewayPlayerAsync((Player)ctx.Player, ctx.ConnectionId, ctx.CharacterName, isAreaEntry: true)
+                    .ConfigureAwait(false);
+            })
+            .OnCosmeticChanged(async evt =>
+            {
+                if (evt.IsSkillCosmetic)
+                    return;
+
+                await SyncGatewayPlayerAsync((Player)evt.Player, evt.ConnectionId, evt.CharacterName, isAreaEntry: false)
+                    .ConfigureAwait(false);
+            })
+            .OnPlayerLeaving((ctx, _) =>
+            {
+                if (((Player)ctx.Player).Closed)
+                {
+                    _registrar?.ClearConnection(ctx.ConnectionId);
+                    _serverMod?.OnPlayerLeft(ctx.ConnectionId);
+                }
+
+                return Task.CompletedTask;
+            }));
+
+        var backend = new LocalExileMaxwellWorldBackend(_gatewayHost, _registrar, mod.Log);
+        _serverMod = new MaxwellServerMod(_gatewayHost.Bridge, backend, _registrar);
         _serverMod.Attach();
 
-        // Register on the shared cross-ALC AppDomain bus so multiple NativeMods server mods
-        // coexist cleanly on 0x02CA and /nm with a single deduplicated ServerHandshake.
-        _busRegistration = _bridge.AttachToGatewayBus(
-            id,
-            onGatewayContext: (connId, character, gatewayPlayer) =>
-            {
-                if (gatewayPlayer is Player p)
-                    _players[connId] = p;
-                if (!string.IsNullOrWhiteSpace(character))
-                    _serverMod.BindConnection(connId, character);
-            },
-            onDispatchError: (owner, ex) => mod.Log($"[gateway-bus] participant '{owner}' failed: {ex.Message}"));
-
         // /maxwell command (works for both NativeMods clients and stock vanilla clients)
-        GameEvents.Command(id, "maxwell",
+        _gatewayHost.RegisterCommand("maxwell",
             "/maxwell [panel|summon [1|2]|dismiss|toggle|spin <0..720>|float <0..60>|music <on|off|mute|unmute|vol 0..1>|dance|status]",
-            async (player, args) =>
+            async (ctx, args) =>
             {
-                string connId = ConnectionKey(player);
-                _players[connId] = player;
-                string reply = await _serverMod.HandleMaxwellCommandAsync(connId, Program.CharacterName(player), args);
+                string reply = await _serverMod.HandleMaxwellCommandAsync(ctx.ConnectionId, ctx.CharacterName, args)
+                    .ConfigureAwait(false);
                 if (!string.IsNullOrEmpty(reply))
-                    await Program.PlayerOf(player).Tell(reply);
+                    await global::Client.For((Player)ctx.Player).SendChat(reply).ConfigureAwait(false);
             });
 
-        // /nm chat fallback transport (C->S, fanned out across all NativeMods server mods via GatewayBridgeBus)
-        GameEvents.Command(id, "nm", "/nm <native-mods-envelope>", async (player, args) =>
-        {
-            string connId = ConnectionKey(player);
-            string character = Program.CharacterName(player);
-            _players[connId] = player;
-            _serverMod.BindConnection(connId, character);
-            await _bridge.HandleIncomingChatCommandAsync(connId, "/nm " + string.Join(' ', args), character, player);
-        });
-
-        // C->S 0x02ca host ruleset transport (unclaimed by stock modules for ruleset 0xA0;
-        // fanned out to every attached NativeMods server mod via GatewayBridgeBus)
-        GameEvents.Packet(IOpcodeRegistry.ClientRulesetOpcode).Add(id, async (player, bytes) =>
-        {
-            if (bytes.Length <= 2) return false;
-            string connId = ConnectionKey(player);
-            string character = Program.CharacterName(player);
-            _players[connId] = player;
-            _serverMod.BindConnection(connId, character);
-            return await _bridge.HandleIncomingPacketAsync(connId, IOpcodeRegistry.ClientRulesetOpcode, bytes.AsMemory(2), character, player);
-        });
-
-        // Area entry: ensure live MtxCatalog/CosmeticEffects include Maxwell, grant 0x0204 ownership,
-        // and sync if the player already has Maxwell equipped (or unequipped) in the Cosmetics (K) menu.
-        GameEvents.PlayerEntered.Add(id, async player =>
-        {
-            string connId = ConnectionKey(player);
-            string character = Program.CharacterName(player);
-            _players[connId] = player;
-
-            _registrar.ApplyToLiveCatalogs(Game.Mtx, Game.MtxEffects, mod.Log);
-            await _serverMod.OnPlayerEnteredAsync(connId, character);
-            _registrar.ObserveLiveGatewayPlayer(connId, character, Game.WornCosmetics(player), player.Pets);
-            await _serverMod.ReconcileCosmeticAndPetStateAsync(
-                connId,
-                character,
-                _registrar.IsEquipped(connId, MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash),
-                SnapshotPetIds(player));
-        });
-
-        // AreaTick: detect Cosmetics (K) menu equip/unequip transitions in real time so clicking
-        // "Maxwell the Cat Pet" in Pet Slot 1 (18) or 2 (19) starts/stops Stock Market music and updates MaxwellPanel.ui!
-        GameEvents.AreaTick.Add(id, GameEvents.Always(async (player, _) =>
-        {
-            if (player.Closed || player.LeavingArea) return;
-            string connId = ConnectionKey(player);
-            string character = Program.CharacterName(player);
-            _players[connId] = player;
-            _registrar.ApplyToLiveCatalogs(Game.Mtx, Game.MtxEffects, mod.Log);
-            _registrar.ObserveLiveGatewayPlayer(connId, character, Game.WornCosmetics(player), player.Pets);
-            await _serverMod.ReconcileCosmeticAndPetStateAsync(
-                connId,
-                character,
-                _registrar.IsEquipped(connId, MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash),
-                SnapshotPetIds(player));
-        }));
-
-        GameEvents.PlayerLeaving.Add(id, (player, reason) =>
-        {
-            if (player.Closed)
-            {
-                string connId = ConnectionKey(player);
-                _players.TryRemove(connId, out _);
-                _registrar.ClearConnection(connId);
-                _serverMod.OnPlayerLeft(connId);
-                _bridge.RemoveSession(connId);
-            }
-            return Task.CompletedTask;
-        });
-
-        mod.Log($"Loaded Maxwell the Cat Pet MTX via LocalExilePetMtxRegistrar (RecordId={MaxwellServerMod.MaxwellPetDefinition.RecordId}, HASH32=0x{MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash:X8}).");
+        mod.Log($"Loaded Maxwell the Cat Pet MTX via LocalExileGatewayHost + OnCosmeticChanged (RecordId={MaxwellServerMod.MaxwellPetDefinition.RecordId}, HASH32=0x{MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash:X8}).");
     }
 
     public void Dispose()
     {
-        _busRegistration?.Dispose();
-        _busRegistration = null;
         _serverMod?.Dispose();
         _serverMod = null;
         _registrar?.Dispose();
         _registrar = null;
-        _bridge = null;
-        _players.Clear();
+        _gatewayHost?.Dispose();
+        _gatewayHost = null;
     }
 
-    private static string ConnectionKey(Player player) => $"{player.Connection.Remote}#{player.Id}";
+    private async Task SyncGatewayPlayerAsync(Player player, string connId, string character, bool isAreaEntry)
+    {
+        if (player.Closed || _registrar is null || _serverMod is null || _log is null)
+            return;
+
+        _registrar.ApplyToLiveCatalogs(Game.Mtx, Game.MtxEffects, _log);
+        if (isAreaEntry)
+        {
+            await _serverMod.OnPlayerEnteredAsync(connId, character).ConfigureAwait(false);
+        }
+
+        _registrar.ObserveLiveGatewayPlayer(connId, character, Game.WornCosmetics(player), player.Pets);
+        await _serverMod.FlushPendingCosmeticSyncAsync().ConfigureAwait(false);
+        await _serverMod.ReconcileCosmeticAndPetStateAsync(
+            connId,
+            character,
+            _registrar.IsEquipped(connId, MaxwellServerMod.MaxwellPetDefinition.MtxTypeHash),
+            SnapshotPetIds(player)).ConfigureAwait(false);
+    }
 
     private static uint[] SnapshotPetIds(Player player)
     {
@@ -157,30 +119,23 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
         }
     }
 
-    private sealed class LocalExileGatewaySink(ConcurrentDictionary<string, Player> players) : IGatewayPacketSink
-    {
-        public async Task SendPacketAsync(string connectionId, ushort opcode, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
-        {
-            if (!players.TryGetValue(connectionId, out var player) || player.Closed) return;
-            byte[] frame = new byte[2 + payload.Length];
-            frame[0] = (byte)(opcode >> 8);
-            frame[1] = (byte)(opcode & 0xFF);
-            payload.Span.CopyTo(frame.AsSpan(2));
-            await Program.Send(player, frame, $"0x{opcode:x4} maxwell native-mods ruleset payload ({payload.Length} B)");
-        }
-
-        public async Task SendChatReplyAsync(string connectionId, string text, CancellationToken cancellationToken = default)
-        {
-            if (!players.TryGetValue(connectionId, out var player) || player.Closed) return;
-            await Program.PlayerOf(player).Tell(text);
-        }
-    }
-
     private sealed class LocalExileMaxwellWorldBackend(
-        ConcurrentDictionary<string, Player> players,
+        LocalExileGatewayHost gatewayHost,
         LocalExilePetMtxRegistrar registrar,
         Action<string> log) : IMaxwellWorldBackend
     {
+        private bool TryGetActivePlayer(string connectionId, out Player player)
+        {
+            if (gatewayHost.TryGetPlayer(connectionId, out object? obj) && obj is Player p && !p.Closed)
+            {
+                player = p;
+                return true;
+            }
+
+            player = null!;
+            return false;
+        }
+
         public IDisposable RegisterPetMtx(CustomPetMtxDefinition pet)
         {
             registrar.ApplyToLiveCatalogs(Game.Mtx, Game.MtxEffects, log);
@@ -189,7 +144,9 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
 
         public async Task GrantMtxRecordAsync(string connectionId, CustomPetMtxDefinition pet, CancellationToken cancellationToken = default)
         {
-            if (!players.TryGetValue(connectionId, out var player) || player.Closed) return;
+            if (!TryGetActivePlayer(connectionId, out var player))
+                return;
+
             await Program.Send(player,
                 LocalExilePetMtxRegistrar.EncodeRecordUpsertPacket(pet, justReceived: true),
                 $"0x0204 grant {pet.DisplayName} record {pet.RecordId} (0x{pet.MtxTypeHash:x8})");
@@ -197,7 +154,8 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
 
         public async Task<uint> SpawnPetEntityAsync(string connectionId, string characterName, string petMetadataPath, byte petSlot, CancellationToken cancellationToken = default)
         {
-            if (!players.TryGetValue(connectionId, out var player) || player.Closed) return 0;
+            if (!TryGetActivePlayer(connectionId, out var player))
+                return 0;
 
             double now = Game.AreaTime(player);
             var (px, py) = player.Walk.Position(now);
@@ -216,7 +174,8 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
                 return 0;
             }
 
-            if (player.Closed) return 0;
+            if (player.Closed)
+                return 0;
 
             lock (player.Pets)
             {
@@ -231,7 +190,8 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
 
         public async Task DespawnPetEntityAsync(string connectionId, uint petEntityId, CancellationToken cancellationToken = default)
         {
-            if (!players.TryGetValue(connectionId, out var player) || player.Closed || petEntityId == 0) return;
+            if (!TryGetActivePlayer(connectionId, out var player) || petEntityId == 0)
+                return;
 
             bool removed;
             lock (player.Pets)
@@ -239,7 +199,8 @@ public sealed class MaxwellLocalExileEntry : IMod, IDisposable
                 removed = player.Pets.Remove(petEntityId);
             }
 
-            if (!removed) return;
+            if (!removed)
+                return;
 
             await Game.SendWorldRemoval(player, petEntityId,
                 $"0x{InstanceProtocol.RemoveObjectId:x4} remove Maxwell pet 0x{petEntityId:x}");

@@ -36,24 +36,24 @@ public sealed class GardenServerMod : IDisposable
         if (_subscriptions.Count > 0)
             return;
 
-        _subscriptions.Add(_bridge.On<PlantSeedRequest>(GardenProtocol.ChannelName, (session, req) =>
+        _subscriptions.Add(_bridge.On<PlantSeedRequest>(GardenProtocol.ChannelName, async (session, req, ct) =>
         {
             if (!session.HasClientMod(GardenProtocol.ModId))
                 return;
 
             string character = _connectionCharacters.GetValueOrDefault(session.ConnectionId, session.ConnectionId);
             var snapshot = PlantSeed(character, req.SeedName);
-            session.SendAsync(GardenProtocol.ChannelName, snapshot).GetAwaiter().GetResult();
+            await session.SendAsync(GardenProtocol.ChannelName, snapshot, cancellationToken: ct).ConfigureAwait(false);
         }));
 
-        _subscriptions.Add(_bridge.On<HarvestPlotRequest>(GardenProtocol.ChannelName, (session, req) =>
+        _subscriptions.Add(_bridge.On<HarvestPlotRequest>(GardenProtocol.ChannelName, async (session, req, ct) =>
         {
             if (!session.HasClientMod(GardenProtocol.ModId))
                 return;
 
             string character = _connectionCharacters.GetValueOrDefault(session.ConnectionId, session.ConnectionId);
             var snapshot = HarvestPlots(character, req.PlotIndex);
-            session.SendAsync(GardenProtocol.ChannelName, snapshot).GetAwaiter().GetResult();
+            await session.SendAsync(GardenProtocol.ChannelName, snapshot, cancellationToken: ct).ConfigureAwait(false);
         }));
     }
 

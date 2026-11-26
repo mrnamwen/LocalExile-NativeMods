@@ -411,20 +411,20 @@ public sealed class SiphonServerMod : IDisposable
         _subscriptions.Add(_backend.RegisterCurrency(EmptyOrbDefinition));
         _subscriptions.Add(_backend.RegisterCurrency(ChargedOrbDefinition));
 
-        _subscriptions.Add(_bridge.On<SelectSiphonAffixRequest>(SiphonProtocol.ChannelName, (session, req) =>
+        _subscriptions.Add(_bridge.On<SelectSiphonAffixRequest>(SiphonProtocol.ChannelName, async (session, req, ct) =>
         {
             if (!session.HasClientMod(SiphonProtocol.ModId))
                 return;
 
-            HandleAffixSelectionAsync(session.ConnectionId, req.SessionToken, req.AffixIndex).GetAwaiter().GetResult();
+            await HandleAffixSelectionAsync(session.ConnectionId, req.SessionToken, req.AffixIndex, ct).ConfigureAwait(false);
         }));
 
-        _subscriptions.Add(_bridge.On<CancelSiphonPicker>(SiphonProtocol.ChannelName, (session, req) =>
+        _subscriptions.Add(_bridge.On<CancelSiphonPicker>(SiphonProtocol.ChannelName, async (session, req, ct) =>
         {
             if (!session.HasClientMod(SiphonProtocol.ModId))
                 return;
 
-            HandleCancelPickerAsync(session.ConnectionId, req.SessionToken).GetAwaiter().GetResult();
+            await HandleCancelPickerAsync(session.ConnectionId, req.SessionToken, ct).ConfigureAwait(false);
         }));
     }
 

@@ -24,12 +24,20 @@ public sealed class MaxwellPetManifestAndProtocolTests
 
         var report = DualModPackageValidator.ValidateManifest(maxwell, SemVer.Parse(SdkVersion.Current));
         Assert.True(report.IsValid, string.Join(Environment.NewLine, report.Errors.Select(e => $"{e.Code}: {e.Message}")));
+        Assert.DoesNotContain(report.Warnings, w => w.Code == "NC018");
+        Assert.Empty(report.Warnings);
 
         Assert.Equal(MaxwellProtocol.ModId, maxwell.Id);
         Assert.Equal("maxwell.dll", maxwell.EffectiveAssembly);
         Assert.NotNull(maxwell.NativeClient);
-        Assert.Equal("maxwell.Client.dll", maxwell.NativeClient!.Assembly);
+        Assert.Equal(">=0.2.0 <2.0.0", maxwell.NativeClient!.SdkVersionRange);
+        Assert.Equal("maxwell.Client.dll", maxwell.NativeClient.Assembly);
         Assert.False(maxwell.NativeClient.RawAccess);
+
+        // 0.2.0 minimum range rejects 0.1.0-poc cleanly
+        var oldSdkReport = DualModPackageValidator.ValidateManifest(maxwell, SemVer.Parse("0.1.0-poc"));
+        Assert.False(oldSdkReport.IsValid);
+        Assert.Contains(oldSdkReport.Errors, e => e.Code == "NC002");
 
         // Appended brand-new Pet MTX rows (never replacing any existing stock pet .ot/.ao)
         Assert.Contains(maxwell.NativeClient.Replaces, p => p.Equals(MaxwellProtocol.MtxTypesDatPath, StringComparison.OrdinalIgnoreCase));
@@ -134,13 +142,67 @@ public sealed class MaxwellPetManifestAndProtocolTests
 
         string source = File.ReadAllText(entryPath);
         Assert.Contains("class MaxwellLocalExileEntry : IMod", source, StringComparison.Ordinal);
+        Assert.Contains("LocalExileGatewayHost.Create", source, StringComparison.Ordinal);
+        Assert.Contains("OnCosmeticChanged", source, StringComparison.Ordinal);
+        Assert.Contains("RegisterCommand(\"maxwell\"", source, StringComparison.Ordinal);
+        Assert.Contains("global::Client.For", source, StringComparison.Ordinal);
         Assert.Contains("LocalExilePetMtxRegistrar", source, StringComparison.Ordinal);
         Assert.Contains("ObserveLiveGatewayPlayer", source, StringComparison.Ordinal);
-        Assert.Contains("GameEvents.AreaTick", source, StringComparison.Ordinal);
-        Assert.Contains("GameEvents.Command", source, StringComparison.Ordinal);
         Assert.Contains("new PetObject(", source, StringComparison.Ordinal);
         Assert.Contains("Game.SendWorldCreate", source, StringComparison.Ordinal);
         Assert.Contains("Game.SendWorldRemoval", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AreaTick", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MaxwellLocalExileEntry_CompilesCleanlyViaRoslynAgainstGatewayAssemblies()
+    {
+        string? gatewayBin = FindLocalExileGatewayBinDir();
+        string? gameDll = FindLocalExileGameDll();
+        if (gatewayBin is null || gameDll is null)
+            return;
+
+        string repoRoot = FindRepoRoot();
+        string entryPath = Path.Combine(repoRoot, "examples", "DualMod.MaxwellPet", "Server", "MaxwellLocalExileEntry.cs");
+        string source = File.ReadAllText(entryPath);
+
+        MaxwellRoslynEntryCompileHelper.CompileAndAssertSuccess(
+            gatewayBin,
+            "MaxwellLocalExileEntryProbe",
+            source,
+            gameDll,
+            typeof(SdkVersion).Assembly.Location,
+            typeof(ClientBridgeHost).Assembly.Location,
+            typeof(MaxwellProtocol).Assembly.Location,
+            typeof(MaxwellServerMod).Assembly.Location);
+    }
+
+    private static string? FindLocalExileGatewayBinDir()
+    {
+        foreach (string config in new[] { "Release", "Debug" })
+        {
+            string candidate = Path.Combine("/home/nam/Git/LocalExile/src/GameServer.Gateway/bin", config, "net10.0");
+            if (File.Exists(Path.Combine(candidate, "GameServer.Gateway.dll")) &&
+                File.Exists(Path.Combine(candidate, "GameServer.Modding.dll")) &&
+                File.Exists(Path.Combine(candidate, "GameServer.Core.dll")))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FindLocalExileGameDll()
+    {
+        string[] candidates =
+        [
+            "/home/nam/Git/LocalExile/tests/GameServer.Gateway.Tests/bin/Release/net10.0/game.dll",
+            "/home/nam/Git/LocalExile/Modules/Core/Game/bin/game.dll",
+            "/home/nam/Git/LocalExile/tests/GameServer.Gateway.Tests/bin/Debug/net10.0/game.dll",
+        ];
+        return candidates.FirstOrDefault(File.Exists);
     }
 
     private static string FindRepoRoot()

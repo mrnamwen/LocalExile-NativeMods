@@ -1,20 +1,20 @@
 # NativeMods Modding Reference (Humans & AI Agents)
 
-A complete, copy-paste-ready guide to building, testing, packaging, and verifying **Path of Exile 3.29** mods for [LocalExile](https://github.com/LocalExile/LocalExile) using **NativeMods** (`SdkVersion 0.1.0-poc`, C ABI `0.1.0`).
+A complete, copy-paste-ready guide to building, testing, packaging, and verifying **Path of Exile 3.29** mods for [LocalExile](https://github.com/LocalExile/LocalExile) using **NativeMods** (`SdkVersion 0.2.0`, C ABI `0.2.0`).
 
 > **For AI Coding Agents — Fast Orientation**
 > - **Frozen target builds:** Path of Exile **3.29.3c** and **3.29.3d** only (Win64 / Proton).
 > - **Never modify stock client files:** Never write to `Client/Game.exe`, `Client/Content.ggpk`, or `Client/Bundles2/`. All mod assets ship as loose overlays (`NATIVEMODS_OVERLAY_DIR` / `Mods/Client/<id>/files/`) or stored-block `NMB1` bundles.
-> - **Reference implementations in this repo:**
->   - `examples/DualMod.HarvestGarden/` — Dual-side mod with custom UI control (`GrowthGauge`), GEAL built-in (`GardenRipen`), custom ruleset (`0xA1`), and graceful vanilla chat fallback.
->   - `examples/DualMod.MaxwellPet/` — Brand-new Pet MTX mod (appended `.datc64` rows, native Cosmetics `K` menu integration, `.ui` panel, looping `.ogg` audio, `.glb`/`.dds`/`.ast` pipeline via `scripts/build-maxwell-assets.sh`).
->   - `examples/DualMod.SiphonOrb/` — Brand-new dual-stage Custom Currency mod (**Orb of Siphoning** + **Charged Orb of Siphoning**): appended `BaseItemTypes`/`ItemVisualIdentity`/`CurrencyItems` `.datc64` rows, flood-fill alpha-cutout `78x78` RGBA8 currency icons, Recombinator-style `SiphonPicker.ui`, persistent `ModSection.Enchant` stored affix on the Charged Orb, and `C->S 0x0071`/`0x0072` currency routing via `scripts/build-siphon-assets.sh`.
+> - **Reference implementations in this repo (`0.2.0`):**
+>   - `examples/DualMod.HarvestGarden/` — Dual-side mod with custom UI control (`GrowthGauge`), GEAL built-in (`GardenRipen`), custom ruleset (`0xA1`), async `On<T>` handlers, and graceful vanilla chat fallback.
+>   - `examples/DualMod.MaxwellPet/` — Brand-new Pet MTX mod (appended `.datc64` rows, event-driven `LocalExileGatewayHost` + `OnCosmeticChanged` Cosmetics `K` menu integration, `.ui` panel with `ITextBox.MaxLength` / `ICheckBox`, looping `.ogg` audio, `.glb`/`.dds`/`.ast` pipeline via `scripts/build-maxwell-assets.sh`).
+>   - `examples/DualMod.SiphonOrb/` — Brand-new dual-stage Custom Currency mod (**Orb of Siphoning** + **Charged Orb of Siphoning**): `LocalExileGatewayHost` + `LocalExileGatewayTransactions` + `LocalExileItemAffixService`, appended `BaseItemTypes`/`ItemVisualIdentity`/`CurrencyItems` `.datc64` rows, flood-fill alpha-cutout `78x78` RGBA8 currency icons, Recombinator-style `SiphonPicker.ui`, persistent `ModSection.Enchant` stored affix on the Charged Orb, and `C->S 0x0071`/`0x0072` currency routing via `scripts/build-siphon-assets.sh`.
 > - **Key libraries:**
->   - Client mods compile against **`LocalExile.Client.Sdk`** *only* (never `LocalExile.Client.Host`).
->   - Server mods use **`LocalExile.Client.ServerBridge`** (networking, server-driven UI, reusable Pet MTX registration, custom currency registration, and item affix inspection/manipulation).
+>   - Client mods compile against **`LocalExile.Client.Sdk`** (`0.2.0`) *only* (never `LocalExile.Client.Host`).
+>   - Server mods use **`LocalExile.Client.ServerBridge`** (`0.2.0`: `LocalExileGatewayHost`, async `On<T>` / `OnClientReady`, UI batching, `Window.Closed`, `LocalExileGatewayTransactions`, Pet MTX & custom currency registration, and item affix manipulation).
 >   - Asset conversion & `.datc64` row appending use **`LocalExile.Client.AssetPipeline`**.
 >   - Validation, `.ui` linting, `NMB1` bundling, and installation use **`LocalExile.Client.Waypoint`**.
-> - **Build & test gate:** `dotnet build NativeMods.slnx -c Release` and `dotnet test NativeMods.slnx -c Release --no-build` (`TreatWarningsAsErrors=true`, `net10.0`).
+> - **Build & test gate:** `dotnet build NativeMods.slnx -c Release` and `dotnet test NativeMods.slnx -c Release --no-build` (`TreatWarningsAsErrors=true`, `net10.0`; includes all 6 `src/`, 9 `examples/`, and 6 test projects).
 
 ---
 
@@ -122,7 +122,7 @@ my-hud/
   "enabled": true,
   "nativeClient": {
     "required": false,
-    "sdkVersionRange": ">=0.1.0-poc <2.0.0",
+    "sdkVersionRange": ">=0.2.0 <2.0.0",
     "supportedBuilds": ["3.29.3d", "3.29.3c"],
     "assembly": "my-hud.Client.dll",
     "payloadDir": "client",
@@ -150,7 +150,7 @@ my-hud/
 </Project>
 ```
 
-**`MyHudClientMod.cs`:**
+**`MyHudClientMod.cs` (`0.2.0` lifecycle guards):**
 ```csharp
 using LocalExile.Client.Sdk;
 using LocalExile.Client.Sdk.Engine;
@@ -161,11 +161,13 @@ public sealed class MyHudClientMod : IClientMod
 {
     private IClientContext? _context;
     private IUiWindow? _window;
+    private bool _unloading;
 
     public void Load(IClientContext context)
     {
         _context = context;
         _window = context.Game.Ui.Load("Metadata/UI/Mods/Hud/Overlay.ui", "my_hud_window");
+        _window.Closed += OnWindowClosed;
         context.TrackDisposable(_window);
         context.Game.Frame += OnFrame;
         context.Logger.Info("MyHudClientMod loaded.");
@@ -173,17 +175,31 @@ public sealed class MyHudClientMod : IClientMod
 
     public void Unload()
     {
+        _unloading = true;
         if (_context is not null)
         {
             _context.Game.Frame -= OnFrame;
         }
-        _window?.Close();
+        if (_window is { } window)
+        {
+            window.Closed -= OnWindowClosed;
+            window.Close();
+        }
         _window = null;
         _context = null;
     }
 
+    private void OnWindowClosed()
+    {
+        if (_window is { } closed)
+            closed.Closed -= OnWindowClosed;
+        _window = null;
+    }
+
     private void OnFrame(float deltaSeconds)
     {
+        if (_unloading || _window is not { IsOpen: true })
+            return;
         // Runs on the game thread; never assert a single fixed OS TID.
     }
 }
@@ -236,7 +252,7 @@ Compile `Shared/*.cs` directly into `<id>.Client.dll` instead of referencing a s
 ```
 
 **Key `.csproj` rule for LocalExile Gateway Roslyn entry points (`Server/DualMod.MyFeature.Server.csproj`):**
-LocalExile's `ModHost` compiles `.cs` files placed in `Mods/Binaries/<id>/` against the live Gateway assemblies (`GameServer.Modding`, `GameServer.Core`, `GameServer.Gateway`, `game.dll`) while also loading sibling DLLs. Keep your testable server logic in `MyFeatureServerMod.cs` and ship `MyFeatureLocalExileEntry.cs` as content copied to output:
+LocalExile's `ModHost` compiles `.cs` files placed in `Mods/Binaries/<id>/` against the live Gateway assemblies (`GameServer.Modding`, `GameServer.Core`, `GameServer.Gateway`, `game.dll`) while also loading sibling DLLs. Keep your testable server logic in `MyFeatureServerMod.cs` and ship `MyFeatureLocalExileEntry.cs` using **`LocalExileGatewayHost.Create(...)`** (from `LocalExile.Client.ServerBridge`) as content copied to output. Remember to qualify **`global::Client.For(player)`** when referencing LocalExile's core `Client` class in files that import `LocalExile.Client.ServerBridge` (which defines `LocalExile.Client.ServerBridge.Client`).
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
@@ -273,7 +289,7 @@ LocalExile's `ModHost` compiles `.cs` files placed in `Mods/Binaries/<id>/` agai
   "enabled": true,
   "nativeClient": {
     "required": false,
-    "sdkVersionRange": ">=0.1.0-poc <2.0.0",
+    "sdkVersionRange": ">=0.2.0 <2.0.0",
     "supportedBuilds": ["3.29.3d", "3.29.3c"],
     "assembly": "my-feature.Client.dll",
     "payloadDir": "client",
@@ -302,6 +318,11 @@ LocalExile's `ModHost` compiles `.cs` files placed in `Mods/Binaries/<id>/` agai
 }
 ```
 
+> **Manifest Enforcement in Host `0.2.0` (`ClientModManifest` & `ClientModLoader`):**
+> - **`enabled`:** Both root `enabled` and `nativeClient.enabled` (default `true`) are checked; disabled mods are skipped cleanly.
+> - **`depends`:** `ClientModLoader` enforces topological load ordering (Kahn's algorithm + cycle detection; `"Game"` is auto-stripped from root `depends` when `nativeClient` is present unless `nativeClient.depends` explicitly overrides it).
+> - **`payloadHash` / `bundleSha256` / `integrity.packageSha256`:** Verified via SHA-256 before loading `nativeClient.assembly`.
+
 ---
 
 ## 2. Author & AI Agent Ground Rules / Invariants
@@ -310,7 +331,7 @@ Violating any of these verified 3.29.3c/d invariants causes hard crashes, infini
 
 ### 1. Frozen 3.29.3c & 3.29.3d Target Only
 - `nativeClient.supportedBuilds` must only contain `"3.29.3d"` and/or `"3.29.3c"` (any other build fails validation with `NC004`).
-- Under Proton/Wine and Windows ASLR, `Game.patched.exe` relocates (empirically observed at `0x6FFFF8A30000` instead of `0x140000000`). **Never hardcode absolute addresses** — always resolve symbols via `context.Addresses` (`IAddressLibrary`), which rebases verified RVAs against `ImageBase`.
+- Under Proton/Wine and Windows ASLR, `Game.patched.exe` relocates (empirically observed at `0x6FFFF8A30000` instead of `0x140000000`). **Never hardcode absolute addresses** — always resolve symbols via `context.Addresses` (`IAddressLibrary`), which rebases verified RVAs against `ImageBase`. `data/addresses/3.29.3d.json` (`122` symbols, `37` offsets, `18` constants) is code-generated directly into `src/native-shim/src/address_table.cpp` (`scripts/generate-address-table.py --check`).
 
 ### 2. Zero Edits to Stock `Client/` Files
 - Never modify `Client/Game.exe`, `Client/Content.ggpk`, or `Client/Bundles2/`.
@@ -329,9 +350,11 @@ Path of Exile 3.29 silently fails or throws C++ parse exceptions on wrong encodi
 
 | File Extensions | Required Encoding | Helper |
 |---|---|---|
-| `.ui`, `.ot`, `.otc`, `.it`, `.itc`, `.ao`, `.aoc`, `.act`, `.epk`, `.ddt`, `.pet`, `.trl` | **UTF-16LE with BOM (`0xFF 0xFE`) + CRLF (`\r\n`)** | `ClientTextEncoding.EncodeUtf16LeBomCrlf`, `IFileOverlayService.RegisterVirtualTextFile`, `ModBundlePacker.EncodeClientText` |
-| `.sm` (v6), `.mat` (v4 JSON) | **UTF-16LE without BOM** | `GlbToPoeMeshConverter` (`new UnicodeEncoding(false, byteOrderMark: false)`) |
+| `.ui`, `.ot`, `.otc`, `.it`, `.itc`, `.ao`, `.aoc`, `.act`, `.epk`, `.ddt`, `.pet`, `.trl` | **UTF-16LE with BOM (`0xFF 0xFE`) + CRLF (`\r\n`)** | `ClientTextEncoding.EncodeUtf16LeBomCrlf`, `ClientTextEncoding.EncodeTextForPath`, `IFileOverlayService.RegisterVirtualTextFile`, `ModBundlePacker.EncodeClientText` |
+| `.sm` (v6), `.mat` (v4 JSON), `.amd` | **UTF-16LE without BOM + CRLF (`\r\n`)** | `ClientTextEncoding.EncodeUtf16LeNoBomCrlf`, `ClientTextEncoding.EncodeTextForPath`, `ModBundlePacker.EncodeClientTextNoBom`, `PoeAstWriter.BuildAmd`, `GlbToPoeMeshConverter` |
 | `mod.json`, `settings.json`, `manifest.json` | UTF-8 | Standard JSON |
+
+`FileOverlayService.RegisterVirtualTextFile` automatically dispatches through `ClientTextEncoding.EncodeTextForPath` (so `.sm`/`.mat`/`.amd` registered virtually get BOM-less UTF-16LE CRLF), and BOM stripping via `TrimStart('\uFEFF')` is idempotent.
 
 ### 5. `.ot` Inheritance & Serialized Component Contract (CRITICAL for Pets & World Objects)
 - When authoring a brand-new Pet MTX `.ot` file:
@@ -356,7 +379,7 @@ Always lint every `.ui` file with `UiLayoutLinter.Lint(...)` before testing in-g
 
 ### 8. Threading, `StateStack::PassA` OS TID Migration & Exception Wall
 - All UI (`IUiService`), stats (`IStatsService`), world (`IWorldService`), and native calls must run on the game thread (`IGameServices.Frame` or `context.Scheduler.RunOnGameThread(...)`).
-- **OS TID Migration Caveat (Empirically Proven in R1):** Live 3.29.3d Proton runs proved that `StateStack::PassA` (`0x1528f40`) normally runs on one OS thread (`tid=352`) but migrates to other OS threads (`tid=468`, `tid=472`) across heartbeats/Job2 transitions. **Never cache `GetCurrentThreadId()` or use `[ThreadStatic]` assuming a single immutable game thread!** Always check `context.Scheduler.IsOnGameThread` or enqueue via `context.Scheduler.RunOnGameThread(...)`.
+- **OS TID Migration Caveat (Empirically Proven in R1):** Live 3.29.3d Proton runs proved that `StateStack::PassA` (`0x1528f40`) normally runs on one OS thread (`tid=352`) but migrates to other OS threads (`tid=468`, `tid=472`) across heartbeats/Job2 transitions. **Never cache `GetCurrentThreadId()` or use `[ThreadStatic]` assuming a single immutable game thread!** In `0.2.0`, `context.Scheduler.IsOnGameThread` tracks an active native-to-managed game-thread scope (`s_inNativeGameFrame`) across `Frame`, `Drain`, `Ui*`, `RulesetRx`, `ChatRx`, and `OpcodeRx`, and `AutoLoadClientMods` is deferred onto the game thread via `EnqueueGameThread`. Always check `context.Scheduler.IsOnGameThread` or marshal via `context.Scheduler.RunOnGameThread(...)`.
 - Native calls cross `nm_call_guarded`, catching Win64 SEH and MSVC C++ exceptions (`0xE06D7363`). `ClientModLoader` also isolates managed exceptions; a mod that throws `MaxModFaults` (default `3`) times on `Frame` is automatically disabled without crashing the client or other mods.
 
 ### 9. Security & Trust Boundaries
@@ -441,9 +464,10 @@ begin Frame
 end
 ```
 
-#### Loading & Binding Controls in C# (`LocalExile.Client.Sdk.Engine`)
+#### Loading & Binding Controls in C# (`LocalExile.Client.Sdk.Engine` `0.2.0`)
 ```csharp
 IUiWindow window = context.Game.Ui.Load("Metadata/UI/Mods/Feature/Panel.ui", "my_panel");
+window.Closed += () => context.Logger.Info("Window closed.");
 context.TrackDisposable(window);
 
 var statusLabel = window.Require<ILabel>("status_label");
@@ -451,19 +475,39 @@ var amountBox   = window.Require<ITextBox>("amount_box");
 var autoCheck   = window.Require<ICheckBox>("auto_check");
 var applyButton = window.Require<IButton>("apply_button");
 
+amountBox.MaxLength = 16; // 0.2.0 live TextBox (+0x338)
 applyButton.Clicked += () =>
 {
     statusLabel.Text = $"Applied: {amountBox.Text} (auto={autoCheck.IsChecked})";
     context.Net.Send(new ApplyRequest(amountBox.Text, autoCheck.IsChecked));
 };
 
+amountBox.TextChanged += text => statusLabel.SetProperty("draft", text);
 amountBox.Submitted += text => statusLabel.Text = $"Submitted: {text}";
 autoCheck.CheckedChanged += isChecked => statusLabel.SetProperty("auto_enabled", isChecked.ToString());
+
+// 0.2.0 geometry, enable, child attach/detach, and Win32 CF_UNICODETEXT clipboard:
+UiRect rect = applyButton.Rect;
+applyButton.SetPosition(rect.X, rect.Y + 4f);
+applyButton.SetSize(220f, 44f);
+applyButton.IsEnabled = true;
+
+IUiControl? uiRoot = context.Game.Ui.GetRootControl();
+if (uiRoot is not null)
+{
+    IUiWindow childWin = context.Game.Ui.CreateWindowInto(uiRoot, "Metadata/UI/Mods/Feature/Badge.ui", "my_badge");
+    context.TrackDisposable(childWin);
+}
+
+IClipboardService clipboard = context.Game.Clipboard;
+clipboard.SetText(amountBox.Text);
+string? pasted = clipboard.GetText();
 ```
 
-> **Verified 3.29.3d Dynamic UI Rules (`Button.Text`, `Label.Text`, Row Visibility & Reuse):**
+> **Verified 3.29.3d Dynamic UI Rules (`Button.Text`, `Label.Text`, `IsOpen` / `Closed`, Row Visibility & Reuse):**
 > - **Mixed-case vs. SmallCaps:** `Button::SetText` (`+0x3f8` slot 2) updates the button's internal child `Label` (`+0x408`) and lowercases ASCII for PoE's centered SmallCaps button font. For mixed-case, left-aligned dynamic rows (such as Recombinator-style affix pickers), pair a `Button` (`Select` / `Selected`) with an explicit child `Label` (`Fonts.Normal`, `text_align = MiddleLeft`) inside a named row `Frame`.
 > - **Dynamic row visibility:** Setting `rowFrame.Visible = false` invokes `Control::SetVisible` (`0x1418b0a30`), which hides the entire row, clears hover/focus/capture on descendants, collapses the row inside `StackLayout`, and blocks clicks on hidden child buttons.
+> - **Window lifecycle (`0.2.0`):** Guard window access with `_window is { IsOpen: true }`, subscribe `_window.Closed` to clear stale handles on close/destroy, and detach children via `RemoveChild`/`Destroy` cleanly (`_subscribedUiEvents` automatically cleans up on close/reload/subtree removal).
 > - **Explicit container IDs & clean reopen:** Give every ancestor `Frame`/`StackLayout` an explicit unique `id`. Closing and reopening a `.ui` window reuses the native window handle cleanly (resyncing initial visibility/text and replacing per-button click slots with zero duplicate-ID crashes and zero leaked handlers).
 
 #### Registering a Custom UI Control (`ICustomUiControl`)
@@ -520,7 +564,8 @@ IFileOverlayService files = context.Game.Files;
 // 1. Register a loose directory (higher priority overrides lower)
 context.TrackDisposable(files.RegisterDirectory(Path.Combine(context.ModDirectory, "client"), priority: 10));
 
-// 2. Register an in-memory text file (automatically UTF-16LE BOM + CRLF for .ui/.ot/.ao/.act/etc.)
+// 2. Register an in-memory text file (automatically UTF-16LE BOM + CRLF for .ui/.ot/.it/etc.,
+//    or UTF-16LE without BOM + CRLF for .sm/.mat/.amd via ClientTextEncoding.EncodeTextForPath)
 context.TrackDisposable(files.RegisterVirtualTextFile(
     "Metadata/Pet/Mods/MyMod/MyPet.ot",
     "version 2\nextends \"Metadata/Pet/Pet\"\n",
@@ -529,14 +574,15 @@ context.TrackDisposable(files.RegisterVirtualTextFile(
 // 3. Register raw binary bytes (.dds, .ogg, .datc64)
 context.TrackDisposable(files.RegisterVirtualFile("Audio/Mods/MyMod/theme.ogg", oggBytes, priority: 100));
 
-// 4. Register a packed NMB1 stored-block release bundle
+// 4. Register a packed NMB1 stored-block release bundle ([u32 chunkLen][0xCC 0x06][payload])
 context.TrackDisposable(files.RegisterBundle(bundlePath, manifestPath, priority: -10));
 
-// 5. Inspect & hot-invalidate
+// 5. Inspect, read un-overlaid stock bytes, & hot-invalidate (0.2.0 -> 0x1010560)
 if (files.Exists("Metadata/UI/Mods/MyMod/Panel.ui"))
 {
     string? uiSource = files.ReadAllText("Metadata/UI/Mods/MyMod/Panel.ui");
-    files.Invalidate("Metadata/UI/Mods/MyMod/Panel.ui");
+    byte[]? stockBytes = files.ReadStockGameFile("Metadata/Items/Item.it");
+    files.InvalidateCachedAsset("Art/Textures/Mods/MyMod/icon.dds"); // calls files.Invalidate(...)
 }
 ```
 
@@ -581,65 +627,100 @@ public sealed record ToggleEffectRequest(bool Enabled, float Intensity);
 public sealed record EffectStateSync(bool Enabled, float Intensity, string Status);
 ```
 
-#### Server Side (`LocalExile.Client.ServerBridge`)
+#### Server Side (`LocalExile.Client.ServerBridge` `0.2.0`)
 ```csharp
-// Configure once on mod load (with your IGatewayPacketSink adapter):
-var bridge = new ClientBridgeHost(gatewaySink, new ClientBridgeOptions
-{
-    ServerVersion = "LocalExile-3.29.3d",
-    HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId // 0xA0
-});
+// Recommended 0.2.0 Gateway entry pattern: LocalExileGatewayHost.Create eliminates manual sink/bus/0x02CA//nm glue.
+// Note: qualify global::Client.For(player) when importing LocalExile.Client.ServerBridge!
+using LocalExile.Client.ServerBridge;
 
-// Subscribe to typed C->S messages on your mod's channel (Action<IClientSession, T>; avoid async void):
-IDisposable sub = bridge.On<ToggleEffectRequest>("my-feature", (session, req) =>
+using var gatewayHost = LocalExileGatewayHost.Create(modContext, builder => builder
+    .WithBridgeOptions(new ClientBridgeOptions
+    {
+        ServerVersion = "LocalExile-3.29.3d",
+        HostRulesetId = IRulesetRegistry.DefaultHostChannelRulesetId // 0xA0
+    })
+    .WithBus(attach: true, onDispatchError: (owner, ex) => modContext.Log($"[bus] {owner}: {ex.Message}"))
+    .OnCosmeticChanged(async evt =>
+    {
+        if (!evt.IsSkillCosmetic)
+            await ReconcileCosmeticAsync(evt);
+    }));
+
+ClientBridgeHost bridge = gatewayHost.Bridge; // DefaultChannel defaults to mod id ("my-feature")
+
+// Subscribe to async C->S messages (channel-less or explicit channel; zero .GetAwaiter().GetResult()!):
+IDisposable sub = bridge.On<ToggleEffectRequest>(async (session, req, ct) =>
 {
     if (!session.HasClientMod("my-feature"))
         return;
 
     var sync = new EffectStateSync(req.Enabled, req.Intensity, "Updated!");
-    _ = session.SendAsync("my-feature", sync);
+    await session.SendAsync(sync, cancellationToken: ct); // or TrySendAsync(...)
+});
+
+// Async ClientReady notification:
+IDisposable readySub = bridge.OnClientReady(async (session, ct) =>
+{
+    if (session.HasClientMod("my-feature"))
+        await session.TrySendAsync(new EffectStateSync(true, 1.0f, "Connected"), cancellationToken: ct);
 });
 
 // Graceful degradation in a slash command handler:
-public async Task<string> HandleCommandAsync(string connectionId, string[] args)
+gatewayHost.RegisterCommand("myfeature", "/myfeature", async (ctx, args) =>
 {
-    IClientSession session = bridge.For(connectionId);
+    IClientSession session = bridge.For(ctx.ConnectionId);
     if (session.HasNativeHost && session.HasClientMod("my-feature"))
     {
-        await session.SendAsync("my-feature", new EffectStateSync(true, 1.0f, "Opened panel"));
-        return string.Empty; // Client handles UI
+        await session.SendAsync(new EffectStateSync(true, 1.0f, "Opened panel"));
+        return;
     }
 
-    // Stock 3.29 client without NativeMods -> clean chat-only fallback!
-    return "[MyFeature — Chat Fallback] Effect enabled (intensity 1.0).";
-}
+    await global::Client.For((Player)ctx.Player).SendChat("[MyFeature — Chat Fallback] Effect enabled.");
+});
 ```
 
-#### Server-Driven UI (Zero Client DLL Required)
+#### Server-Driven UI (`0.2.0` Async, `Window.Closed` & Batching)
 ```csharp
 IClientSession session = bridge.For(connectionId);
 if (session.HasNativeHost)
 {
     ServerUiWindowHandle win = await session.Ui.OpenAsync("Metadata/UI/Mods/MyServerMod/Panel.ui", "my_win");
-    await win.SetTextAsync("status_label", "Driven straight from the server!");
-    win.OnButtonClick("apply_button", s =>
+    win.OnClosed(_ => { /* cleanup when player or session closes window */ });
+
+    // Coalesce/flush multiple UI mutations in a single ordered wire batch:
+    await win.BatchAsync(async () =>
     {
-        _ = win.SetTextAsync("status_label", "Server received button click!");
-        _ = s.Ui.PlayAudioAsync("Audio/Mods/MyServerMod/ding.ogg");
+        await win.SetTextAsync("status_label", "Driven straight from the server!");
+        await win.SetVisibleAsync("status_label", true);
+    });
+
+    win.OnButtonClickAsync("apply_button", async (s, ct) =>
+    {
+        await win.SetTextAsync("status_label", "Server received button click!", ct);
+        await s.Ui.PlayAudioAsync("Audio/Mods/MyServerMod/ding.ogg", cancellationToken: ct);
     });
 }
 ```
 
-#### Client Side (`IClientContext.Net`)
+#### Client Side (`IClientContext.Net`, `IChatService` & Raw Packets `0.2.0`)
 ```csharp
-// Subscribe to S->C typed messages (tracked for automatic disposal on unload):
+// Subscribe to S->C typed messages (marshal UI mutations via Scheduler.IsOnGameThread / RunOnGameThread):
 context.TrackDisposable(context.Net.On<EffectStateSync>(sync =>
 {
-    statusLabel.Text = sync.Status;
+    if (context.Scheduler.IsOnGameThread)
+        statusLabel.Text = sync.Status;
+    else
+        context.Scheduler.RunOnGameThread(() => statusLabel.Text = sync.Status);
 }));
 
 // Send typed C->S message (uses CollectibleJsonCodec automatically):
 context.Net.Send(new ToggleEffectRequest(Enabled: true, Intensity: 0.85f));
+
+// 0.2.0 raw packet send/receive & S->C chat interception (return true to suppress):
+context.TrackDisposable(context.Net.OnRaw(1202, bytes => context.Logger.Debug($"Raw {bytes.Length} B")));
+context.Net.SendRaw(1202, [0x01, 0x02]);
+context.TrackDisposable(context.Game.Chat.RegisterInterceptor((sender, text) =>
+    text.Contains("[SUPPRESS]", StringComparison.Ordinal)));
 ```
 
 ---
@@ -676,12 +757,23 @@ public sealed class MyAreaRuleset : IClientRuleset
 context.TrackDisposable(context.Game.Rulesets.Register<MyAreaRuleset>());
 ```
 
-#### Registering a Custom Opcode Handler (`IOpcodeRegistry`)
-Stock 3.29.3d opcodes end at `0x02FB`, so custom opcodes start at `IOpcodeRegistry.FirstReservedOpcode` (`0x02FC`). Declare them in `mod.json` `nativeClient.customOpcodes` so Waypoint prevents cross-mod `CNF003` collisions:
+#### Registering a Custom Opcode Handler (`IOpcodeRegistry` `0.2.0`)
+Stock 3.29.3d opcodes end at `0x02FB`, so custom opcodes start at `IOpcodeRegistry.FirstReservedOpcode` (`0x02FC`), wired live via `network.register_handler_group` (`0x29a7710`). Declare them in `mod.json` `nativeClient.customOpcodes` so Waypoint prevents cross-mod `CNF003` collisions:
 ```csharp
 context.TrackDisposable(context.Game.Opcodes.RegisterHandler(
     opcode: 1202,
     handler: payload => context.Logger.Debug($"Received {payload.Length} raw bytes"),
+    groupName: "my-feature"));
+
+// 0.2.0 range/stream handler over INativePacketStream:
+context.TrackDisposable(context.Game.Opcodes.RegisterStreamHandler(
+    minOpcode: 1200,
+    maxOpcode: 1209,
+    handler: (opcode, stream) =>
+    {
+        if (stream.TryRead(out uint value))
+            context.Logger.Debug($"Opcode 0x{opcode:X4} val={value}");
+    },
     groupName: "my-feature"));
 ```
 
@@ -692,8 +784,7 @@ context.TrackDisposable(context.Game.Opcodes.RegisterHandler(
 NativeMods is built to **add brand-new items, world objects, and Pet MTXs** alongside stock content — never overwriting or sacrificing an existing stock pet or item.
 
 #### Appendable vs. Closed `.datc64` Tables
-- **Appendable registry tables (`DualModPackageValidator.AppendableRegistryTables`):** `BaseItemTypes`, `MonsterVarieties`, `NPCs`, `Chests`, `Projectiles`, `MiscObjects`, `MiscAnimated`, `HideoutDoodads`, `ExecuteGEAL`, `ClientStrings`.
-- **Appendable Pet MTX tables (verified byte-for-byte on 3.29.3d):** `Data/MtxTypes.datc64`, `Data/MtxTypeGameSpecific.datc64`, `Data/Pet.datc64`.
+- **Appendable registry tables (`DualModPackageValidator.AppendableRegistryTables` — 15 verified tables):** `BaseItemTypes`, `ItemVisualIdentity`, `CurrencyItems`, `MtxTypes`, `MtxTypeGameSpecific`, `Pet`, `MonsterVarieties`, `NPCs`, `Chests`, `Projectiles`, `MiscObjects`, `MiscAnimated`, `HideoutDoodads`, `ExecuteGEAL`, `ClientStrings`.
 - **Closed tables (`DualModPackageValidator.ClosedRegistryTables`):** `ItemClasses` (bound to compiled C++ enums — fails validation with `NC016`). `Stats` emits warning `NC017`.
 
 #### Step 1: Computing PoE 3.29 `HASH32` & `HASH16`
@@ -798,16 +889,18 @@ registrar.PetEquipChanged += (PetMtxEquipChangedEvent ev) =>
 };
 
 // 3. Inside your LocalExile Gateway IMod entry point (see examples/DualMod.MaxwellPet/Server/MaxwellLocalExileEntry.cs):
-//    - On GameEvents.PlayerEntered:
+//    Use LocalExileGatewayHost.Create(...).OnPlayerEntered(...).OnCosmeticChanged(...) (event-driven via
+//    GameEvents.CosmeticChanged — zero AreaTick polling needed!):
+//    - On OnPlayerEntered:
 registrar.ApplyToLiveCatalogs(Game.Mtx, Game.MtxEffects, mod.Log); // Idempotent; cleanly removed on registrar.Dispose()
 byte[] grantPacket = LocalExilePetMtxRegistrar.EncodeRecordUpsertPacket(myPet, justReceived: true); // 29-byte S->C 0x0204
 await Program.Send(player, grantPacket, "0x0204 grant custom Pet MTX");
 registrar.ObserveLiveGatewayPlayer(connId, character, Game.WornCosmetics(player), player.Pets);
 
-//    - On GameEvents.AreaTick (~4 Hz): detects Cosmetics (K) menu Pet Slot 1/2 equip & unequip in real time!
+//    - On OnCosmeticChanged (when !evt.IsSkillCosmetic): detects Cosmetics (K) Pet Slot 1/2 equip & unequip in real time!
 registrar.ObserveLiveGatewayPlayer(connId, character, Game.WornCosmetics(player), player.Pets);
 
-//    - On GameEvents.PlayerLeaving (when player.Closed):
+//    - On OnPlayerLeaving (when player.Closed):
 registrar.ClearConnection(connId);
 ```
 
@@ -940,7 +1033,7 @@ currencyRegistrar.Register(emptyOrb, async (CurrencyUseContext ctx) =>
 currencyRegistrar.ApplyToLiveCatalog(Program.Items, mod.Log);
 ```
 
-**3. Inspecting, Stealing, Storing & Imbuing Item Affixes (`LocalExileItemAffixService`):**
+**3. Inspecting, Stealing, Storing & Imbuing Item Affixes (`LocalExileItemAffixService` & `LocalExileGatewayTransactions`):**
 ```csharp
 using LocalExile.Client.ServerBridge;
 
@@ -958,6 +1051,20 @@ PortableItem chargedOrb = LocalExileItemAffixService.CreateChargedCurrencyItem(c
 // 3. Later, read the stored affix back and replace a chosen affix on a target item (enforces Prefix/Suffix caps & mod groups):
 StoredAffixPayload? stored = LocalExileItemAffixService.ReadStoredAffix(chargedOrb);
 AffixReplaceResult imbue = LocalExileItemAffixService.ReplaceAffix(targetItem, targetAffixIndex: 1, stored!);
+
+// 4. 0.2.0 live Gateway atomic transactions & Item.CustomName (see examples/DualMod.SiphonOrb/Server/SiphonLocalExileEntry.cs):
+GatewayGrantResult grant = await LocalExileGatewayTransactions.GrantItemsAsync(player, itemCatalog, items, emptyOrb, count: 5);
+GatewayItemLocation? loc = LocalExileGatewayTransactions.LocateGatewayItem(items, stash, invId, itemId);
+if (loc is { IsWorn: false })
+{
+    GatewayStealResult gwSteal = await affixService.StealAffixOnGatewayItem(
+        player, itemCatalog, items, stash, currencyInvId, currencyItemId, invId, itemId,
+        affixIndex: 0, chargedOrbDef, chargedCustomName: null);
+    GatewayReplaceResult gwReplace = await affixService.ReplaceAffixOnGatewayItem(
+        player, itemCatalog, items, stash, chargedInvId, gwSteal.CreatedChargedItemId, invId, destItemId, replaceIndex: 0);
+}
+object namedItem = LocalExileItemAffixService.WithGatewayItemCustomName(liveItem, "My Relic");
+string? customName = LocalExileItemAffixService.GetGatewayItemCustomName(namedItem);
 ```
 
 ---
@@ -982,16 +1089,21 @@ Most mods never need `IRawMemory`. If you do need direct symbol reads, native ca
        byte[] prologue = context.Raw.ReadBytes(addr, 16);
    }
 
-   // Native call executed inside nm_call_guarded (0xE06D7363 SEH/C++ exception wall):
+   // Native calls executed inside nm_call_guarded (0xE06D7363 SEH/C++ exception wall):
    nint result = context.Raw.Call("audio.get_holder");
 
-   // Byte-verified inline detour or vtable hook (disposed automatically on mod unload!):
-   IDisposable hook = context.Raw.InstallHook(
+   // 0.2.0 CallEx supports up to 8 mixed integer/pointer + float/double args (Win64 XMM0..XMM3 + stack):
+   NativeCallResult callEx = context.Raw.CallEx(addr, [NativeCallArgument.FromPointer(ptr), NativeCallArgument.FromFloat(1.5f)]);
+
+   // Byte-verified inline detour, vtable slot hook, or shared multi-mod Pre/Post hook chain:
+   IDisposable hook = context.Raw.InstallHookChain(
        symbolName: "some.verified_symbol",
-       detourTarget: myUnmanagedCallersOnlyFnPtr,
-       out nint originalTrampoline,
-       hookType: HookType.InlineDetour);
+       phase: HookPhase.Pre,
+       callback: ctx => { /* inspect ctx.GetArg(0); optionally ctx.SkipOriginal = true */ },
+       priority: 0);
+   IDisposable vtableHook = context.Raw.InstallVtableHook(vtableAddr, vtableSlotIndex: 8, detourTarget: myFnPtr, out nint origSlot);
    context.TrackDisposable(hook);
+   context.TrackDisposable(vtableHook);
    ```
 3. See [`docs/address-library.md`](address-library.md) for the full list of verified 3.29.3d / 3.29.3c symbols and the workflow for adding new verified entries.
 
@@ -1106,7 +1218,7 @@ When verifying a live Proton run, check `nativemods-shim.log` for:
 [OVERLAY] Served 'data/pet.datc64' (... bytes via ...)
 [UI] Armed Control::Load root observer (OK)
 [NET] Armed live channel hooks (chat_rx=OK ruleset_0x2c9=OK)
-[MANAGED] [INFO] [host] NativeMods managed host started (SDK 0.1.0-poc, build 3.29.3d, transport HostRuleset).
+[MANAGED] [INFO] [host] NativeMods managed host started (SDK 0.2.0, build 3.29.3d, transport HostRuleset).
 [AUDIO] FMOD 2.03 initialized (output=default|nosound, sys=0x...)
 [AUDIO] Playing OGG 'Audio/Mods/Maxwell/stock_market.ogg' (bytes=..., loop=1, volume=..., handle=..., output=default|nosound, fmod_rc=0)
 [UI] Captured native UI root 0x...

@@ -56,6 +56,7 @@ public sealed class MaxwellClientMod : IClientMod
     private int _frameCount;
     private int _danceCalls;
     private bool _suppressUiEvents;
+    private bool _unloading;
 
     public IUiWindow? Window => _window;
     public MaxwellStateSync? LastState => _lastState;
@@ -132,17 +133,20 @@ public sealed class MaxwellClientMod : IClientMod
             int boost = args.Count > 0 ? Math.Clamp(args.Int(0), 1, 8) : 1;
             _danceCalls++;
             _currentYawDegrees = (_currentYawDegrees + 45f * boost) % 360f;
-            if (_window is not null)
+            DispatchOnGameThread(() =>
             {
-                _window.SetProperty("maxwell_dance_calls", _danceCalls.ToString(CultureInfo.InvariantCulture));
-                _window.SetProperty("maxwell_dance_object", $"0x{objectId:X}");
-                RefreshTelemetryLabel();
-            }
+                if (_window is { IsOpen: true } window)
+                {
+                    window.SetProperty("maxwell_dance_calls", _danceCalls.ToString(CultureInfo.InvariantCulture));
+                    window.SetProperty("maxwell_dance_object", $"0x{objectId:X}");
+                    RefreshTelemetryLabel();
+                }
 
-            if (objectId != 0)
-            {
-                game.World.PlayEffect(objectId, MaxwellProtocol.PetAoPath);
-            }
+                if (objectId != 0)
+                {
+                    game.World.PlayEffect(objectId, MaxwellProtocol.PetAoPath);
+                }
+            });
 
             context.Logger.Info($"GEAL {MaxwellProtocol.GealDanceBuiltin} triggered on object 0x{objectId:X} (boost={boost}, total={_danceCalls}).");
             return GealValue.FromInt(_danceCalls);
@@ -155,17 +159,17 @@ public sealed class MaxwellClientMod : IClientMod
             payload => context.Logger.Debug($"Received raw MaxwellStateSync opcode ({payload.Length} bytes)."),
             MaxwellProtocol.ModId));
 
-        // 5. Subscribe to server-pushed messages over context.Net
-        context.TrackDisposable(context.Net.On<OpenMaxwellPanel>(cmd =>
+        // 5. Subscribe to server-pushed messages over context.Net (marshaling onto game thread via IModScheduler)
+        context.TrackDisposable(context.Net.On<OpenMaxwellPanel>(cmd => DispatchOnGameThread(() =>
         {
             EnsureWindowLoaded();
             ApplyState(cmd.InitialState, forceShowWindow: true);
-        }));
+        })));
 
-        context.TrackDisposable(context.Net.On<MaxwellStateSync>(state =>
+        context.TrackDisposable(context.Net.On<MaxwellStateSync>(state => DispatchOnGameThread(() =>
         {
             ApplyState(state, forceShowWindow: false);
-        }));
+        })));
 
         // 6. Per-frame spinning & floating tick and disconnect cleanup on the game thread
         game.Frame += OnFrame;
@@ -174,6 +178,7 @@ public sealed class MaxwellClientMod : IClientMod
 
     public void Unload()
     {
+        _unloading = true;
         if (_context is not null)
         {
             _context.Game.Frame -= OnFrame;
@@ -181,13 +186,38 @@ public sealed class MaxwellClientMod : IClientMod
         }
 
         StopMusicIfPlaying();
-        _window?.Close();
+        if (_window is { } window)
+        {
+            window.Closed -= OnWindowClosed;
+            window.Close();
+        }
+
         _window = null;
         _lastState = null;
         _context = null;
     }
 
-    private void OnDisconnected(string? reason)
+    private void DispatchOnGameThread(Action action)
+    {
+        IClientContext? context = _context;
+        if (_unloading || context is null)
+            return;
+
+        if (context.Scheduler.IsOnGameThread)
+        {
+            action();
+            return;
+        }
+
+        context.Scheduler.RunOnGameThread(() =>
+        {
+            if (_unloading || _context is null)
+                return;
+            action();
+        });
+    }
+
+    private void OnDisconnected(string? reason) => DispatchOnGameThread(() =>
     {
         StopMusicIfPlaying();
         if (_lastState is { } prev)
@@ -195,7 +225,7 @@ public sealed class MaxwellClientMod : IClientMod
             _lastState = prev with { IsSummoned = false, PetEntityId = 0, MusicPlaying = false };
             RefreshTelemetryLabel();
         }
-    }
+    });
 
     private void OnFrame(float deltaSeconds)
     {
@@ -219,25 +249,35 @@ public sealed class MaxwellClientMod : IClientMod
             _currentFloatOffset = 0f;
         }
 
-        if (_window is not null)
+        if (_window is { IsOpen: true } window)
         {
-            _window.SetProperty("maxwell_yaw", _currentYawDegrees.ToString("0.0", CultureInfo.InvariantCulture));
-            _window.SetProperty("maxwell_float", _currentFloatOffset.ToString("0.0", CultureInfo.InvariantCulture));
-            _window.SetProperty("frame_ticks", _frameCount.ToString(CultureInfo.InvariantCulture));
+            window.SetProperty("maxwell_yaw", _currentYawDegrees.ToString("0.0", CultureInfo.InvariantCulture));
+            window.SetProperty("maxwell_float", _currentFloatOffset.ToString("0.0", CultureInfo.InvariantCulture));
+            window.SetProperty("frame_ticks", _frameCount.ToString(CultureInfo.InvariantCulture));
             RefreshTelemetryLabel();
         }
     }
 
     private void EnsureWindowLoaded()
     {
-        if (_context is null || _window is not null)
+        if (_unloading || _context is null || _window is { IsOpen: true })
             return;
 
+        if (_window is { } stale)
+        {
+            stale.Closed -= OnWindowClosed;
+            _window = null;
+        }
+
         _window = _context.Game.Ui.Load(MaxwellProtocol.PanelUiPath, MaxwellProtocol.PanelWindowId);
+        _window.Closed += OnWindowClosed;
 
         var spinBox = _window.Require<ITextBox>("spin_box");
         var floatBox = _window.Require<ITextBox>("float_box");
         var muteBox = _window.Require<ICheckBox>("music_mute_checkbox");
+
+        spinBox.MaxLength = 6;
+        floatBox.MaxLength = 6;
 
         _window.Require<IButton>("summon_button").Clicked += () =>
         {
@@ -323,36 +363,50 @@ public sealed class MaxwellClientMod : IClientMod
 
         _window.Require<IButton>("close_button").Clicked += () =>
         {
-            _window.Visible = false;
+            if (_window is { IsOpen: true } window)
+                window.Visible = false;
         };
+    }
+
+    private void OnWindowClosed()
+    {
+        if (_window is { } closedWindow)
+        {
+            closedWindow.Closed -= OnWindowClosed;
+        }
+
+        _window = null;
     }
 
     private void ApplyState(MaxwellStateSync state, bool forceShowWindow)
     {
+        if (_unloading || _context is null)
+            return;
+
         _lastState = state;
         SyncLoopingAudio(state);
 
-        if (forceShowWindow || _window is not null)
+        if (forceShowWindow || _window is { IsOpen: true })
         {
             EnsureWindowLoaded();
         }
 
-        if (_window is null)
+        if (_window is not { IsOpen: true } window)
             return;
 
         if (forceShowWindow)
-            _window.Visible = true;
+            window.Visible = true;
 
         _suppressUiEvents = true;
         try
         {
-            _window.Require<ILabel>("status_label").Text = state.StatusMessage;
-            _window.Require<IButton>("summon_button").Text = state.IsSummoned ? "Dismiss Maxwell" : "Summon Maxwell";
-            _window.Require<ITextBox>("spin_box").Text = state.SpinSpeedDegPerSec.ToString("0", CultureInfo.InvariantCulture);
-            _window.Require<ITextBox>("float_box").Text = state.FloatHeight.ToString("0.#", CultureInfo.InvariantCulture);
-            _window.Require<IButton>("music_play_button").Text = state.MusicPlaying ? "Stop Music" : "Play Music";
-            _window.Require<ICheckBox>("music_mute_checkbox").IsChecked = state.MusicMuted;
-            _window.Require<ILabel>("volume_label").Text =
+            window.Require<ILabel>("status_label").Text = state.StatusMessage;
+            window.Require<IButton>("summon_button").Text = state.IsSummoned ? "Dismiss Maxwell" : "Summon Maxwell";
+            window.Require<ITextBox>("spin_box").Text = state.SpinSpeedDegPerSec.ToString("0", CultureInfo.InvariantCulture);
+            window.Require<ITextBox>("float_box").Text = state.FloatHeight.ToString("0.#", CultureInfo.InvariantCulture);
+            window.Require<IButton>("music_play_button").Text = state.MusicPlaying ? "Stop Music" : "Play Music";
+            window.Require<ICheckBox>("music_mute_checkbox").IsChecked = state.MusicMuted;
+            window.Require<ILabel>("volume_label").Text =
                 string.Create(CultureInfo.InvariantCulture, $"Volume: {(int)MathF.Round(state.MusicVolume * 100f)}%");
             RefreshTelemetryLabel();
         }
@@ -364,7 +418,7 @@ public sealed class MaxwellClientMod : IClientMod
 
     private void RefreshTelemetryLabel()
     {
-        if (_window?.Find<ILabel>("telemetry_label") is not { } telemetry)
+        if (_window is not { IsOpen: true } window || window.Find<ILabel>("telemetry_label") is not { } telemetry)
             return;
 
         var state = _lastState;
@@ -411,7 +465,8 @@ public sealed class MaxwellClientMod : IClientMod
             {
                 _activeAudioHandle = handle;
                 _activeAudioVolume = state.MusicVolume;
-                _window?.SetProperty("maxwell_audio_path", MaxwellProtocol.MusicOggPath);
+                if (_window is { IsOpen: true } window)
+                    window.SetProperty("maxwell_audio_path", MaxwellProtocol.MusicOggPath);
                 context.Logger.Info($"Started looping Maxwell audio '{MaxwellProtocol.MusicOggPath}' (handle={handle}, volume={state.MusicVolume:0.00}).");
             }
         }
@@ -438,7 +493,8 @@ public sealed class MaxwellClientMod : IClientMod
         }
         finally
         {
-            _window?.SetProperty("maxwell_audio_path", string.Empty);
+            if (_window is { IsOpen: true } window)
+                window.SetProperty("maxwell_audio_path", string.Empty);
         }
     }
 

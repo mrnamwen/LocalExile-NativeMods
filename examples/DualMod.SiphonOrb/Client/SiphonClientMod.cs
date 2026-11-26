@@ -37,6 +37,7 @@ public sealed class SiphonClientMod : IClientMod
     private SiphonResultNotification? _lastResult;
     private int _selectedAffixIndex = -1;
     private int _openCount;
+    private bool _unloading;
 
     public IUiWindow? Window => _window;
     public OpenSiphonPicker? ActivePicker => _activePicker;
@@ -150,9 +151,10 @@ public sealed class SiphonClientMod : IClientMod
             payload => context.Logger.Debug($"Received raw SiphonResultNotify opcode ({payload.Length} bytes)."),
             SiphonProtocol.ModId));
 
-        // 4. Subscribe to typed Server <-> Client messages over context.Net (HostRuleset 0xA3 / ChatFallback).
-        context.TrackDisposable(context.Net.On<OpenSiphonPicker>(HandleOpenPicker));
-        context.TrackDisposable(context.Net.On<SiphonResultNotification>(HandleResultNotification));
+        // 4. Subscribe to typed Server <-> Client messages over context.Net (HostRuleset 0xA3 / ChatFallback),
+        //    marshaling callbacks onto the game thread via IModScheduler.
+        context.TrackDisposable(context.Net.On<OpenSiphonPicker>(picker => DispatchOnGameThread(() => HandleOpenPicker(picker))));
+        context.TrackDisposable(context.Net.On<SiphonResultNotification>(result => DispatchOnGameThread(() => HandleResultNotification(result))));
 
         // 5. Disconnect cleanup: close picker cleanly on area/session disconnect.
         game.Lifecycle.Disconnected += OnDisconnected;
@@ -160,12 +162,18 @@ public sealed class SiphonClientMod : IClientMod
 
     public void Unload()
     {
+        _unloading = true;
         if (_context is not null)
         {
             _context.Game.Lifecycle.Disconnected -= OnDisconnected;
         }
 
-        _window?.Close();
+        if (_window is { } window)
+        {
+            window.Closed -= OnWindowClosed;
+            window.Close();
+        }
+
         _window = null;
         _activePicker = null;
         _lastResult = null;
@@ -228,10 +236,33 @@ public sealed class SiphonClientMod : IClientMod
         HideWindow();
     }
 
-    private void OnDisconnected(string? reason) => HideWindow();
+    private void OnDisconnected(string? reason) => DispatchOnGameThread(HideWindow);
+
+    private void DispatchOnGameThread(Action action)
+    {
+        IClientContext? context = _context;
+        if (_unloading || context is null)
+            return;
+
+        if (context.Scheduler.IsOnGameThread)
+        {
+            action();
+            return;
+        }
+
+        context.Scheduler.RunOnGameThread(() =>
+        {
+            if (_unloading || _context is null)
+                return;
+            action();
+        });
+    }
 
     private void HandleOpenPicker(OpenSiphonPicker picker)
     {
+        if (_unloading || _context is null)
+            return;
+
         _activePicker = picker;
         _openCount++;
 
@@ -240,7 +271,7 @@ public sealed class SiphonClientMod : IClientMod
         _selectedAffixIndex = firstSelectable?.Index ?? -1;
 
         EnsureWindowLoaded();
-        if (_window is null)
+        if (_window is not { IsOpen: true })
             return;
 
         _window.Visible = true;
@@ -300,10 +331,13 @@ public sealed class SiphonClientMod : IClientMod
 
     private void HandleResultNotification(SiphonResultNotification result)
     {
+        if (_unloading || _context is null)
+            return;
+
         _lastResult = result;
-        if (_window is not null)
+        if (_window is { IsOpen: true } window)
         {
-            _window.SetProperty("siphon_last_result", result.Message);
+            window.SetProperty("siphon_last_result", result.Message);
             UpdateStatusText(result.Message);
         }
 
@@ -315,10 +349,17 @@ public sealed class SiphonClientMod : IClientMod
 
     private void EnsureWindowLoaded()
     {
-        if (_context is null || _window is not null)
+        if (_unloading || _context is null || _window is { IsOpen: true })
             return;
 
+        if (_window is { } stale)
+        {
+            stale.Closed -= OnWindowClosed;
+            _window = null;
+        }
+
         _window = _context.Game.Ui.Load(SiphonProtocol.PickerUiPath, SiphonProtocol.PickerWindowId);
+        _window.Closed += OnWindowClosed;
 
         for (int i = 0; i < SiphonProtocol.MaxPickerAffixRows; i++)
         {
@@ -340,9 +381,26 @@ public sealed class SiphonClientMod : IClientMod
             closeBtn.Clicked += CancelPicker;
     }
 
+    private void OnWindowClosed()
+    {
+        if (_window is { } closedWindow)
+        {
+            closedWindow.Closed -= OnWindowClosed;
+        }
+
+        _window = null;
+        if (!_unloading && _context is not null && _activePicker is { } active)
+        {
+            _context.Net.Send(new CancelSiphonPicker(active.SessionToken));
+        }
+
+        _activePicker = null;
+        _selectedAffixIndex = -1;
+    }
+
     private void RefreshRowStates()
     {
-        if (_window is null || _activePicker is null)
+        if (_window is not { IsOpen: true } || _activePicker is null)
             return;
 
         bool isImbue = _activePicker.Mode == SiphonPickerMode.Imbue;
@@ -433,19 +491,19 @@ public sealed class SiphonClientMod : IClientMod
     {
         _activePicker = null;
         _selectedAffixIndex = -1;
-        if (_window is not null)
-            _window.Visible = false;
+        if (_window is { IsOpen: true } window)
+            window.Visible = false;
     }
 
     private void SetLabel(string id, string text)
     {
-        if (_window?.Find<ILabel>(id) is { } label)
+        if (_window is { IsOpen: true } window && window.Find<ILabel>(id) is { } label)
             label.Text = text;
     }
 
     private void SetVisible(string id, bool visible)
     {
-        if (_window?.Find<IUiControl>(id) is { } control)
+        if (_window is { IsOpen: true } window && window.Find<IUiControl>(id) is { } control)
             control.Visible = visible;
     }
 

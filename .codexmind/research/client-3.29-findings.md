@@ -115,3 +115,11 @@ Read precedence is strictly: **in-memory index table (`fs+0xc900`) → open GGPK
   - Client-only object factory: `0x141ec47e0`; world object map at `world+0x8d8`.
 - **Audio:** Holder singleton `0x140ffaa90()` (global `0x14474f870`), manager at `holder+8`, wrapper `0x1400f0ae0`, submit `0x140ff86e0(mgr, req)` under SRW lock `audio_mgr+0xbb8` (supports FMOD Studio event names and `.ogg` paths, ≤0x200 channels).
 - **Stats:** Write `0x1424d65c0(stats, key, value)` (synchronous listener notify, display-only, overwritten by next server update), read `0x1424d6510`.
+
+---
+
+## 7. Phase 0 (`0.2.0`) Newly Wired `3.29.3d.json` Symbols (`122` Symbols, `37` Offsets, `18` Constants)
+
+In addition to the baseline table above, `data/addresses/3.29.3d.json` and C ABI `0.2.0` (`address_table.cpp` generated via `scripts/generate-address-table.py`) now include and wire:
+- **UI Controls & Geometry:** `TextBox` (`+0x338`, changed slot 129 `0x1894e30`, submitted slot 72 `0x18926f0`), `CheckBox` (`+0x4e2`/`+0x418`, changed slot 115 `0x18f5710`), `ui.control_set_position` (`0x18b1080`), `ui.control_set_size` (`0x1906a30`), `ui.control_get_abs_pos` (`0x18b1250`), `ui.control_detach` (`0x18b5a00`), `ui.children_remove_at`, `ui.event_list_get_ctrl`, `Control::Destroy` (vtable slot 8).
+- **Files, Runtime & Network:** `files.hash_to_wstring_view` (`0x0e40af0`), `files.hash_and_register_path`, `files.filesystem_holder_get`, `files.hot_reload_singleton`, `files.hot_reload_invalidate_ext` (`0x1010560`), `runtime.wstring_destroy` (`0x134500`), `runtime.string_destroy`, `network.stream_reader` (`0xdf9ed0`), `network.register_handler_group` (`0x29a7710`).

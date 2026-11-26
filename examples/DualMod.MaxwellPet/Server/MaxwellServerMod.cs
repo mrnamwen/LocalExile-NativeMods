@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using DualMod.MaxwellPet.Shared;
 using LocalExile.Client.ServerBridge;
 
@@ -119,6 +121,7 @@ public sealed class MaxwellServerMod : IDisposable
     private readonly bool _ownsRegistrar;
     private readonly ConcurrentDictionary<string, CharacterMaxwellState> _states = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _connectionCharacters = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<Task> _pendingCosmeticTasks = new();
     private readonly List<IDisposable> _subscriptions = [];
     private IDisposable? _mtxRegistrationHandle;
     private IDisposable? _registrarDefHandle;
@@ -149,30 +152,29 @@ public sealed class MaxwellServerMod : IDisposable
         _registrarDefHandle = _registrar.Register(MaxwellPetDefinition);
         _mtxRegistrationHandle = _backend.RegisterPetMtx(MaxwellPetDefinition);
         _registrar.PetEquipChanged += OnCosmeticEquipObserved;
-        _bridge.ClientReady += OnClientReady;
+        _subscriptions.Add(_bridge.OnClientReady(OnClientReadyAsync));
 
-        _subscriptions.Add(_bridge.On<ToggleMaxwellRequest>(MaxwellProtocol.ChannelName, (session, req) =>
+        _subscriptions.Add(_bridge.On<ToggleMaxwellRequest>(MaxwellProtocol.ChannelName, async (session, req, ct) =>
         {
             if (!session.HasClientMod(MaxwellProtocol.ModId))
                 return;
 
             string character = _connectionCharacters.GetValueOrDefault(session.ConnectionId, session.ConnectionId);
-            ApplyToggleRequestAsync(session.ConnectionId, character, req).GetAwaiter().GetResult();
+            await ApplyToggleRequestAsync(session.ConnectionId, character, req, ct).ConfigureAwait(false);
         }));
 
-        _subscriptions.Add(_bridge.On<MaxwellAudioControl>(MaxwellProtocol.ChannelName, (session, req) =>
+        _subscriptions.Add(_bridge.On<MaxwellAudioControl>(MaxwellProtocol.ChannelName, async (session, req, ct) =>
         {
             if (!session.HasClientMod(MaxwellProtocol.ModId))
                 return;
 
             string character = _connectionCharacters.GetValueOrDefault(session.ConnectionId, session.ConnectionId);
-            ApplyAudioControlAsync(session.ConnectionId, character, req).GetAwaiter().GetResult();
+            await ApplyAudioControlAsync(session.ConnectionId, character, req, ct).ConfigureAwait(false);
         }));
     }
 
     public void Detach()
     {
-        _bridge.ClientReady -= OnClientReady;
         _registrar.PetEquipChanged -= OnCosmeticEquipObserved;
 
         foreach (var sub in _subscriptions)
@@ -695,7 +697,16 @@ public sealed class MaxwellServerMod : IDisposable
         }
     }
 
-    private void OnClientReady(IClientSession session)
+    /// <summary>Awaits any in-flight async cosmetic equip/unequip sync tasks triggered by <see cref="LocalExilePetMtxRegistrar.PetEquipChanged"/>.</summary>
+    public async Task FlushPendingCosmeticSyncAsync()
+    {
+        while (_pendingCosmeticTasks.TryDequeue(out Task? pending))
+        {
+            await pending.ConfigureAwait(false);
+        }
+    }
+
+    private async Task OnClientReadyAsync(IClientSession session, CancellationToken cancellationToken)
     {
         if (!session.HasNativeHost || !session.HasClientMod(MaxwellProtocol.ModId))
             return;
@@ -716,7 +727,7 @@ public sealed class MaxwellServerMod : IDisposable
             sync = BuildSyncLocked(characterName, state, status);
         }
 
-        session.SendAsync(MaxwellProtocol.ChannelName, sync).GetAwaiter().GetResult();
+        await session.SendAsync(MaxwellProtocol.ChannelName, sync, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private void OnCosmeticEquipObserved(PetMtxEquipChangedEvent evt)
@@ -724,7 +735,28 @@ public sealed class MaxwellServerMod : IDisposable
         if (evt.Pet.MtxTypeHash != MaxwellPetDefinition.MtxTypeHash)
             return;
 
-        OnCosmeticEquipObservedAsync(evt).GetAwaiter().GetResult();
+        Task task = OnCosmeticEquipObservedAsync(evt);
+        if (task.IsFaulted)
+        {
+            ExceptionDispatchInfo.Capture(task.Exception!.InnerException ?? task.Exception).Throw();
+        }
+        else if (!task.IsCompleted)
+        {
+            _pendingCosmeticTasks.Enqueue(task);
+            _ = ObserveBackgroundFaultAsync(task);
+        }
+    }
+
+    private static async Task ObserveBackgroundFaultAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"[maxwell] async cosmetic sync failed: {ex.Message}");
+        }
     }
 
     private async Task PushSyncIfRichClientAsync(string connectionId, MaxwellStateSync sync, CancellationToken cancellationToken)

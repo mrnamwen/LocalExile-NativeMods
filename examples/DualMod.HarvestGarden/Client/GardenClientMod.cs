@@ -105,6 +105,7 @@ public sealed class GardenClientMod : IClientMod
     private IUiWindow? _window;
     private int _frameCount;
     private int _ripenCalls;
+    private bool _unloading;
 
     public IUiWindow? Window => _window;
     public int FrameCount => _frameCount;
@@ -125,10 +126,13 @@ public sealed class GardenClientMod : IClientMod
         {
             int stage = args.Count > 0 ? args.Int(0) : 1;
             _ripenCalls++;
-            if (_window?.Find("growth_gauge") is { } gauge)
+            DispatchOnGameThread(() =>
             {
-                gauge.SetProperty("ripen_stage", stage.ToString(CultureInfo.InvariantCulture));
-            }
+                if (_window is { IsOpen: true } window && window.Find("growth_gauge") is { } gauge)
+                {
+                    gauge.SetProperty("ripen_stage", stage.ToString(CultureInfo.InvariantCulture));
+                }
+            });
             context.Logger.Info($"GEAL GardenRipen triggered on object 0x{objectId:X} (stage={stage}).");
             return GealValue.FromInt(stage);
         }));
@@ -154,14 +158,14 @@ public sealed class GardenClientMod : IClientMod
             CarrierTable: "MiscObjects",
             ScriptPath: GardenProtocol.PlotObjectPath)));
 
-        // 5. Subscribe to server-pushed garden messages
-        context.TrackDisposable(context.Net.On<GardenOpenWindowCommand>(cmd =>
+        // 5. Subscribe to server-pushed garden messages (marshaling onto game thread via IModScheduler)
+        context.TrackDisposable(context.Net.On<GardenOpenWindowCommand>(cmd => DispatchOnGameThread(() =>
         {
             EnsureWindowLoaded();
             ApplySnapshot(cmd.InitialState);
-        }));
+        })));
 
-        context.TrackDisposable(context.Net.On<GardenStateSnapshot>(ApplySnapshot));
+        context.TrackDisposable(context.Net.On<GardenStateSnapshot>(snapshot => DispatchOnGameThread(() => ApplySnapshot(snapshot))));
 
         // 6. Per-frame interpolation on the game thread
         game.Frame += OnFrame;
@@ -169,19 +173,46 @@ public sealed class GardenClientMod : IClientMod
 
     public void Unload()
     {
+        _unloading = true;
         if (_context is not null)
         {
             _context.Game.Frame -= OnFrame;
         }
-        _window?.Close();
+
+        if (_window is { } window)
+        {
+            window.Closed -= OnWindowClosed;
+            window.Close();
+        }
+
         _window = null;
         _context = null;
+    }
+
+    private void DispatchOnGameThread(Action action)
+    {
+        IClientContext? context = _context;
+        if (_unloading || context is null)
+            return;
+
+        if (context.Scheduler.IsOnGameThread)
+        {
+            action();
+            return;
+        }
+
+        context.Scheduler.RunOnGameThread(() =>
+        {
+            if (_unloading || _context is null)
+                return;
+            action();
+        });
     }
 
     private void OnFrame(float dt)
     {
         _frameCount++;
-        if (_window?.Find("growth_gauge") is { } gauge)
+        if (_window is { IsOpen: true } window && window.Find("growth_gauge") is { } gauge)
         {
             gauge.SetProperty("frame_ticks", _frameCount.ToString(CultureInfo.InvariantCulture));
         }
@@ -189,10 +220,17 @@ public sealed class GardenClientMod : IClientMod
 
     private void EnsureWindowLoaded()
     {
-        if (_context is null || _window is not null)
+        if (_unloading || _context is null || _window is { IsOpen: true })
             return;
 
+        if (_window is { } stale)
+        {
+            stale.Closed -= OnWindowClosed;
+            _window = null;
+        }
+
         _window = _context.Game.Ui.Load(GardenProtocol.StockpileUiPath, "harvest_garden_stockpile");
+        _window.Closed += OnWindowClosed;
 
         var seedBox = _window.Require<ITextBox>("seed_box");
         var autoCollect = _window.Require<ICheckBox>("auto_collect");
@@ -210,23 +248,37 @@ public sealed class GardenClientMod : IClientMod
 
         _window.Require<IButton>("close_button").Clicked += () =>
         {
-            _window.Visible = false;
+            if (_window is { IsOpen: true } window)
+                window.Visible = false;
         };
+    }
+
+    private void OnWindowClosed()
+    {
+        if (_window is { } closedWindow)
+        {
+            closedWindow.Closed -= OnWindowClosed;
+        }
+
+        _window = null;
     }
 
     private void ApplySnapshot(GardenStateSnapshot snapshot)
     {
-        LastSnapshot = snapshot;
-        EnsureWindowLoaded();
-        if (_window is null)
+        if (_unloading || _context is null)
             return;
 
-        _window.Visible = true;
-        _window.Require<ILabel>("lifeforce_label").Text =
-            $"Condensed Lifeforce: {snapshot.Lifeforce} (Harvested: {snapshot.TotalHarvested})";
-        _window.Require<ILabel>("status_label").Text = snapshot.StatusMessage;
+        LastSnapshot = snapshot;
+        EnsureWindowLoaded();
+        if (_window is not { IsOpen: true } window)
+            return;
 
-        if (_window.Find("growth_gauge") is { } gauge)
+        window.Visible = true;
+        window.Require<ILabel>("lifeforce_label").Text =
+            $"Condensed Lifeforce: {snapshot.Lifeforce} (Harvested: {snapshot.TotalHarvested})";
+        window.Require<ILabel>("status_label").Text = snapshot.StatusMessage;
+
+        if (window.Find("growth_gauge") is { } gauge)
         {
             gauge.SetProperty("progress", snapshot.AverageGrowthProgress.ToString("0.000", CultureInfo.InvariantCulture));
         }

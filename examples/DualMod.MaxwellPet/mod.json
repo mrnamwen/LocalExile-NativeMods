@@ -15,7 +15,7 @@
   "enabled": true,
   "nativeClient": {
     "required": false,
-    "sdkVersionRange": ">=0.1.0-poc <2.0.0",
+    "sdkVersionRange": ">=0.2.0 <2.0.0",
     "supportedBuilds": [
       "3.29.3d",
       "3.29.3c"

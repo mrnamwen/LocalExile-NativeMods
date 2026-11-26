@@ -26,8 +26,10 @@ Source: `10-verification.md` §6 and `11-client-sdk.md` §2.
   - Keep managed code execution on game threads confined strictly to bounded bridge callbacks.
   - Fallback plan if spike R1 fails under Proton: compile client mods as NativeAOT DLLs against the identical `LocalExile.Client.Sdk` contract (loses hot reload, preserves SDK).
 
-## 4. `DYNAMIC_BASE` (ASLR) Rebasing & Empty State Stack
+## 4. `DYNAMIC_BASE` (ASLR), Empty State Stack, & `0.2.0` Threading Scope
 
 - **ASLR (`DYNAMIC_BASE`):** The 3.29 PE32+ executable is relocatable. Never hardcode absolute `0x14xxxxxxx` addresses in the shim; store **RVAs** (`VA - 0x140000000`) and compute `moduleBase + rva` at runtime, verifying expected prologue bytes before installing any detour.
 - **Empty State Stack:** The frame hook site (`0x141528fbf` in `StateStack::PassA`) is skipped while the state stack is empty (e.g., during early startup or transitions). The main-thread task queue drain requires a fallback trigger (such as a Win32 timer or secondary tick) so queued tasks cannot starve.
+- **`0.2.0` Game-Thread Scope & Deferred Mod Loading:** `NativeEntryPoint.InitializeForNativeHost` defers `AutoLoadClientMods` onto the main-thread queue (`EnqueueGameThread`), `EnqueueGameThread` returns `bool` and cleans `_pendingWork` on `NM_ERR_QUEUE_FULL`, and `INativeBridge.IsOnGameThread` tracks `[ThreadStatic] s_inNativeGameFrame` across all native-to-managed game-thread callbacks (`Frame`, `Drain`, `Ui*`, `RulesetRx`, `ChatRx`, `OpcodeRx`) instead of relying solely on the bootstrap thread ID.
+- **Test-Suite Parallelism Note (M2 Follow-up):** `tests/LocalExile.Client.Tests/AddressLibraryTests.cs` mutates `NativeEntryPoint.InitializeManaged` / `Shutdown()` without `[Collection("NativeEntryPointSerial")]`, so running it concurrently with `Host020AndReliabilityTests` can intermittently race on `NativeEntryPoint.ActiveRuntime`.
 - **Proxy DLL under Wine:** If falling back to a `version.dll` proxy instead of import-table patching, Wine ignores local `version.dll` unless `WINEDLLOVERRIDES=version=n,b` is set in the launch environment.

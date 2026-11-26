@@ -1,48 +1,48 @@
-# Architecture Decisions — NativeMods 3.29 PoC
+# Architecture Decisions — NativeMods 3.29 (`0.2.0`)
 
-> Living decision log for the NativeMods 3.29 script extender, Client SDK, Managed Host, Server Bridge, PE32+ Patcher, and Waypoint integration.
+> Living decision log for the NativeMods 3.29 script extender, Client SDK (`0.2.0`), Managed Host, Server Bridge (`0.2.0`), Asset Pipeline, PE32+ Patcher, and Waypoint integration.
 
 ## 1. Frozen-Target Scope (3.29.3c & 3.29.3d Only)
 
 - LocalExile targets Path of Exile 3.29.3c and 3.29.3d exclusively.
-- Because the client executable never updates again, reverse engineering is amortized once and symbols are stored in static per-build Address Library JSON files (`data/addresses/3.29.3d.json`, `data/addresses/3.29.3c.json`) validated against `data/addresses/address-library.schema.json`.
+- Symbols are stored in static per-build Address Library JSON files (`data/addresses/3.29.3d.json`: **`122` symbols**, **`37` offsets**, **`18` constants**; `data/addresses/3.29.3c.json`: **`122` symbols**, **`35` `null` unverified**, **`87` verified/shared**) validated against `data/addresses/address-library.schema.json`.
+- `scripts/generate-address-table.py` (`--check` enforced by CMake) code-generates `src/native-shim/src/address_table.cpp` directly from JSON so zero hardcoded RVAs exist in `client_host_shim.cpp` / `version_proxy.cpp` and `SimulatedNativeBridge` aligns all `122` symbol names.
 - Because the binary has `DYNAMIC_BASE` (ASLR), all addresses are stored as **RVAs** relative to image base `0x140000000` and resolved dynamically against the loaded module base with expected-byte checks before detour installation.
-- Code RVAs match across 3.29.3c and 3.29.3d; data/global/vtable RVAs do not and are explicitly marked unverified (`rva: null`) on 3.29.3c until verified.
 
 ## 2. Three-Layer Client Architecture
 
 1. **Universal PE32+ Patcher (`src/LocalExile.Client.Patcher/`)**:
    - Cross-platform .NET 10 library and CLI.
-   - Moves the existing PE import directory into a new section (using the verified 136 bytes of PE header slack) and appends an import descriptor for `LocalExile.ClientHost.dll`, preserving existing imports, data directories, and Authenticode layout with byte-for-byte reversible unpatching.
+   - Moves the existing PE import directory into a new section (using the verified 136 bytes of PE header slack) and appends an import descriptor for `LocalExile.ClientHost.dll`, preserving existing imports, data directories, and Authenticode layout with byte-for-byte reversible unpatching (`NMUNPAT1`).
    - Supports `version.dll` proxy deployment as an explicit fallback (requires `WINEDLLOVERRIDES=version=n,b` under Wine/Proton).
-2. **Native Script Extender Shim (`src/native-shim/` → `LocalExile.ClientHost.dll`)**:
-   - C++20 Win64 DLL exposing a stable C ABI (`include/nativemods_abi.h`).
-   - Owns build recognition, expected-byte verification, inline detour & vtable hooking, SEH/C++ exception wall (`0xE06D7363`), Win64 game-allocator wrapper (`0x2c8cf60` + 16-byte header / `0x2c8ca30`), main-thread frame queue (with empty state-stack fallback), file overlay hook registration, and host-ruleset/channel callbacks.
-   - Boots a private self-contained `win-x64` .NET 10 `hostfxr`/CoreCLR runtime off the game thread (deferred until first frame) so `DeadlockDetector` (`0x0e3ed10`) never trips and Proton/self-contained Windows installs require zero system runtime.
-3. **Managed Host & Public SDK (`src/LocalExile.Client.Host/`, `src/LocalExile.Client.Sdk/`)**:
-   - `LocalExile.Client.Sdk` is the single versioned assembly client mods compile against (zero dependency on Host internals), organized into `Engine`, `Extend`, `Net`, `Raw`, and `IAddressLibrary`.
-   - `LocalExile.Client.Host` loads each client mod assembly in a collectible `AssemblyLoadContext` from a shadow-copied file for hot reload, verifies unload via `WeakReference`, enforces `RawAccess` manifest permissions, and isolates per-mod exceptions on frame/callback walls.
-   - `INativeBridge` abstracts the native C ABI (`NativeShimBridge`) and provides a deterministic in-memory engine simulation (`SimulatedNativeBridge`) so full host/SDK/dual-mod tests execute cross-platform on Linux CI without a 3.29 client binary.
+2. **Native Script Extender Shim (`src/native-shim/` → `LocalExile.ClientHost.dll`, C ABI `0.2.0`)**:
+   - C++20 Win64 DLL exposing C ABI `0.2.0` (`NM_ABI_VERSION = 0x00000200u`, `NmAbiTable = 552 B` / `68` fn ptrs, `NmHookContext = 128 B`, `NmNativeCallDesc = 104 B`, `77` `.def` exports).
+   - `HookEngine`: full C++20 x64 instruction-length decoder + ±2 GB RIP-relative relocator + shared multi-mod `TargetChain` (`PRE`/`POST` phases, `SkipOriginal`, `>= 50 ms` quiescent reclamation) + `nm_call_native_guarded` (up to 8 mixed int/float `XMM0..XMM3` args inside `0xE06D7363` SEH/C++ wall).
+   - Owns build recognition, Win64 game-allocator wrapper (`0x2c8cf60` + 16B header / `0x2c8ca30`), `MsvcWString` & `ScopedOverlayIndex` RAII reclamation, main-thread frame queue (with empty state-stack fallback), 15 UTF-16 text extensions (12 BOM + 3 no-BOM `.sm`/`.mat`/`.amd`), live UI (`ITextBox`, `ICheckBox`, geometry/lifecycle, `CreateWindowInto`), `IClipboardService`, `ReadStockGameFile`/`Invalidate`, `SendRaw`, `0x02FC+` opcode groups (`0x29a7710`), and chat suppression `int32_t`.
+   - Boots a private self-contained `win-x64` .NET 10 `hostfxr`/CoreCLR runtime off the game thread, deferring `AutoLoadClientMods` onto the game-thread queue.
+3. **Managed Host & Public SDK (`src/LocalExile.Client.Host/`, `src/LocalExile.Client.Sdk/`, `0.2.0`)**:
+   - `LocalExile.Client.Sdk` (`VersionPrefix=0.2.0`, `SdkVersion.Current == "0.2.0"`) compiles client mods with zero dependency on Host internals (`Engine`, `Extend`, `Net`, `Raw`, `IAddressLibrary`).
+   - `ClientModLoader` loads each mod in a shadow-copied collectible `AssemblyLoadContext`, enforces manifest `Enabled`, `Depends` (Kahn topological sort), and `PayloadHash` (SHA-256), tracks `ScopedGameServices` disposal, and isolates per-mod faults on frame/lifecycle/ruleset callbacks.
+   - `INativeBridge.IsOnGameThread` uses `[ThreadStatic] s_inNativeGameFrame` across all native-to-managed game-thread callbacks (`Frame`, `Drain`, `Ui*`, `RulesetRx`, `ChatRx`, `OpcodeRx`), and `ClientHostRuntime._subscribedUiEvents` cleans up on window/subtree removal.
 
-## 3. Dual-Side Mod Model & Mod Channel
+## 3. Dual-Side Mod Model & `ServerBridge 0.2.0`
 
-- One mod solution ships `Server/` (`<id>.dll` for LocalExile Gateway), `Client/` (`<id>.Client.dll` against `LocalExile.Client.Sdk`), `Shared/` (typed message records/opcodes), and `client/` assets (`.ui`, `.ot`, `.it`, art, sounds).
-- **Server remains authoritative** for game rules; client code owns presentation, native UI, local GEAL built-ins, custom controls, and per-frame client logic.
-- **Primary Transport (`HostRuleset`, S→C `0x2c9` / C→S `0x2ca`)**: Registers a creator in an unused slot of the writable ruleset table (`0x475dc70`). Length-delimited up to `0xffff` bytes; unmodded clients log once and silently drop `0x2c9` updates instead of disconnecting.
-- **Fallback Transport (`ChatFallback`, S→C `0x17` `##NM ` / C→S `0x15`)**: Live-verified in spike S4; requires zero Gateway protocol changes.
-- **Server-Driven UI**: `LocalExile.Client.ServerBridge` enables server-only mods to drive native `.ui` windows via closed `ServerUiCommand` operations and gracefully degrade via `HasClientMod` handshake checks.
+- Showcases (`examples/DualMod.HarvestGarden/`, `examples/DualMod.MaxwellPet/`, `examples/DualMod.SiphonOrb/`) share `Shared/` records, `Server/` (`<id>.dll` + optional `*LocalExileEntry.cs` Roslyn entry), `Client/` (`<id>.Client.dll` against `LocalExile.Client.Sdk`), and `client/` overlays.
+- **Primary Transport (`HostRuleset`, S→C `0x2c9` / C→S `0x2ca`)** + **Fallback Transport (`ChatFallback`, S→C `0x17` `##NM ` / C→S `0x15`)**.
+- **`ServerBridge 0.2.0` (`src/LocalExile.Client.ServerBridge/`):**
+  - `ClientBridgeHost`: async `On<T>` / `OnClientReady`, `HostChannelId`, `IsClientReady`, `HasMod`, `HandlerError` isolation, `ServerUiWindowHandle.Closed` / `OnClosed` + `OnButtonClickAsync` / `OnControlEventAsync`, per-session `IClientCommandBatch` (`BeginBatch`, `BatchAsync`, `FlushAsync`).
+  - `LocalExileGatewayHost.Create` / `Attach`: eliminates Gateway sink/bus/packet/command boilerplate and integrates `LocalExile` Part 1 (`feat/nativemods-phase0-core-hooks`: `Client.For(player)`, `GameEvents.{ClientReady, ClientMessage, LevelUp, CosmeticChanged}`, `Item.CustomName`). Note `global::Client.For(player)` qualification when importing `LocalExile.Client.ServerBridge`.
+  - `LocalExileGatewayTransactions` & `LocalExileItemAffixService`: reusable `LocateCurrencyStack`, `LocateGatewayItem` (`IsWorn` rows `1..11, 23, 54, 78, 102`), `GrantItemsAsync`, `StealAffixOnGatewayItem`, `ReplaceAffixOnGatewayItem`, `SendInventoryDiffsAsync`, `Item.CustomName`.
 
-## 4. Waypoint Integration & Trust Model
+## 4. Waypoint & `AssetPipeline` Integration (`0.2.0`)
 
-- **Servers never push executable code.** Client mod assemblies are installed explicitly by the player via Waypoint from verified catalogs with SHA-256 digests.
-- `mod.json` extends LocalExile-Mods conventions with a `nativeClient` block declaring SDK SemVer range, client assembly, payload directory, stock path `replaces`, `rawAccess` disclosure + justification, custom opcodes, GEAL built-ins, and content registries.
-- Stock client archives (`Content.ggpk`, `Bundles2/_.index.bin`) are **never** modified on disk. Loose overlays live in `Mods/Client/<id>/` (auto-encoded to UTF-16LE BOM CRLF for `.ui`/`.ot`/`.it`) and packed releases use stored-block (`CC 06`, `0x40000` chunks) `.bundle.bin` archives mounted in memory.
+- **Servers never push executable code.** Waypoint validates `mod.json` (`15` `AppendableRegistryTables`, closed `ItemClasses`), `.ui` layouts, namespace rules, and SHA-256 digests.
+- `ModBundlePacker` (`NMB1` chunked framing `[u32 chunkLen][0xCC 0x06][payload]`) matches `FileOverlayService.ReadBundleSlice`.
+- Text encodings enforce **12 BOM+CRLF** vs **3 no-BOM+CRLF** (`.sm`, `.mat`, `.amd`) with idempotent `TrimStart('\uFEFF')`, and `PoeContentHash.MurmurHash2` matches `PoeHashing.Hash32` (`Encoding.UTF8`).
 
-## 5. Local Build & Test Environment (Verified Milestone 3 Baseline)
+## 5. Local Build & Test Environment (Phase 0 `0.2.0` M1–M6 Baseline)
 
-- **Solution (`NativeMods.slnx` + `Directory.Build.props`):** `.NET 10` (`net10.0`, `Nullable=enable`, `TreatWarningsAsErrors=true`, `AnalysisLevel=latest-recommended`, XML docs enabled on `LocalExile.Client.Sdk` and `LocalExile.Client.ServerBridge`).
-- **Verified .NET Test Suite (`dotnet test NativeMods.slnx -c Release`):** **73/73 passed** (0 warnings, 0 errors):
-  - `tests/LocalExile.Client.Tests`: **32/32** (including real `data/addresses/3.29.3d.json` & `3.29.3c.json` integration, C ABI struct size parity `NmHostInfo=120`/`NmSymbolInfo=48`/`NmGameAllocHeader=16`/`NmExceptionInfo=528`/`NmAbiTable=200`, collectible ALC hot-reload with `CollectibleJsonCodec`, fault isolation, `RawAccess` gating, `HostRuleset` + `ChatFallback` loopback).
-  - `tests/LocalExile.Client.Waypoint.Tests`: **32/32** (SemVer, manifest & `mods.json` v1 catalog, 47-control `.ui` linter, `NMB1` stored-block bundle packer, `InstallOptions.AllowRawAccess = false` default, `ClientPatcherBridge` PE32+ round-trip, and full `DualMod.HarvestGarden` E2E over both transports with `UnloadedCleanly == true`).
-  - `tests/LocalExile.Client.Patcher.Tests`: **9/9** (PE32+ `.nmimp` import patching, `NMUNPAT1` byte-for-byte unpatch including EOF Authenticode, `--proxy-dll`, CLI E2E, Address Library integrity).
-- **Verified Native C++20 Shim (`src/native-shim/`):** **8/8 C++20 shim tests passing** via `cmake` + `clang++` (`-Wall -Wextra -Wpedantic -Werror`) + `ctest`; Win64 `LocalExile.ClientHost.dll` & `version.dll` proxy targets guarded under `#ifdef _WIN32` with documented MSVC & MinGW-w64 commands in `CMakeLists.txt`.
+- **Solution (`NativeMods.slnx` + `Directory.Build.props`):** `VersionPrefix=0.2.0`, `.NET 10` (`net10.0`, `Nullable=enable`, `TreatWarningsAsErrors=true`, `AnalysisLevel=latest-recommended`), **`21` projects** (6 `/src/`, 9 `/examples/`, 6 `/tests/`; `tests/LocalExile.Client.Phase0E2E/` kept out of `.slnx` until M7).
+- **Verified Managed Suites (`dotnet test NativeMods.slnx -c Release`):** all 6 solution test projects (`Tests`, `Patcher.Tests`, `Waypoint.Tests`, `AssetPipeline.Tests`, `MaxwellPet.Tests`, `SiphonOrb.Tests`) pass with 0 warnings and 0 errors (note: `AddressLibraryTests` in `LocalExile.Client.Tests` lacks `[Collection("NativeEntryPointSerial")]` — documented M2 follow-up).
+- **Verified Native C++20 Shim (`src/native-shim/`):** **`18/18`** C++20 shim tests passing (`ctest`, `-Wall -Wextra -Wpedantic -Werror`, ASan/UBSan) + Win64 cross-compile + Wine smoke (`r1_wine_smoke.exe`).
+- **Live Proton (`Xvfb` `3.29.3d`):** Scheduled for Milestone M7.

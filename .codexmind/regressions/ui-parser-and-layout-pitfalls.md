@@ -21,8 +21,11 @@ Source: `07-spike-results.md` (live testing on 3.29.3d under Proton) and `02-arc
 
 - **Leading space before `<DEFINITIONS>`:** Starting a `.ui` file immediately with `<DEFINITIONS>` triggers `Syntax error. You must have a space before <DEFINITIONS>`.
 - **Unknown property names:** Produce a misleading `error: ":" expected` parser exception.
-- **Encoding:** `.ui`, `.ot`, and `.it` text files expected by the client wide-stream loader are UTF-16LE with BOM (`0xFF 0xFE`) and CRLF (`\r\n`) line endings.
+- **Encoding (`0.2.0` 12 + 3 Contract):**
+  - **12 BOM + CRLF:** `.ui`, `.ot`, `.otc`, `.it`, `.itc`, `.ao`, `.aoc`, `.act`, `.epk`, `.ddt`, `.pet`, `.trl` require UTF-16LE with BOM (`0xFF 0xFE`) + CRLF (`\r\n`).
+  - **3 No-BOM + CRLF:** `.sm`, `.mat`, and `.amd` require UTF-16LE **without** BOM + CRLF (`ClientTextEncoding.EncodeTextForPath`, `ModBundlePacker.EncodeClientTextNoBom`, `PoeAstWriter.BuildAmd`, and native `classify_poe_utf16_text_extension`). Multi-BOM stripping uses idempotent `TrimStart('\uFEFF')`.
 - **Error visibility under crash:** Because fatal errors are displayed by a second process while the first exits, any diagnostics must be flushed synchronously to disk.
+- **`0.2.0` UI Subscription & Window Lifecycle Cleanup:** `ClientHostRuntime._subscribedUiEvents` removes stale subscriptions on `WindowTreeInvalidated` / `ControlSubtreeRemoved`, and client mods check `IUiWindow.IsOpen` and subscribe `IUiWindow.Closed` so closed/reloaded windows cleanly re-instantiate without stale handles. Control visibility (`Control::SetVisible` `0x1418b0a30`) hides descendants cleanly while `Control::Destroy` (vtable slot 8) tears down the native control.
 
 ## 4. Window Sizing Behavior
 

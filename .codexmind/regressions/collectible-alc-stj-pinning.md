@@ -19,8 +19,9 @@ Discovered during end-to-end hot-reload testing of `DualMod.HarvestGarden` (`Unl
    - `MessageCodec.CreateTypedEnvelope<T>` and `MessageCodec.DeserializePayload<T>` inspect whether `T` (or its generic/element types) lives in a collectible `AssemblyLoadContext` and automatically route those types through `CollectibleJsonCodec`.
 2. **Per-ALC `ConditionalWeakTable` Options (`MessageCodec.GetJsonOptionsForType(Type)`):**
    - Exposes isolated per-ALC `JsonSerializerOptions` via `ConditionalWeakTable<AssemblyLoadContext, JsonSerializerOptions>`.
-3. **Defense-in-Depth Cache Clear (`ClientModLoader.DetachAndInitiateUnload`):**
+3. **Defense-in-Depth Cache Clear & Service Disposal Tracking (`ClientModLoader.DetachAndInitiateUnload`, `0.2.0`):**
    - Invokes `TryClearSystemTextJsonMetadataCache()` during unload so even third-party client mods that call `JsonSerializer` directly do not leak their `AssemblyLoadContext`.
+   - `0.2.0` (`ScopedGameServices`) wraps `Lifecycle`, `Rulesets`, `Opcodes`, `Chat`, `Scripts`, `Audio`, and `World` in tracked wrappers (`TrackedGameLifecycle`, `TrackedRulesetRegistry`, etc.) so mod delegates on `GameLifecycle` / `RulesetRegistry` are also forcibly detached and fault-isolated on unload.
 
 ## Verification
 

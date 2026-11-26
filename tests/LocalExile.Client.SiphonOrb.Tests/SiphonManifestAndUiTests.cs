@@ -19,12 +19,20 @@ public sealed class SiphonManifestAndUiTests
 
         var report = DualModPackageValidator.ValidateManifest(siphon, SemVer.Parse(SdkVersion.Current));
         Assert.True(report.IsValid, string.Join(Environment.NewLine, report.Errors.Select(e => $"{e.Code}: {e.Message}")));
+        Assert.DoesNotContain(report.Warnings, w => w.Code == "NC018");
+        Assert.Empty(report.Warnings);
 
         Assert.Equal(SiphonProtocol.ModId, siphon.Id);
         Assert.Equal("siphon.dll", siphon.EffectiveAssembly);
         Assert.NotNull(siphon.NativeClient);
-        Assert.Equal("siphon.Client.dll", siphon.NativeClient!.Assembly);
+        Assert.Equal(">=0.2.0 <2.0.0", siphon.NativeClient!.SdkVersionRange);
+        Assert.Equal("siphon.Client.dll", siphon.NativeClient.Assembly);
         Assert.False(siphon.NativeClient.RawAccess);
+
+        // 0.2.0 minimum range rejects 0.1.0-poc cleanly
+        var oldSdkReport = DualModPackageValidator.ValidateManifest(siphon, SemVer.Parse("0.1.0-poc"));
+        Assert.False(oldSdkReport.IsValid);
+        Assert.Contains(oldSdkReport.Errors, e => e.Code == "NC002");
 
         Assert.Contains(siphon.NativeClient.Replaces, p => p.Equals(SiphonProtocol.BaseItemTypesDatPath, StringComparison.OrdinalIgnoreCase));
         Assert.Contains(siphon.NativeClient.Replaces, p => p.Equals(SiphonProtocol.ItemVisualIdentityDatPath, StringComparison.OrdinalIgnoreCase));
@@ -114,10 +122,64 @@ public sealed class SiphonManifestAndUiTests
         Assert.Contains("enable_rarity = \"normal\"", chargedIt, StringComparison.Ordinal);
 
         Assert.Contains("class SiphonLocalExileEntry : IMod", entrySource, StringComparison.Ordinal);
+        Assert.Contains("LocalExileGatewayHost.Create", entrySource, StringComparison.Ordinal);
         Assert.Contains("LocalExileCurrencyRegistrar", entrySource, StringComparison.Ordinal);
         Assert.Contains("LocalExileItemAffixService", entrySource, StringComparison.Ordinal);
+        Assert.Contains("LocalExileGatewayTransactions", entrySource, StringComparison.Ordinal);
+        Assert.Contains("global::Client.For", entrySource, StringComparison.Ordinal);
         Assert.Contains("InstanceItems.UseItemOnId", entrySource, StringComparison.Ordinal);
         Assert.Contains("InstanceItems.UseItemTypeOnId", entrySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetAwaiter().GetResult()", entrySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SiphonLocalExileEntry_CompilesCleanlyViaRoslynAgainstGatewayAssemblies()
+    {
+        string? gatewayBin = FindLocalExileGatewayBinDir();
+        string? gameDll = FindLocalExileGameDll();
+        if (gatewayBin is null || gameDll is null)
+            return;
+
+        string repoRoot = FindRepoRoot();
+        string entryPath = Path.Combine(repoRoot, "examples", "DualMod.SiphonOrb", "Server", "SiphonLocalExileEntry.cs");
+        string source = File.ReadAllText(entryPath);
+
+        RoslynEntryCompileHelper.CompileAndAssertSuccess(
+            gatewayBin,
+            "SiphonLocalExileEntryProbe",
+            source,
+            gameDll,
+            typeof(SdkVersion).Assembly.Location,
+            typeof(ClientBridgeHost).Assembly.Location,
+            typeof(SiphonProtocol).Assembly.Location,
+            typeof(SiphonServerMod).Assembly.Location);
+    }
+
+    private static string? FindLocalExileGatewayBinDir()
+    {
+        foreach (string config in new[] { "Release", "Debug" })
+        {
+            string candidate = Path.Combine("/home/nam/Git/LocalExile/src/GameServer.Gateway/bin", config, "net10.0");
+            if (File.Exists(Path.Combine(candidate, "GameServer.Gateway.dll")) &&
+                File.Exists(Path.Combine(candidate, "GameServer.Modding.dll")) &&
+                File.Exists(Path.Combine(candidate, "GameServer.Core.dll")))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FindLocalExileGameDll()
+    {
+        string[] candidates =
+        [
+            "/home/nam/Git/LocalExile/tests/GameServer.Gateway.Tests/bin/Release/net10.0/game.dll",
+            "/home/nam/Git/LocalExile/Modules/Core/Game/bin/game.dll",
+            "/home/nam/Git/LocalExile/tests/GameServer.Gateway.Tests/bin/Debug/net10.0/game.dll",
+        ];
+        return candidates.FirstOrDefault(File.Exists);
     }
 
     private static string FindRepoRoot()

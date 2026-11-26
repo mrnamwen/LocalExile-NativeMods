@@ -370,14 +370,16 @@ public sealed class MultiModCoexistenceTests
             var host1 = new ClientBridgeHost(sink1);
             var host2 = new ClientBridgeHost(sink2);
 
-            var errors = new List<(string Owner, Exception Ex)>();
+            var handlerErrors = new List<(string Source, Exception Ex)>();
+            var busErrors = new List<(string Owner, Exception Ex)>();
+            host1.HandlerError += (source, ex) => handlerErrors.Add((source, ex));
             host1.ClientReady += _ => throw new InvalidOperationException("Boom in buggy mod ClientReady");
 
             bool host2Ready = false;
             host2.ClientReady += _ => host2Ready = true;
 
-            using var reg1 = host1.AttachToGatewayBus("buggy-mod", domainKey: busKey, onDispatchError: (o, ex) => errors.Add((o, ex)));
-            using var reg2 = host2.AttachToGatewayBus("healthy-mod", domainKey: busKey, onDispatchError: (o, ex) => errors.Add((o, ex)));
+            using var reg1 = host1.AttachToGatewayBus("buggy-mod", domainKey: busKey, onDispatchError: (o, ex) => busErrors.Add((o, ex)));
+            using var reg2 = host2.AttachToGatewayBus("healthy-mod", domainKey: busKey, onDispatchError: (o, ex) => busErrors.Add((o, ex)));
 
             var handshake = new ClientHandshake(
                 "1.0.0", SdkVersion.Current, ClientBuildId.Build3293d, "3.29.3d", SdkVersion.ProtocolVersion,
@@ -389,14 +391,51 @@ public sealed class MultiModCoexistenceTests
             bool handled = await host1.HandleIncomingPacketAsync("conn-fault", IOpcodeRegistry.ClientRulesetOpcode, rulesetBody);
             Assert.True(handled);
 
-            // Buggy mod threw AFTER sending ServerHandshake -> error captured, healthy mod STILL received handshake,
-            // and NO duplicate ServerHandshake was sent!
-            Assert.Single(errors);
-            Assert.Equal("buggy-mod", errors[0].Owner);
+            // ClientBridgeHost isolates ClientReady exceptions into HandlerError; healthy mod still receives handshake
+            // and NO duplicate ServerHandshake is sent.
+            Assert.Single(handlerErrors);
+            Assert.Contains("ClientReady", handlerErrors[0].Source, StringComparison.Ordinal);
+            Assert.Empty(busErrors);
             Assert.True(host2Ready);
             Assert.True(host2.For("conn-fault").HasNativeHost);
             Assert.Single(sink1.Packets);
             Assert.Empty(sink2.Packets);
+
+            // Also verify GatewayBridgeBus onDispatchError isolation when a participant bus callback throws.
+            var sinkFaultyBus = new RecordingSink();
+            var hostFaultyBus = new ClientBridgeHost(sinkFaultyBus);
+            var busCallbackErrors = new List<(string Owner, Exception Ex)>();
+            string faultBusKey = busKey + ".bus";
+            try
+            {
+                using var regBusFault = hostFaultyBus.AttachToGatewayBus(
+                    "bus-fault-mod",
+                    onGatewayContext: (_, _, _) => throw new InvalidOperationException("Boom in buggy mod onGatewayContext"),
+                    domainKey: faultBusKey,
+                    onDispatchError: (o, ex) => busCallbackErrors.Add((o, ex)));
+
+                var sinkHealthyBus = new RecordingSink();
+                var hostHealthyBus = new ClientBridgeHost(sinkHealthyBus);
+                bool healthyBusReady = false;
+                hostHealthyBus.ClientReady += _ => healthyBusReady = true;
+                using var regBusHealthy = hostHealthyBus.AttachToGatewayBus(
+                    "healthy-bus-mod",
+                    domainKey: faultBusKey,
+                    onDispatchError: (o, ex) => busCallbackErrors.Add((o, ex)));
+
+                bool busHandled = await hostFaultyBus.HandleIncomingPacketAsync("conn-bus-fault", IOpcodeRegistry.ClientRulesetOpcode, rulesetBody);
+                Assert.True(busHandled);
+                Assert.Single(busCallbackErrors);
+                Assert.Equal("bus-fault-mod", busCallbackErrors[0].Owner);
+                Assert.True(healthyBusReady);
+                Assert.True(hostHealthyBus.For("conn-bus-fault").HasNativeHost);
+                Assert.Empty(sinkFaultyBus.Packets);
+                Assert.Single(sinkHealthyBus.Packets);
+            }
+            finally
+            {
+                GatewayBridgeBus.Clear(faultBusKey);
+            }
         }
         finally
         {
