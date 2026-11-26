@@ -170,6 +170,81 @@ public sealed class Phase1SdkAndHost030Tests
     }
 
     [Fact]
+    public void ScreensService_SameZonePanelToggleAndParentSwitchDestroysNativeControl_ZoneChangeDoesNotDoubleFree()
+    {
+        using var bridge = new SimulatedNativeBridge { EnableSimulatedNativeUi = true };
+        using var host = new ClientHostRuntime(bridge);
+
+        var hud1 = bridge.RegisterSimulatedStockControl("InGameUI_1");
+        var inv1 = bridge.RegisterSimulatedStockControl("InventoryPanel_1", parentHandle: hud1.Handle);
+        var personalStash1 = bridge.RegisterSimulatedStockControl("PersonalStash_1", parentHandle: hud1.Handle);
+        var guildStash1 = bridge.RegisterSimulatedStockControl("GuildStash_1", parentHandle: hud1.Handle);
+
+        bridge.SimulatedPreGameScreen = PreGameScreen.InGame;
+        bridge.SimulatedInGameUiHandle = hud1.Handle;
+        bridge.SimulatedActivePanels = GamePanel.Hud | GamePanel.Inventory | GamePanel.Stash;
+        bridge.SetSimulatedPanelHandle(GamePanel.Hud, hud1.Handle);
+        bridge.SetSimulatedPanelHandle(GamePanel.Inventory, inv1.Handle);
+        bridge.SetSimulatedPanelHandle(GamePanel.Stash, personalStash1.Handle);
+        host.TickFrame();
+
+        using ISlotAttachment invBtn = host.Screens.RegisterSlotButton(ScreenSlot.InventoryToolbar, "inv_btn", "Deposit", () => { });
+        using ISlotAttachment stashBtn = host.Screens.RegisterSlotButton(ScreenSlot.StashHeader, "stash_btn", "Vendor All", () => { });
+        host.TickFrame();
+
+        Assert.True(invBtn.IsAttached);
+        Assert.True(stashBtn.IsAttached);
+        nint firstInvHandle = invBtn.Control!.NativeHandle;
+        nint firstStashHandle = stashBtn.Control!.NativeHandle;
+        Assert.Single(bridge.GetNativeUiChildren(inv1.Handle));
+        Assert.Single(bridge.GetNativeUiChildren(personalStash1.Handle));
+
+        // (a) Closing Inventory within the SAME InGameUI MUST destroy the mounted native control (no leak).
+        bridge.SimulatedActivePanels = GamePanel.Hud | GamePanel.Stash;
+        host.TickFrame();
+
+        Assert.False(invBtn.IsAttached);
+        Assert.Contains(firstInvHandle, bridge.DestroyedNativeUiHandles);
+        Assert.Empty(bridge.GetNativeUiChildren(inv1.Handle));
+
+        // Re-opening Inventory in the same InGameUI mounts a fresh single frame (no duplicate).
+        bridge.SimulatedActivePanels = GamePanel.Hud | GamePanel.Inventory | GamePanel.Stash;
+        host.TickFrame();
+
+        Assert.True(invBtn.IsAttached);
+        nint secondInvHandle = invBtn.Control!.NativeHandle;
+        Assert.NotEqual(firstInvHandle, secondInvHandle);
+        Assert.Single(bridge.GetNativeUiChildren(inv1.Handle));
+
+        // (b) Switching Stash parent (Personal -> Guild) in the SAME InGameUI MUST destroy prior native control.
+        bridge.SetSimulatedPanelHandle(GamePanel.Stash, guildStash1.Handle);
+        host.TickFrame();
+
+        Assert.True(stashBtn.IsAttached);
+        nint guildStashBtnHandle = stashBtn.Control!.NativeHandle;
+        Assert.NotEqual(firstStashHandle, guildStashBtnHandle);
+        Assert.Contains(firstStashHandle, bridge.DestroyedNativeUiHandles);
+        Assert.Empty(bridge.GetNativeUiChildren(personalStash1.Handle));
+        Assert.Single(bridge.GetNativeUiChildren(guildStash1.Handle));
+
+        // (c) Zone transition: InGameUI handle changes -> prior tree already freed by InGameState::Leave,
+        // so UnmountAttachment MUST use destroyNative: false (NO double-free on secondInvHandle or guildStashBtnHandle).
+        var hud2 = bridge.RegisterSimulatedStockControl("InGameUI_2");
+        var inv2 = bridge.RegisterSimulatedStockControl("InventoryPanel_2", parentHandle: hud2.Handle);
+        var personalStash2 = bridge.RegisterSimulatedStockControl("PersonalStash_2", parentHandle: hud2.Handle);
+        bridge.SimulatedInGameUiHandle = hud2.Handle;
+        bridge.SetSimulatedPanelHandle(GamePanel.Hud, hud2.Handle);
+        bridge.SetSimulatedPanelHandle(GamePanel.Inventory, inv2.Handle);
+        bridge.SetSimulatedPanelHandle(GamePanel.Stash, personalStash2.Handle);
+        host.TickFrame();
+
+        Assert.True(invBtn.IsAttached);
+        Assert.True(stashBtn.IsAttached);
+        Assert.DoesNotContain(secondInvHandle, bridge.DestroyedNativeUiHandles);
+        Assert.DoesNotContain(guildStashBtnHandle, bridge.DestroyedNativeUiHandles);
+    }
+
+    [Fact]
     public void LeagueCardLayoutSolver_And_LeagueCardModes_EqualizeCompactAndReinjectAcrossFills()
     {
         // Unit verify exact #9 compaction math inside 500x905 card.
@@ -219,6 +294,8 @@ public sealed class Phase1SdkAndHost030Tests
         Assert.Equal(modCbSim.Rect.Width, ruthless.Rect.Width);
         Assert.False(hc.AutoWidth);
         Assert.False(modCbSim.AutoWidth);
+        Assert.Equal((byte)3, modCbSim.XAnchor);
+        Assert.Equal((byte)0xFF, modCbSim.YAnchor);
 
         // Player checks "Skip Campaign" on Standard card.
         Assert.True(bridge.SimulateNativeUiCheckBoxChanged(modCbHandle, true));

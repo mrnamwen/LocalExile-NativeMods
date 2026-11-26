@@ -753,7 +753,7 @@ public sealed class ScreensService : IScreensService, IDisposable
                 nint cbHandle = _bridge.CreateNativeUiCheckBoxChild(card.ModeStackHandle, reg.Caption, initialChecked);
                 if (cbHandle != nint.Zero)
                 {
-                    _bridge.SetNativeUiAnchor(cbHandle, xAnchor: 3, xOffset: 0f, yAnchor: 0, yOffset: 0f);
+                    _bridge.SetNativeUiAnchor(cbHandle, xAnchor: 3, xOffset: 0f, yAnchor: 0xFF, yOffset: 0f);
                     _bridge.SetNativeUiAutoWidth(cbHandle, true);
                     _bridge.UpdateNativeUiLayout(cbHandle);
 
@@ -843,7 +843,7 @@ public sealed class ScreensService : IScreensService, IDisposable
             {
                 if (item.IsAttached)
                 {
-                    UnmountAttachment(item, destroyNative: false);
+                    UnmountAttachment(item, destroyNative: true);
                 }
             }
 
@@ -871,7 +871,7 @@ public sealed class ScreensService : IScreensService, IDisposable
             {
                 if (item.IsAttached)
                 {
-                    UnmountAttachment(item, destroyNative: false);
+                    UnmountAttachment(item, destroyNative: true);
                 }
 
                 MountAttachment(item, targetParent, rect);

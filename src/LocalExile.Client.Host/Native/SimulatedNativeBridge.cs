@@ -105,6 +105,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
     private readonly Dictionary<string, nint> _nativeUiWindowsByPath = new(StringComparer.Ordinal);
     private readonly Dictionary<(nint Parent, string Key), nint> _nativeUiChildren = [];
     private readonly Dictionary<nint, SimulatedNativeUiControl> _nativeUiControls = [];
+    private readonly List<nint> _destroyedNativeUiHandles = [];
     private readonly Dictionary<GamePanel, nint> _simulatedPanelHandles = [];
     private readonly Dictionary<ScreenSlot, nint> _simulatedSlotParentHandles = [];
     private readonly List<Action<nint, IReadOnlyList<LeagueCardInfo>>> _leagueFillCallbacks = [];
@@ -1416,6 +1417,12 @@ public sealed class SimulatedNativeBridge : INativeBridge
         }
     }
 
+    /// <summary>Handles passed to <see cref="DestroyNativeUiControl"/> (for leak / double-free verification tests).</summary>
+    public IReadOnlyList<nint> DestroyedNativeUiHandles
+    {
+        get { lock (_gate) { return [.. _destroyedNativeUiHandles]; } }
+    }
+
     /// <inheritdoc/>
     public void DestroyNativeUiControl(nint control)
     {
@@ -1426,6 +1433,7 @@ public sealed class SimulatedNativeBridge : INativeBridge
 
         lock (_gate)
         {
+            _destroyedNativeUiHandles.Add(control);
             if (_nativeUiControls.TryGetValue(control, out SimulatedNativeUiControl? ctrl))
             {
                 ctrl.Destroyed = true;
