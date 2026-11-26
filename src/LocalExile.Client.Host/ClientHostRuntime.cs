@@ -37,6 +37,15 @@ public sealed record ClientHostOptions
     /// <summary>Optional path for the centralized keybind registry JSON file (defaults to <c>Mods/Client/keybinds.json</c>).</summary>
     public string? KeybindsPath { get; init; }
 
+    /// <summary>Optional <c>Mods/Client</c> root directory used to auto-detect <c>.merged-cache/</c> at <c>t=0</c>.</summary>
+    public string? ModsRootDirectory { get; init; }
+
+    /// <summary>Optional explicit path to <c>Mods/Client/.merged-cache/</c> mounted at <c>t=0</c> before any mod loads.</summary>
+    public string? MergedCacheDirectory { get; init; }
+
+    /// <summary>Whether to automatically mount <c>.merged-cache/</c> at <c>t=0</c> during runtime construction (default <c>true</c>).</summary>
+    public bool AutoMountMergedCache { get; init; } = true;
+
     /// <summary>Optional structured log sink <c>(level, source, message)</c>.</summary>
     public Action<string, string, string>? LogSink { get; init; }
 
@@ -76,6 +85,7 @@ public sealed class ClientHostRuntime : IDisposable
     private readonly INetChannel _systemChannel;
     private readonly List<IDisposable> _systemSubs = [];
     private readonly Dictionary<(string WindowId, string ControlPath, string EventName), Action> _subscribedUiEvents = new(UiEventKeyComparer.Instance);
+    private IDisposable? _mergedCacheOverlayHandle;
     private bool _started;
     private bool _disposed;
     private long _frameCount;
@@ -183,6 +193,9 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Most recent <see cref="ServerHandshake"/> received from the LocalExile server, if negotiated.</summary>
     public ServerHandshake? LastServerHandshake { get; private set; }
 
+    /// <summary>Result of the <c>t=0</c> <c>Mods/Client/.merged-cache/</c> auto-mount, if a merged cache was discovered and mounted.</summary>
+    public MergedCacheMountResult? MergedCacheMount { get; private set; }
+
     /// <summary>Raised when a <see cref="ServerHandshake"/> is received and processed.</summary>
     public event Action<ServerHandshake>? HandshakeCompleted;
 
@@ -219,6 +232,16 @@ public sealed class ClientHostRuntime : IDisposable
         Opcodes = new OpcodeRegistry(_bridge);
         Content = new ContentRegistry(FileOverlayService);
         RawMemory = new RawMemoryService(Addresses, _bridge);
+
+        // t=0: mount Mods/Client/.merged-cache/ BEFORE any mod loads or game .datc64 tables are read!
+        if (_options.AutoMountMergedCache)
+        {
+            string? resolvedMergedCache = ResolveMergedCacheDirectory(_options);
+            if (!string.IsNullOrWhiteSpace(resolvedMergedCache) && Directory.Exists(resolvedMergedCache))
+            {
+                MountMergedCache(resolvedMergedCache);
+            }
+        }
 
         IClientTransport transport = CreateTransport(_options.TransportKind, _options.HostRulesetId);
         Router = new ClientChannelRouter(_bridge, Opcodes, transport);
@@ -266,7 +289,57 @@ public sealed class ClientHostRuntime : IDisposable
         Log("INFO", "host", $"NativeMods managed host started (SDK {SdkVersion.Current}, build {Addresses.BuildVersion}, transport {Router.TransportInfo.Kind}).");
     }
 
-    /// <summary>Sends a <see cref="ClientHandshake"/> advertising the extender, SDK, client build, and installed mods.</summary>
+    /// <summary>
+    /// Mounts (or remounts) a <c>Mods/Client/.merged-cache/</c> directory into <see cref="FileOverlayService"/>
+    /// and loads its <c>content-row-map.json</c> into <see cref="Content"/>.
+    /// </summary>
+    public MergedCacheMountResult MountMergedCache(string mergedCacheDirectory, int priority = 500)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mergedCacheDirectory);
+        Interlocked.Exchange(ref _mergedCacheOverlayHandle, null)?.Dispose();
+
+        MergedCacheMountResult result = FileOverlayService.MountMergedCache(mergedCacheDirectory, Content, priority, Log);
+        if (result.Mounted)
+        {
+            _mergedCacheOverlayHandle = result.OverlayHandle;
+            MergedCacheMount = result;
+        }
+        else
+        {
+            MergedCacheMount = null;
+        }
+
+        return result;
+    }
+
+    private static string? ResolveMergedCacheDirectory(ClientHostOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.MergedCacheDirectory))
+        {
+            return options.MergedCacheDirectory;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ModsRootDirectory))
+        {
+            return Path.Combine(options.ModsRootDirectory, ".merged-cache");
+        }
+
+        string? envCache = Environment.GetEnvironmentVariable("NATIVEMODS_MERGED_CACHE_DIR");
+        if (!string.IsNullOrWhiteSpace(envCache))
+        {
+            return envCache;
+        }
+
+        string? envMods = Environment.GetEnvironmentVariable("NATIVEMODS_MODS_DIR");
+        if (!string.IsNullOrWhiteSpace(envMods))
+        {
+            return Path.Combine(envMods, ".merged-cache");
+        }
+
+        return null;
+    }
+
+    /// <summary>Sends a <see cref="ClientHandshake"/> advertising the extender, SDK, client build, installed mods, and mounted content row map digest.</summary>
     public ClientHandshake SendHandshake()
     {
         var handshake = new ClientHandshake(
@@ -293,7 +366,9 @@ public sealed class ClientHostRuntime : IDisposable
                 "lifecycle.areas",
                 "itemfilter.live",
                 "camera.projection",
-            ]);
+                "content.row-map",
+            ],
+            ContentRowMapDigest: Content.ContentRowMapDigest);
 
         _systemChannel.Send(handshake);
         return handshake;
@@ -712,6 +787,7 @@ public sealed class ClientHostRuntime : IDisposable
 
         _systemSubs.Clear();
         _frameSub.Dispose();
+        Interlocked.Exchange(ref _mergedCacheOverlayHandle, null)?.Dispose();
         Tier1Handler.Dispose();
         Loader.Dispose();
         Camera.Dispose();

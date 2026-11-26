@@ -100,6 +100,20 @@ public sealed record ClientBridgeOptions
     /// <summary>Optional list of client mod ids requested by the server.</summary>
     public IReadOnlyList<string> RequiredMods { get; init; } = [];
 
+    /// <summary>
+    /// Optional SHA-256 digest of the server's expected <c>content-row-map.json</c>.
+    /// When configured (directly or via <see cref="ContentRowMap"/>), <see cref="ClientBridgeHost"/>
+    /// verifies every incoming <see cref="ClientHandshake.ContentRowMapDigest"/> and raises
+    /// <see cref="ClientBridgeHost.ContentRowMapDigestMismatch"/> rather than silently desyncing row IDs.
+    /// </summary>
+    public string? ExpectedContentRowMapDigest { get; init; }
+
+    /// <summary>
+    /// Optional server-loaded <see cref="ContentRowMap"/> whose <see cref="ContentRowMap.Digest"/> is used
+    /// when <see cref="ExpectedContentRowMapDigest"/> is not explicitly set.
+    /// </summary>
+    public ContentRowMap? ContentRowMap { get; init; }
+
     /// <summary>Server capabilities advertised in <see cref="ServerHandshake"/>.</summary>
     public IReadOnlyList<string> ServerCapabilities { get; init; } =
     [
@@ -115,8 +129,26 @@ public sealed record ClientBridgeOptions
         "tier1.area",
         "tier1.filter",
         "tier1.camera",
+        "content.row-map",
     ];
 }
+
+/// <summary>
+/// Event payload raised by <see cref="ClientBridgeHost.ContentRowMapDigestMismatch"/> when a client's
+/// <see cref="ClientHandshake.ContentRowMapDigest"/> does not match the server's expected
+/// <c>content-row-map.json</c> SHA-256 digest.
+/// </summary>
+/// <param name="ConnectionId">Unique Gateway connection identifier.</param>
+/// <param name="Session">The connected <see cref="IClientSession"/> whose digest mismatched.</param>
+/// <param name="ClientDigest">Digest advertised by the client host, or <c>null</c> if the client mounted no <c>.merged-cache/</c>.</param>
+/// <param name="ExpectedDigest">Expected SHA-256 digest configured on the server bridge.</param>
+/// <param name="Message">Human-readable diagnostic warning explaining the mismatch.</param>
+public sealed record ContentRowMapDigestMismatchEventArgs(
+    string ConnectionId,
+    IClientSession Session,
+    string? ClientDigest,
+    string? ExpectedDigest,
+    string Message);
 
 /// <summary>
 /// Server-driven UI helper bound to a specific player connection, allowing server-only mods to open
@@ -702,6 +734,18 @@ public interface IClientSession : IClientPhase1Session, IClientPhase2Session
 
     /// <summary>Client SDK version reported by this client, or <c>null</c> if stock.</summary>
     string? ClientSdkVersion { get; }
+
+    /// <summary>SHA-256 <c>content-row-map.json</c> digest reported by this client during handshake, or <c>null</c> if none.</summary>
+    string? ClientContentRowMapDigest { get; }
+
+    /// <summary>SHA-256 <c>content-row-map.json</c> digest expected by the server bridge, or <c>null</c> if not enforced.</summary>
+    string? ExpectedContentRowMapDigest { get; }
+
+    /// <summary>
+    /// <c>true</c> if <see cref="ClientContentRowMapDigest"/> matches <see cref="ExpectedContentRowMapDigest"/>,
+    /// <c>false</c> if mismatched, or <c>null</c> when the server has no expected digest configured or no handshake was received.
+    /// </summary>
+    bool? IsContentRowMapDigestMatched { get; }
 
     /// <summary>Client mods reported as installed and enabled during handshake.</summary>
     IReadOnlyCollection<InstalledClientModInfo> InstalledMods { get; }

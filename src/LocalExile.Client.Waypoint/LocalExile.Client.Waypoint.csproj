@@ -6,5 +6,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LocalExile.Client.Patcher\LocalExile.Client.Patcher.csproj" />
+    <ProjectReference Include="..\LocalExile.Client.AssetPipeline\LocalExile.Client.AssetPipeline.csproj" />
   </ItemGroup>
 </Project>

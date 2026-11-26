@@ -554,6 +554,11 @@ public sealed class LocalExileCurrencyRegistrar : IDisposable
         Action<string>? log)
     {
         Type catalogType = itemCatalog.GetType();
+        if (TryApplySingleCurrencyViaPart2bOverlay(def, itemCatalog, catalogType, log))
+        {
+            return true;
+        }
+
         FieldInfo? rowsField = catalogType.GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic);
         FieldInfo? byHashField = catalogType.GetField("_byHash", BindingFlags.Instance | BindingFlags.NonPublic);
         FieldInfo? byIdField = catalogType.GetField("_byId", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -624,6 +629,109 @@ public sealed class LocalExileCurrencyRegistrar : IDisposable
         }
 
         log?.Invoke($"[ServerBridge] Registered custom currency '{def.DisplayName}' (Row={effectiveRow}, HASH32=0x{def.TypeHash:X8}, VisualHASH16=0x{def.VisualIdentityHash16:X4}, Stack={def.MaxStackSize}, StoredMods={def.SupportsStoredMods}).");
+        return true;
+    }
+
+    private bool TryApplySingleCurrencyViaPart2bOverlay(
+        CustomCurrencyItemDefinition def,
+        object itemCatalog,
+        Type catalogType,
+        Action<string>? log)
+    {
+        MethodInfo? registerMethod = catalogType.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(m =>
+            {
+                if (!string.Equals(m.Name, "Register", StringComparison.Ordinal))
+                    return false;
+                ParameterInfo[] ps = m.GetParameters();
+                return ps.Length >= 2 && ps[0].ParameterType == typeof(string);
+            });
+
+        if (registerMethod is null)
+            return false;
+
+        // Avoid duplicate registration when already present in the catalog.
+        MethodInfo? byHashMethod = catalogType.GetMethod("ByHash", BindingFlags.Public | BindingFlags.Instance, [typeof(uint)]);
+        if (byHashMethod?.Invoke(itemCatalog, [def.TypeHash]) is not null)
+            return false;
+
+        ParameterInfo[] regParams = registerMethod.GetParameters();
+        Type baseTypeClr = regParams[1].ParameterType;
+
+        int existingCount = 0;
+        if (catalogType.GetProperty("All", BindingFlags.Public | BindingFlags.Instance)?.GetValue(itemCatalog) is ICollection allCol)
+        {
+            existingCount = allCol.Count;
+        }
+        else if (catalogType.GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(itemCatalog) is { } rowsTuple &&
+                 rowsTuple.GetType().GetField("Item1")?.GetValue(rowsTuple) is IList rowsList)
+        {
+            existingCount = rowsList.Count;
+        }
+
+        int effectiveRow = existingCount == def.BaseItemTypesRowIndex
+            ? def.BaseItemTypesRowIndex
+            : (existingCount > 0 ? existingCount : def.BaseItemTypesRowIndex);
+
+        object? baseTypeInstance = CreateBaseTypeInstance(baseTypeClr, def, effectiveRow);
+        if (baseTypeInstance is null)
+            return false;
+
+        object? optionsInstance = null;
+        if (regParams.Length >= 3)
+        {
+            Type optType = regParams[2].ParameterType;
+            ConstructorInfo? optCtor = optType.GetConstructors(BindingFlags.Public | BindingFlags.Instance)
+                .OrderByDescending(c => c.GetParameters().Length)
+                .FirstOrDefault();
+            if (optCtor is not null)
+            {
+                ParameterInfo[] ops = optCtor.GetParameters();
+                object?[] optArgs = new object?[ops.Length];
+                for (int i = 0; i < ops.Length; i++)
+                {
+                    string? pName = ops[i].Name;
+                    if (string.Equals(pName, "VisualIdentityId", StringComparison.OrdinalIgnoreCase))
+                        optArgs[i] = def.VisualIdentityId;
+                    else if (string.Equals(pName, "CurrencyAction", StringComparison.OrdinalIgnoreCase))
+                        optArgs[i] = string.IsNullOrWhiteSpace(def.CurrencyAction) ? null : def.CurrencyAction;
+                    else
+                        optArgs[i] = ops[i].HasDefaultValue ? ops[i].DefaultValue : GetDefaultValue(ops[i].ParameterType);
+                }
+
+                optionsInstance = optCtor.Invoke(optArgs);
+            }
+        }
+
+        string ownerId = $"nativemods.currency.{def.BaseItemTypeId}";
+        object?[] invokeArgs = new object?[regParams.Length];
+        invokeArgs[0] = ownerId;
+        invokeArgs[1] = baseTypeInstance;
+        if (regParams.Length >= 3)
+            invokeArgs[2] = optionsInstance;
+
+        IDisposable? baseHandle = registerMethod.Invoke(itemCatalog, invokeArgs) as IDisposable;
+
+        IDisposable? visualHandle = null;
+        if (!string.IsNullOrWhiteSpace(def.VisualIdentityId))
+        {
+            MethodInfo? regVisual = catalogType.GetMethod(
+                "RegisterVisual",
+                BindingFlags.Public | BindingFlags.Instance,
+                [typeof(string), typeof(string), typeof(ushort)]);
+            visualHandle = regVisual?.Invoke(itemCatalog, [ownerId, def.VisualIdentityId, def.VisualIdentityHash16]) as IDisposable;
+        }
+
+        lock (_gate)
+        {
+            _cleanupActions.Add(() =>
+            {
+                visualHandle?.Dispose();
+                baseHandle?.Dispose();
+            });
+        }
+
+        log?.Invoke($"[ServerBridge] Registered custom currency '{def.DisplayName}' via Part 2b ItemCatalog.Register (Row={effectiveRow}, HASH32=0x{def.TypeHash:X8}, VisualHASH16=0x{def.VisualIdentityHash16:X4}, Stack={def.MaxStackSize}, StoredMods={def.SupportsStoredMods}).");
         return true;
     }
 

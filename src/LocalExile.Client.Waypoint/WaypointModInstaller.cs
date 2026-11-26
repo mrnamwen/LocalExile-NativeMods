@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LocalExile.Client.AssetPipeline.Dat64;
 
 namespace LocalExile.Client.Waypoint;
 
@@ -29,7 +30,35 @@ public sealed record InstallOptions
 
     /// <summary>Whether to enable the mod in <c>Mods/Binaries/mod-state.txt</c> upon install (null uses manifest default).</summary>
     public bool? EnableOnInstall { get; init; }
+
+    /// <summary>
+    /// Optional stock PoE 3.29 client or <c>Data/</c> directory used by <see cref="DatPatchMerger"/>
+    /// to build <c>Mods/Client/.merged-cache/</c> when installed mods declare <c>nativeClient.datPatches</c>.
+    /// When omitted, <see cref="WaypointModInstaller"/> checks <c>&lt;localExileRoot&gt;/Client</c> automatically.
+    /// </summary>
+    public string? StockClientDirectory { get; init; }
+
+    /// <summary>
+    /// Optional explicit <see cref="IDat64Source"/> supplying stock <c>.datc64</c> tables for
+    /// <see cref="DatPatchMerger"/> (takes precedence over <see cref="StockClientDirectory"/>).
+    /// </summary>
+    public IDat64Source? Dat64Source { get; init; }
+
+    /// <summary>
+    /// Whether to deterministically build or update <c>Mods/Client/.merged-cache/</c> whenever installed mods
+    /// declare <c>nativeClient.datPatches</c> and a stock <c>.datc64</c> source is available (default <c>true</c>).
+    /// </summary>
+    public bool RebuildMergedCache { get; init; } = true;
 }
+
+/// <summary>Result of rebuilding <c>Mods/Client/.merged-cache/</c> via <see cref="DatPatchMerger"/>.</summary>
+public sealed record MergedCacheBuildResult(
+    bool Built,
+    string MergedCacheDirectory,
+    string? Digest,
+    IReadOnlyList<string> IncludedMods,
+    IReadOnlyList<string> MergedTables,
+    IReadOnlyList<string> GeneratedOverlays);
 
 /// <summary>A single file recorded in the deployment ledger.</summary>
 public sealed record DeployedFileRecord(
@@ -56,13 +85,16 @@ public sealed record InstalledDualModRecord(
     [property: JsonPropertyName("customControls")] IReadOnlyList<string> CustomControls,
     [property: JsonPropertyName("contentRegistries")] IReadOnlyList<ContentRegistryDeclaration> ContentRegistries,
     [property: JsonPropertyName("manifest")] DualModManifest Manifest,
-    [property: JsonPropertyName("files")] IReadOnlyList<DeployedFileRecord> Files);
+    [property: JsonPropertyName("files")] IReadOnlyList<DeployedFileRecord> Files,
+    [property: JsonPropertyName("datPatches")] IReadOnlyList<string>? DatPatches = null);
 
 /// <summary>Persistent deployment ledger stored at <c>&lt;serverRoot&gt;/Mods/Client/.nativemods-ledger.json</c>.</summary>
 public sealed record DeploymentLedger(
     [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
     [property: JsonPropertyName("updatedUtc")] DateTimeOffset UpdatedUtc,
-    [property: JsonPropertyName("mods")] IReadOnlyList<InstalledDualModRecord> Mods);
+    [property: JsonPropertyName("mods")] IReadOnlyList<InstalledDualModRecord> Mods,
+    [property: JsonPropertyName("mergedCacheDigest")] string? MergedCacheDigest = null,
+    [property: JsonPropertyName("mergedCacheUpdatedUtc")] DateTimeOffset? MergedCacheUpdatedUtc = null);
 
 /// <summary>
 /// Human-readable and machine-readable audit report returned by <see cref="WaypointModInstaller"/>
@@ -90,7 +122,9 @@ public sealed record InstallAuditReport(
     string? ServerTargetDir,
     string? ClientTargetDir,
     string? BundleFile,
-    string? FailureReason = null)
+    string? FailureReason = null,
+    IReadOnlyList<string>? DatPatches = null,
+    string? MergedCacheDigest = null)
 {
     public string ToHumanReadableSummary()
     {
@@ -122,6 +156,10 @@ public sealed record InstallAuditReport(
             sb.AppendLine(inv, $"Custom UI Controls: {string.Join(", ", CustomControls)}");
         if (ContentRegistries.Count > 0)
             sb.AppendLine(inv, $"Content Registries: {string.Join(", ", ContentRegistries.Select(r => $"{r.Table}:{r.EntryId} ({r.Mode})"))}");
+        if (DatPatches is { Count: > 0 })
+            sb.AppendLine(inv, $"Declarative Dat Patches: {string.Join(", ", DatPatches)}");
+        if (!string.IsNullOrWhiteSpace(MergedCacheDigest))
+            sb.AppendLine(inv, $"Merged Cache Digest: {MergedCacheDigest}");
 
         if (Conflicts.Count > 0)
         {
@@ -172,12 +210,16 @@ public sealed class WaypointModInstaller
 {
     public const string LedgerFileName = ".nativemods-ledger.json";
     public const string ModStateFileName = "mod-state.txt";
+    public const string MergedCacheDirectoryName = ".merged-cache";
 
     public static string GetServerBinariesRoot(string localExileRoot) =>
         Path.Combine(localExileRoot, "Mods", "Binaries");
 
     public static string GetClientModsRoot(string localExileRoot) =>
         Path.Combine(localExileRoot, "Mods", "Client");
+
+    public static string GetMergedCacheDirectory(string localExileRoot) =>
+        Path.Combine(GetClientModsRoot(localExileRoot), MergedCacheDirectoryName);
 
     public static string GetLedgerPath(string localExileRoot) =>
         Path.Combine(GetClientModsRoot(localExileRoot), LedgerFileName);
@@ -243,7 +285,34 @@ public sealed class WaypointModInstaller
             .Append(manifest)
             .ToList();
 
-        var conflicts = DualModPackageValidator.DetectConflicts(otherManifests);
+        var conflicts = DualModPackageValidator.DetectConflicts(otherManifests).ToList();
+
+        // Also detect cross-mod .datpatch.json entryKey / dead-stat slot collisions (two mods targeting the
+        // SAME .datc64 table with distinct entryKeys produce ZERO conflicts!).
+        var allDatPatches = new List<DatPatchDocument>();
+        foreach (InstalledDualModRecord installed in ledger.Mods)
+        {
+            if (installed.Id.Equals(manifest.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (TryLoadInstalledModDatPatch(localExileRoot, installed) is { } installedPatch)
+            {
+                allDatPatches.Add(installedPatch);
+            }
+        }
+
+        if (TryLoadPackageDatPatch(packageDir, manifest) is { } candidatePatch)
+        {
+            allDatPatches.Add(candidatePatch);
+        }
+
+        if (allDatPatches.Count > 1)
+        {
+            conflicts.AddRange(DualModPackageValidator.DetectDatPatchConflicts(allDatPatches));
+        }
+
         var nc = manifest.NativeClient;
 
         bool hasBlockingValidationErrors = allowAutoNormalizedEncErrors
@@ -280,7 +349,8 @@ public sealed class WaypointModInstaller
             ServerTargetDir: Path.Combine(GetServerBinariesRoot(localExileRoot), manifest.Id),
             ClientTargetDir: nc is not null ? Path.Combine(GetClientModsRoot(localExileRoot), manifest.Id) : null,
             BundleFile: null,
-            FailureReason: failureReason);
+            FailureReason: failureReason,
+            DatPatches: nc?.DatPatches ?? []);
     }
 
     /// <summary>
@@ -470,25 +540,85 @@ public sealed class WaypointModInstaller
             manifest.NativeClient?.CustomControls ?? [],
             manifest.NativeClient?.ContentRegistries ?? [],
             manifest,
-            deployedFiles));
+            deployedFiles,
+            manifest.NativeClient?.DatPatches ?? []));
 
         updatedMods = updatedMods.OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase).ToList();
-        WriteLedger(localExileRoot, new DeploymentLedger(1, DateTimeOffset.UtcNow, updatedMods));
+
+        // 5. Deterministically build/update Mods/Client/.merged-cache/ when installed mods declare datPatches
+        string? mergedCacheDigest = ledger.MergedCacheDigest;
+        DateTimeOffset? mergedCacheUpdatedUtc = ledger.MergedCacheUpdatedUtc;
+        if (options.RebuildMergedCache)
+        {
+            MergedCacheBuildResult? buildResult = TryRebuildMergedCacheForMods(localExileRoot, updatedMods, options);
+            if (buildResult is not null)
+            {
+                mergedCacheDigest = buildResult.Digest;
+                mergedCacheUpdatedUtc = buildResult.Built ? DateTimeOffset.UtcNow : null;
+            }
+        }
+
+        WriteLedger(localExileRoot, new DeploymentLedger(1, DateTimeOffset.UtcNow, updatedMods, mergedCacheDigest, mergedCacheUpdatedUtc));
 
         return audit with
         {
             Succeeded = true,
             DeployedFiles = deployedFiles,
-            BundleFile = deployedBundleFile
+            BundleFile = deployedBundleFile,
+            MergedCacheDigest = mergedCacheDigest,
         };
     }
 
     /// <summary>
-    /// Cleanly uninstalls a dual-side mod from both <c>Mods/Binaries/&lt;id&gt;/</c> and <c>Mods/Client/&lt;id&gt;/</c>,
-    /// removes it from <c>mod-state.txt</c> and the deployment ledger, and never touches stock client files.
+    /// Deterministically rebuilds <c>Mods/Client/.merged-cache/</c> from all currently installed mods'
+    /// declared <c>datPatches</c> using <paramref name="source"/> and updates the ledger's recorded digest.
     /// </summary>
     [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Uniform instance service API for Waypoint DI/composition.")]
-    public UninstallResult Uninstall(string modId, string localExileRoot)
+    public MergedCacheBuildResult RebuildMergedCache(string localExileRoot, IDat64Source source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(localExileRoot);
+        ArgumentNullException.ThrowIfNull(source);
+
+        var ledger = ReadLedger(localExileRoot);
+        MergedCacheBuildResult result = BuildMergedCacheCore(localExileRoot, ledger.Mods, source);
+        WriteLedger(
+            localExileRoot,
+            new DeploymentLedger(
+                ledger.SchemaVersion,
+                DateTimeOffset.UtcNow,
+                ledger.Mods,
+                result.Digest,
+                result.Built ? DateTimeOffset.UtcNow : null));
+        return result;
+    }
+
+    /// <summary>
+    /// Deterministically rebuilds <c>Mods/Client/.merged-cache/</c> from all currently installed mods'
+    /// declared <c>datPatches</c> using stock tables in <paramref name="stockClientDirectory"/> and updates the ledger.
+    /// </summary>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Uniform instance service API for Waypoint DI/composition.")]
+    public MergedCacheBuildResult RebuildMergedCache(string localExileRoot, string stockClientDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stockClientDirectory);
+        using var source = new DirectoryDat64Source(stockClientDirectory);
+        return RebuildMergedCache(localExileRoot, source);
+    }
+
+    /// <summary>
+    /// Cleanly uninstalls a dual-side mod from both <c>Mods/Binaries/&lt;id&gt;/</c> and <c>Mods/Client/&lt;id&gt;/</c>,
+    /// removes it from <c>mod-state.txt</c> and the deployment ledger, updates or cleans <c>.merged-cache/</c>,
+    /// and never touches stock client files.
+    /// </summary>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Uniform instance service API for Waypoint DI/composition.")]
+    public UninstallResult Uninstall(string modId, string localExileRoot) =>
+        Uninstall(modId, localExileRoot, options: null);
+
+    /// <summary>
+    /// Cleanly uninstalls a dual-side mod and rebuilds (or removes) <c>Mods/Client/.merged-cache/</c> using
+    /// optional stock source settings from <paramref name="options"/>.
+    /// </summary>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Uniform instance service API for Waypoint DI/composition.")]
+    public UninstallResult Uninstall(string modId, string localExileRoot, InstallOptions? options)
     {
         if (!DualModManifest.IsValidId(modId))
             return new(false, modId, false, false, $"Invalid mod id '{modId}'.");
@@ -525,7 +655,20 @@ public sealed class WaypointModInstaller
             var remaining = ledger.Mods
                 .Where(m => !m.Id.Equals(modId, StringComparison.OrdinalIgnoreCase))
                 .ToList();
-            WriteLedger(localExileRoot, new DeploymentLedger(1, DateTimeOffset.UtcNow, remaining));
+
+            string? mergedCacheDigest = ledger.MergedCacheDigest;
+            DateTimeOffset? mergedCacheUpdatedUtc = ledger.MergedCacheUpdatedUtc;
+            if (options?.RebuildMergedCache ?? true)
+            {
+                MergedCacheBuildResult? buildResult = TryRebuildMergedCacheForMods(localExileRoot, remaining, options ?? new InstallOptions());
+                if (buildResult is not null)
+                {
+                    mergedCacheDigest = buildResult.Digest;
+                    mergedCacheUpdatedUtc = buildResult.Built ? DateTimeOffset.UtcNow : null;
+                }
+            }
+
+            WriteLedger(localExileRoot, new DeploymentLedger(1, DateTimeOffset.UtcNow, remaining, mergedCacheDigest, mergedCacheUpdatedUtc));
         }
 
         if (!removedServer && !removedClient && !wasInLedger)
@@ -648,15 +791,23 @@ public sealed class WaypointModInstaller
         string? bundleFileName = null;
         if (Directory.Exists(sourcePayloadDir))
         {
-            if (options.DeployLooseOverlays)
+            if (options.DeployLooseOverlays || nc.DatPatches.Count > 0)
             {
                 string filesDest = Path.Combine(clientStaging, "files");
                 Directory.CreateDirectory(filesDest);
+                var declaredDatPatches = new HashSet<string>(
+                    nc.DatPatches.Select(DualModPackageValidator.NormalizeVirtualPath),
+                    StringComparer.OrdinalIgnoreCase);
 
                 foreach (string srcFile in Directory.EnumerateFiles(sourcePayloadDir, "*", SearchOption.AllDirectories))
                 {
-                    string rel = DualModPackageValidator.NormalizeVirtualPath(Path.GetRelativePath(sourcePayloadDir, srcFile))
-                        .ToLowerInvariant();
+                    string rawRel = DualModPackageValidator.NormalizeVirtualPath(Path.GetRelativePath(sourcePayloadDir, srcFile));
+                    if (!options.DeployLooseOverlays && !declaredDatPatches.Contains(rawRel))
+                    {
+                        continue;
+                    }
+
+                    string rel = rawRel.ToLowerInvariant();
                     string dest = Path.Combine(filesDest, Path.Combine(rel.Split('/')));
                     Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
 
@@ -730,6 +881,274 @@ public sealed class WaypointModInstaller
 
         if (backupDir is not null && Directory.Exists(backupDir))
             Directory.Delete(backupDir, recursive: true);
+    }
+
+    private static MergedCacheBuildResult? TryRebuildMergedCacheForMods(
+        string localExileRoot,
+        IReadOnlyList<InstalledDualModRecord> installedMods,
+        InstallOptions options)
+    {
+        var patches = CollectInstalledModDatPatches(localExileRoot, installedMods);
+        string mergedCacheDir = GetMergedCacheDirectory(localExileRoot);
+
+        if (patches.Count == 0)
+        {
+            if (Directory.Exists(mergedCacheDir))
+            {
+                Directory.Delete(mergedCacheDir, recursive: true);
+            }
+
+            return new MergedCacheBuildResult(false, mergedCacheDir, null, [], [], []);
+        }
+
+        if (options.Dat64Source is not null)
+        {
+            return BuildMergedCacheCore(localExileRoot, installedMods, options.Dat64Source, patches);
+        }
+
+        string? stockDir = ResolveStockClientDirectory(localExileRoot, options.StockClientDirectory);
+        if (stockDir is null)
+        {
+            return null;
+        }
+
+        using var dirSource = new DirectoryDat64Source(stockDir);
+        return BuildMergedCacheCore(localExileRoot, installedMods, dirSource, patches);
+    }
+
+    private static MergedCacheBuildResult BuildMergedCacheCore(
+        string localExileRoot,
+        IReadOnlyList<InstalledDualModRecord> installedMods,
+        IDat64Source source,
+        List<DatPatchDocument>? preloadedPatches = null)
+    {
+        List<DatPatchDocument> patches = preloadedPatches ?? CollectInstalledModDatPatches(localExileRoot, installedMods);
+        string clientRoot = GetClientModsRoot(localExileRoot);
+        string mergedCacheDir = GetMergedCacheDirectory(localExileRoot);
+        EnsureWithinDirectory(mergedCacheDir, clientRoot);
+
+        if (patches.Count == 0)
+        {
+            if (Directory.Exists(mergedCacheDir))
+            {
+                Directory.Delete(mergedCacheDir, recursive: true);
+            }
+
+            return new MergedCacheBuildResult(false, mergedCacheDir, null, [], [], []);
+        }
+
+        Directory.CreateDirectory(clientRoot);
+        string stagingDir = Path.Combine(clientRoot, $".staging-merged-cache-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stagingDir);
+        try
+        {
+            DatPatchMergeResult mergeResult = DatPatchMerger.Merge(source, patches, outputDirectory: stagingDir);
+            SwapDirectoryAtomically(stagingDir, mergedCacheDir);
+
+            return new MergedCacheBuildResult(
+                Built: true,
+                MergedCacheDirectory: mergedCacheDir,
+                Digest: mergeResult.RowMap.Digest,
+                IncludedMods: mergeResult.RowMap.Mods,
+                MergedTables: mergeResult.MergedTables.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray(),
+                GeneratedOverlays: mergeResult.GeneratedOverlays.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray());
+        }
+        finally
+        {
+            if (Directory.Exists(stagingDir))
+                try { Directory.Delete(stagingDir, recursive: true); } catch { }
+        }
+    }
+
+    private static string? ResolveStockClientDirectory(string localExileRoot, string? configuredStockDir)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredStockDir) && Directory.Exists(configuredStockDir))
+        {
+            return configuredStockDir;
+        }
+
+        string defaultClientDir = Path.Combine(localExileRoot, "Client");
+        if (Directory.Exists(defaultClientDir) &&
+            (File.Exists(Path.Combine(defaultClientDir, "Bundles2", "_.index.bin")) ||
+             Directory.Exists(Path.Combine(defaultClientDir, "Data"))))
+        {
+            return defaultClientDir;
+        }
+
+        return null;
+    }
+
+    private static List<DatPatchDocument> CollectInstalledModDatPatches(
+        string localExileRoot,
+        IReadOnlyList<InstalledDualModRecord> installedMods)
+    {
+        var patches = new List<DatPatchDocument>();
+        foreach (InstalledDualModRecord mod in installedMods.OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase))
+        {
+            if (TryLoadInstalledModDatPatch(localExileRoot, mod) is { } doc)
+            {
+                patches.Add(doc);
+            }
+        }
+
+        return patches;
+    }
+
+    private static DatPatchDocument? TryLoadInstalledModDatPatch(string localExileRoot, InstalledDualModRecord installed)
+    {
+        IReadOnlyList<string> patchPaths = installed.DatPatches is { Count: > 0 }
+            ? installed.DatPatches
+            : (installed.Manifest.NativeClient?.DatPatches ?? []);
+
+        if (patchPaths.Count == 0)
+        {
+            return null;
+        }
+
+        string clientModDir = !string.IsNullOrWhiteSpace(installed.ClientDir)
+            ? Path.Combine(localExileRoot, Path.Combine(installed.ClientDir.Replace('\\', '/').Split('/')))
+            : Path.Combine(GetClientModsRoot(localExileRoot), installed.Id);
+
+        string filesDir = Path.Combine(clientModDir, "files");
+        var docs = new List<DatPatchDocument>();
+        foreach (string rawRel in patchPaths)
+        {
+            string normalized = DualModPackageValidator.NormalizeVirtualPath(rawRel);
+            string exactPath = Path.Combine(filesDir, Path.Combine(normalized.Split('/')));
+            string lowerPath = Path.Combine(filesDir, Path.Combine(normalized.ToLowerInvariant().Split('/')));
+            string? resolved = File.Exists(exactPath) ? exactPath : File.Exists(lowerPath) ? lowerPath : null;
+            if (resolved is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                docs.Add(DatPatchDocument.LoadFromFile(resolved));
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+            {
+                // Ignore corrupted/stale patch files during audit/rebuild discovery; validator surfaces errors.
+            }
+        }
+
+        return ConsolidateModDatPatches(installed.Id, installed.Manifest.Depends, docs);
+    }
+
+    private static DatPatchDocument? TryLoadPackageDatPatch(string packageDir, DualModManifest manifest)
+    {
+        NativeClientManifest? nc = manifest.NativeClient;
+        if (nc is null || nc.DatPatches.Count == 0)
+        {
+            return null;
+        }
+
+        string payloadDirRel = string.IsNullOrWhiteSpace(nc.PayloadDir) ? "client" : nc.PayloadDir;
+        string payloadDir = Path.Combine(packageDir, Path.Combine(payloadDirRel.Replace('\\', '/').Split('/')));
+        var docs = new List<DatPatchDocument>();
+
+        foreach (string rawRel in nc.DatPatches)
+        {
+            string normalized = DualModPackageValidator.NormalizeVirtualPath(rawRel);
+            string fullPath = Path.Combine(payloadDir, Path.Combine(normalized.Split('/')));
+            if (!File.Exists(fullPath))
+            {
+                continue;
+            }
+
+            try
+            {
+                docs.Add(DatPatchDocument.LoadFromFile(fullPath));
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
+            {
+                // Validation diagnostics already report syntax errors.
+            }
+        }
+
+        return ConsolidateModDatPatches(manifest.Id, manifest.Depends, docs);
+    }
+
+    private static DatPatchDocument? ConsolidateModDatPatches(
+        string modId,
+        IReadOnlyList<string> manifestDepends,
+        List<DatPatchDocument> docs)
+    {
+        if (docs.Count == 0)
+        {
+            return null;
+        }
+
+        var depends = new List<string>();
+        var seenDepends = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void AddDep(string dep)
+        {
+            if (string.IsNullOrWhiteSpace(dep) ||
+                dep.Equals("Game", StringComparison.OrdinalIgnoreCase) ||
+                dep.Equals(modId, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (seenDepends.Add(dep.Trim()))
+            {
+                depends.Add(dep.Trim());
+            }
+        }
+
+        foreach (string dep in manifestDepends)
+        {
+            AddDep(dep);
+        }
+
+        var mergedTables = new Dictionary<string, (List<DatAppendEntry> Appends, List<DatModifyEntry> Modifies)>(StringComparer.OrdinalIgnoreCase);
+        var mergedDeadStats = new List<DeadStatAllocationSpec>();
+
+        foreach (DatPatchDocument doc in docs)
+        {
+            foreach (string dep in doc.Depends)
+            {
+                AddDep(dep);
+            }
+
+            foreach (var (tableName, tablePatch) in doc.Tables)
+            {
+                if (tablePatch is null)
+                {
+                    continue;
+                }
+
+                if (!mergedTables.TryGetValue(tableName, out var lists))
+                {
+                    lists = ([], []);
+                    mergedTables[tableName] = lists;
+                }
+
+                lists.Appends.AddRange(tablePatch.Append);
+                lists.Modifies.AddRange(tablePatch.Modify);
+            }
+
+            mergedDeadStats.AddRange(doc.AllocateDeadStat);
+        }
+
+        var finalTables = new Dictionary<string, DatTablePatch>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (tableName, (appends, modifies)) in mergedTables)
+        {
+            finalTables[tableName] = new DatTablePatch
+            {
+                Append = appends,
+                Modify = modifies,
+            };
+        }
+
+        return new DatPatchDocument
+        {
+            SchemaVersion = DatPatchDocument.CurrentSchemaVersion,
+            ModId = modId,
+            Depends = depends,
+            Tables = finalTables,
+            AllocateDeadStat = mergedDeadStats,
+        };
     }
 
     private static void EnsureWithinDirectory(string candidatePath, string rootDir)

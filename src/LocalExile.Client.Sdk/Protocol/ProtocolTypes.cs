@@ -47,7 +47,8 @@ public sealed record ClientHandshake(
     string BuildVersion,
     int ProtocolVersion,
     IReadOnlyList<InstalledClientModInfo> InstalledMods,
-    IReadOnlyList<string> Capabilities);
+    IReadOnlyList<string> Capabilities,
+    string? ContentRowMapDigest = null);
 
 /// <summary>
 /// Handshake response sent from the LocalExile server bridge to the client host.
@@ -59,7 +60,8 @@ public sealed record ServerHandshake(
     byte HostRulesetId,
     NetTransportKind PreferredTransport,
     IReadOnlyList<string> RequiredMods,
-    IReadOnlyList<string> ServerCapabilities);
+    IReadOnlyList<string> ServerCapabilities,
+    string? ExpectedContentRowMapDigest = null);
 
 /// <summary>
 /// Closed set of server-driven client UI/media operations available even without a custom client mod DLL.

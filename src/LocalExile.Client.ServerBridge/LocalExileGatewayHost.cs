@@ -175,6 +175,76 @@ public sealed record GatewayVendorQuoteResult(
     object? RawResult = null);
 
 /// <summary>
+/// Declarative descriptor for registering a custom base item into LocalExile Part 2b's <c>ItemCatalog.RegisterOverlay</c>
+/// via reflection (zero hard compile-time dependency on <c>GameServer.Gateway</c>).
+/// </summary>
+public sealed record GatewayCustomBaseItemRegistration(
+    string MetadataPath,
+    string Name,
+    string ItemClass,
+    int Width = 1,
+    int Height = 1,
+    int DropLevel = 1,
+    int StackSize = 1,
+    uint? Hash32 = null,
+    int? RowIndex = null,
+    IReadOnlyList<string>? Tags = null,
+    IReadOnlyDictionary<string, object?>? ExtraProperties = null,
+    ushort VisualIdentityHash = 0,
+    string? VisualIdentityId = null,
+    IReadOnlyList<string>? Components = null,
+    int MaxCharges = 0,
+    int FullStackRow = -1,
+    string? CurrencyAction = null,
+    uint? NameWordHash = null);
+
+/// <summary>
+/// Declarative descriptor for registering a custom unique item into LocalExile Part 2b's <c>UniqueCatalog.RegisterOverlay</c>
+/// via reflection (zero hard compile-time dependency on <c>GameServer.Gateway</c>).
+/// </summary>
+public sealed record GatewayCustomUniqueRegistration(
+    string UniqueId,
+    string Name,
+    string BaseItemMetadataPath,
+    int DropLevel = 1,
+    double Weight = 100.0,
+    IReadOnlyList<string>? ImplicitModIds = null,
+    IReadOnlyList<string>? ExplicitModIds = null,
+    string? FlavourText = null,
+    ushort? VisualIdentityHash = null,
+    IReadOnlyDictionary<string, object?>? ExtraProperties = null,
+    byte ItemLevel = 86,
+    string? CustomName = null,
+    uint? NameWordHash = null,
+    double? RuthlessDropWeight = null);
+
+/// <summary>
+/// Declarative descriptor for registering a custom drop-pool entry into LocalExile Part 2b's
+/// <c>DropPoolOverlays.Register</c> / <c>DropDataProvider.Default.Overlays</c> via reflection
+/// (zero hard compile-time dependency on <c>GameServer.Gateway</c>).
+/// </summary>
+public sealed record GatewayDropPoolEntryRegistration(
+    string PoolId,
+    string EntryKey,
+    string ItemMetadataPath,
+    double Weight = 100.0,
+    int MinAreaLevel = 1,
+    int? MaxAreaLevel = null,
+    bool IsUnique = false,
+    IReadOnlyList<string>? RequiredAreaTags = null,
+    IReadOnlyDictionary<string, object?>? ExtraProperties = null,
+    string? Monsters = null,
+    string? Sources = null,
+    IReadOnlyList<string>? MonsterArchetypes = null,
+    IReadOnlyList<string>? Leagues = null,
+    bool? HardModeOnly = null,
+    double? Chance = null,
+    ushort StackSize = 1,
+    bool ExceptionalGem = false,
+    bool AtlasOnly = false,
+    bool? IsUtilityFlask = null);
+
+/// <summary>
 /// Abstraction over LocalExile's <c>global::Client</c>, <c>global::GameEvents</c>, and <c>global::Program</c>
 /// allowing <see cref="LocalExileGatewayHost"/> and <see cref="LocalExileGatewaySink"/> to work both via
 /// cached reflection against live Gateway assemblies and with fake adapters in unit tests.
@@ -240,6 +310,21 @@ public interface ILocalExileGatewayAdapter
 
     /// <summary>Evaluates a vendor sale quote via <c>GameEvents.QuoteVendor</c> (LocalExile Core Hooks Part 2a) if available.</summary>
     GatewayVendorQuoteResult? TryQuoteVendor(object player, IEnumerable offeredItems) => null;
+
+    /// <summary>
+    /// Returns <c>true</c> when LocalExile Part 2b custom catalog / drop-pool registration hooks
+    /// (<c>ItemCatalog</c>, <c>UniqueCatalog</c>, or drop-pool registry) are available in the loaded Gateway.
+    /// </summary>
+    bool SupportsCatalogRegistration => false;
+
+    /// <summary>Registers a custom base item in LocalExile Part 2b's <c>ItemCatalog</c> if available.</summary>
+    IDisposable? TryRegisterCustomBaseItem(string ownerId, GatewayCustomBaseItemRegistration registration) => null;
+
+    /// <summary>Registers a custom unique item in LocalExile Part 2b's <c>UniqueCatalog</c> if available.</summary>
+    IDisposable? TryRegisterCustomUnique(string ownerId, GatewayCustomUniqueRegistration registration) => null;
+
+    /// <summary>Registers a declarative loot drop-pool entry in LocalExile Part 2b's drop-pool registry if available.</summary>
+    IDisposable? TryRegisterDropPoolEntry(string ownerId, GatewayDropPoolEntryRegistration registration) => null;
 }
 
 /// <summary>
@@ -679,6 +764,48 @@ public sealed class LocalExileGatewayHost : IDisposable
         return _adapter.TryQuoteVendor(player, offeredItems);
     }
 
+    /// <summary>
+    /// Returns <c>true</c> when the loaded Gateway exposes Part 2b <c>ItemCatalog</c>, <c>UniqueCatalog</c>,
+    /// or drop-pool registration entry points.
+    /// </summary>
+    public bool SupportsCatalogRegistration => _adapter.SupportsCatalogRegistration;
+
+    /// <summary>
+    /// Registers a custom base item into LocalExile Part 2b's <c>ItemCatalog</c> via reflection and tracks the
+    /// returned <see cref="IDisposable"/> for automatic cleanup on unload. Returns <c>null</c> when running on an
+    /// older Gateway build without Part 2b catalog hooks.
+    /// </summary>
+    public IDisposable? RegisterCustomBaseItem(GatewayCustomBaseItemRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        IDisposable? sub = _adapter.TryRegisterCustomBaseItem(OwnerId, registration);
+        return sub is not null ? TrackSubscription(sub) : null;
+    }
+
+    /// <summary>
+    /// Registers a custom unique item into LocalExile Part 2b's <c>UniqueCatalog</c> via reflection and tracks the
+    /// returned <see cref="IDisposable"/> for automatic cleanup on unload. Returns <c>null</c> when running on an
+    /// older Gateway build without Part 2b catalog hooks.
+    /// </summary>
+    public IDisposable? RegisterCustomUnique(GatewayCustomUniqueRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        IDisposable? sub = _adapter.TryRegisterCustomUnique(OwnerId, registration);
+        return sub is not null ? TrackSubscription(sub) : null;
+    }
+
+    /// <summary>
+    /// Registers a declarative drop-pool entry into LocalExile Part 2b's drop-pool registry via reflection and
+    /// tracks the returned <see cref="IDisposable"/> for automatic cleanup on unload. Returns <c>null</c> when
+    /// running on an older Gateway build without Part 2b drop-pool hooks.
+    /// </summary>
+    public IDisposable? RegisterDropPoolEntry(GatewayDropPoolEntryRegistration registration)
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        IDisposable? sub = _adapter.TryRegisterDropPoolEntry(OwnerId, registration);
+        return sub is not null ? TrackSubscription(sub) : null;
+    }
+
     private void HookGatewayTransportAndLifecycle()
     {
         if (_options.UseCoreClientChannel && _adapter.SupportsCoreClientChannel)
@@ -955,6 +1082,13 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
     private readonly ConditionalWeakTable<Assembly, GatewayTypes> _typesByAssembly = new();
 
     public bool SupportsCoreClientChannel => ResolveTypes(_defaultHintAssembly)?.ClientType is not null;
+
+    public bool SupportsCatalogRegistration =>
+        ResolveTypes(_defaultHintAssembly) is { } t &&
+        (t.ItemCatalogRegister is not null ||
+         t.UniqueCatalogRegister is not null ||
+         t.DropPoolRegister is not null ||
+         t.DropDataProviderType is not null);
 
     public string? TryGetOwnerId(object modContext)
     {
@@ -1395,6 +1529,414 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
         return new GatewayVendorQuoteResult(rewards, recipes, error, rawResult);
     }
 
+    public IDisposable? TryRegisterCustomBaseItem(string ownerId, GatewayCustomBaseItemRegistration registration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        ArgumentNullException.ThrowIfNull(registration);
+
+        GatewayTypes? types = ResolveTypes();
+        if (types?.ItemCatalogRegister is not { } method)
+        {
+            return null;
+        }
+
+        uint hash32 = registration.Hash32 ?? PoeContentHash.MurmurHash2(registration.MetadataPath);
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["OwnerId"] = ownerId,
+            ["Owner"] = ownerId,
+            ["ModId"] = ownerId,
+            ["Row"] = registration.RowIndex ?? 0,
+            ["RowIndex"] = registration.RowIndex ?? 0,
+            ["MetadataPath"] = registration.MetadataPath,
+            ["Id"] = registration.MetadataPath,
+            ["BaseId"] = registration.MetadataPath,
+            ["Name"] = registration.Name,
+            ["Hash"] = hash32,
+            ["Hash32"] = hash32,
+            ["ItemClass"] = registration.ItemClass,
+            ["Class"] = registration.ItemClass,
+            ["Width"] = registration.Width,
+            ["Height"] = registration.Height,
+            ["VisualIdentity"] = registration.VisualIdentityHash,
+            ["VisualIdentityId"] = registration.VisualIdentityId,
+            ["Components"] = registration.Components ?? [],
+            ["MaxCharges"] = registration.MaxCharges,
+            ["DropLevel"] = registration.DropLevel,
+            ["StackSize"] = registration.StackSize,
+            ["MaxStack"] = registration.StackSize,
+            ["FullStackRow"] = registration.FullStackRow,
+            ["CurrencyAction"] = registration.CurrencyAction,
+            ["NameWordHash"] = registration.NameWordHash,
+            ["Tags"] = registration.Tags ?? [],
+        };
+        MergeExtraProperties(values, registration.ExtraProperties);
+        return InvokeCatalogRegisterMethod(method, targetInstance: null, ownerId, values);
+    }
+
+    public IDisposable? TryRegisterCustomUnique(string ownerId, GatewayCustomUniqueRegistration registration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        ArgumentNullException.ThrowIfNull(registration);
+
+        GatewayTypes? types = ResolveTypes();
+        if (types?.UniqueCatalogRegister is not { } method)
+        {
+            return null;
+        }
+
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["OwnerId"] = ownerId,
+            ["Owner"] = ownerId,
+            ["ModId"] = ownerId,
+            ["UniqueId"] = registration.UniqueId,
+            ["Id"] = registration.UniqueId,
+            ["Name"] = registration.Name,
+            ["BaseTypeId"] = registration.BaseItemMetadataPath,
+            ["BaseItemMetadataPath"] = registration.BaseItemMetadataPath,
+            ["BaseMetadataPath"] = registration.BaseItemMetadataPath,
+            ["BaseItemId"] = registration.BaseItemMetadataPath,
+            ["BaseType"] = registration.BaseItemMetadataPath,
+            ["Mods"] = registration.ExplicitModIds ?? [],
+            ["ExplicitModIds"] = registration.ExplicitModIds ?? [],
+            ["Implicits"] = registration.ImplicitModIds,
+            ["ImplicitModIds"] = registration.ImplicitModIds,
+            ["ItemLevel"] = registration.ItemLevel,
+            ["DropLevel"] = registration.DropLevel,
+            ["MinDropLevel"] = registration.DropLevel,
+            ["Weight"] = registration.Weight,
+            ["DropWeight"] = registration.Weight,
+            ["RuthlessDropWeight"] = registration.RuthlessDropWeight,
+            ["FlavourText"] = registration.FlavourText,
+            ["CustomName"] = registration.CustomName,
+            ["NameWordHash"] = registration.NameWordHash,
+            ["VisualIdentityHash"] = registration.VisualIdentityHash,
+        };
+        MergeExtraProperties(values, registration.ExtraProperties);
+        return InvokeCatalogRegisterMethod(method, targetInstance: null, ownerId, values);
+    }
+
+    public IDisposable? TryRegisterDropPoolEntry(string ownerId, GatewayDropPoolEntryRegistration registration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        ArgumentNullException.ThrowIfNull(registration);
+
+        GatewayTypes? types = ResolveTypes();
+        if (types is null)
+        {
+            return null;
+        }
+
+        string categoryName = NormalizeDropPoolCategory(registration.PoolId, registration.IsUnique);
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["OwnerId"] = ownerId,
+            ["Owner"] = ownerId,
+            ["ModId"] = ownerId,
+            ["Category"] = categoryName,
+            ["PoolId"] = registration.PoolId,
+            ["Pool"] = registration.PoolId,
+            ["EntryKey"] = registration.EntryKey,
+            ["Key"] = registration.EntryKey,
+            ["ItemId"] = registration.ItemMetadataPath,
+            ["ItemMetadataPath"] = registration.ItemMetadataPath,
+            ["MetadataPath"] = registration.ItemMetadataPath,
+            ["Weight"] = registration.Weight,
+            ["MinAreaLevel"] = registration.MinAreaLevel,
+            ["MaxAreaLevel"] = registration.MaxAreaLevel ?? 0,
+            ["Monsters"] = string.IsNullOrWhiteSpace(registration.Monsters) ? "Any" : registration.Monsters,
+            ["Sources"] = string.IsNullOrWhiteSpace(registration.Sources) ? "All" : registration.Sources,
+            ["MonsterArchetypes"] = registration.MonsterArchetypes,
+            ["Leagues"] = registration.Leagues,
+            ["AreaTags"] = registration.RequiredAreaTags,
+            ["RequiredAreaTags"] = registration.RequiredAreaTags,
+            ["HardModeOnly"] = registration.HardModeOnly,
+            ["Chance"] = registration.Chance,
+            ["StackSize"] = registration.StackSize,
+            ["ExceptionalGem"] = registration.ExceptionalGem,
+            ["AtlasOnly"] = registration.AtlasOnly,
+            ["IsUtilityFlask"] = registration.IsUtilityFlask,
+            ["IsUnique"] = registration.IsUnique,
+        };
+        MergeExtraProperties(values, registration.ExtraProperties);
+
+        if (types.DropPoolRegister is { } staticMethod)
+        {
+            return InvokeCatalogRegisterMethod(staticMethod, targetInstance: null, ownerId, values);
+        }
+
+        // Fallback: DropDataProvider.Default.Overlays.Add(owner, entry) / DropDataProvider.Default.RegisterOverlay(owner, entry)
+        if (types.DropDataProviderType is { } providerType &&
+            providerType.GetProperty("Default", BindingFlags.Public | BindingFlags.Static)?.GetValue(null) is { } defaultProvider)
+        {
+            if (providerType.GetMethod("RegisterOverlay", BindingFlags.Public | BindingFlags.Instance) is { } regOverlay)
+            {
+                return InvokeCatalogRegisterMethod(regOverlay, defaultProvider, ownerId, values);
+            }
+
+            if (providerType.GetProperty("Overlays", BindingFlags.Public | BindingFlags.Instance)?.GetValue(defaultProvider) is { } overlaysObj &&
+                overlaysObj.GetType().GetMethod("Add", BindingFlags.Public | BindingFlags.Instance) is { } addMethod)
+            {
+                return InvokeCatalogRegisterMethod(addMethod, overlaysObj, ownerId, values);
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeDropPoolCategory(string poolId, bool isUnique)
+    {
+        if (isUnique && (string.IsNullOrWhiteSpace(poolId) || poolId.Equals("global", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Unique";
+        }
+
+        return poolId.Trim().ToLowerInvariant() switch
+        {
+            "currency" => "Currency",
+            "equipment" => "Equipment",
+            "flask" => "Flask",
+            "tincture" => "Tincture",
+            "gem" => "Gem",
+            "divinationcard" or "divination_card" or "card" => "DivinationCard",
+            "scarab" => "Scarab",
+            "unique" => "Unique",
+            "boss" or "map_boss" => "Boss",
+            "general" or "global" or "" => "General",
+            _ => poolId.Trim(),
+        };
+    }
+
+    private static void MergeExtraProperties(Dictionary<string, object?> target, IReadOnlyDictionary<string, object?>? extras)
+    {
+        if (extras is null)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<string, object?> kv in extras)
+        {
+            if (!string.IsNullOrWhiteSpace(kv.Key))
+            {
+                target[kv.Key] = kv.Value;
+            }
+        }
+    }
+
+    private static IDisposable? InvokeCatalogRegisterMethod(
+        MethodInfo method,
+        object? targetInstance,
+        string ownerId,
+        Dictionary<string, object?> values)
+    {
+        ParameterInfo[] ps = method.GetParameters();
+        object?[] args = new object?[ps.Length];
+
+        for (int i = 0; i < ps.Length; i++)
+        {
+            ParameterInfo p = ps[i];
+            if (p.ParameterType == typeof(string) &&
+                i == 0 &&
+                p.Name is not null &&
+                (p.Name.Contains("owner", StringComparison.OrdinalIgnoreCase) ||
+                 p.Name.Contains("mod", StringComparison.OrdinalIgnoreCase)))
+            {
+                args[i] = ownerId;
+                continue;
+            }
+
+            if (p.Name is not null && values.TryGetValue(p.Name, out object? direct) && TryConvertArgument(direct, p.ParameterType, out object? converted))
+            {
+                args[i] = converted;
+                continue;
+            }
+
+            if (TryBuildDescriptorObject(p.ParameterType, values, out object? descriptor))
+            {
+                args[i] = descriptor;
+                continue;
+            }
+
+            args[i] = p.HasDefaultValue
+                ? p.DefaultValue
+                : (p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null);
+        }
+
+        object? result = method.Invoke(targetInstance, args);
+        if (result is IDisposable disposable)
+        {
+            return disposable;
+        }
+
+        if (result is bool ok && !ok)
+        {
+            return null;
+        }
+
+        return ClientBridgeHost.NoOpDisposable.Instance;
+    }
+
+    private static bool TryBuildDescriptorObject(Type targetType, Dictionary<string, object?> values, out object? instance)
+    {
+        instance = null;
+        if (targetType == typeof(string) || targetType.IsPrimitive || targetType.IsEnum || targetType.IsInterface || targetType.IsAbstract)
+        {
+            return false;
+        }
+
+        // Prefer a constructor whose parameter names match our values dictionary; fall back to parameterless + writable properties.
+        ConstructorInfo[] ctors = targetType.GetConstructors(BindingFlags.Public | BindingFlags.Instance)
+            .OrderByDescending(c => c.GetParameters().Length)
+            .ToArray();
+
+        foreach (ConstructorInfo ctor in ctors)
+        {
+            ParameterInfo[] cps = ctor.GetParameters();
+            if (cps.Length == 0)
+            {
+                continue;
+            }
+
+            object?[] ctorArgs = new object?[cps.Length];
+            int matched = 0;
+            bool viable = true;
+            for (int i = 0; i < cps.Length; i++)
+            {
+                ParameterInfo cp = cps[i];
+                if (cp.Name is not null && values.TryGetValue(cp.Name, out object? raw) && TryConvertArgument(raw, cp.ParameterType, out object? conv))
+                {
+                    ctorArgs[i] = conv;
+                    matched++;
+                }
+                else if (cp.HasDefaultValue)
+                {
+                    ctorArgs[i] = cp.DefaultValue;
+                }
+                else if (!cp.ParameterType.IsValueType || Nullable.GetUnderlyingType(cp.ParameterType) is not null)
+                {
+                    ctorArgs[i] = null;
+                }
+                else
+                {
+                    viable = false;
+                    break;
+                }
+            }
+
+            if (viable && matched > 0)
+            {
+                object constructed = ctor.Invoke(ctorArgs);
+                PopulateWritableProperties(constructed, values);
+                instance = constructed;
+                return true;
+            }
+        }
+
+        ConstructorInfo? defaultCtor = targetType.GetConstructor(BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes);
+        if (defaultCtor is null)
+        {
+            return false;
+        }
+
+        object created = defaultCtor.Invoke(null);
+        PopulateWritableProperties(created, values);
+        instance = created;
+        return true;
+    }
+
+    private static void PopulateWritableProperties(object target, Dictionary<string, object?> values)
+    {
+        foreach (PropertyInfo prop in target.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (!prop.CanWrite || prop.GetIndexParameters().Length != 0)
+            {
+                continue;
+            }
+
+            if (values.TryGetValue(prop.Name, out object? raw) && TryConvertArgument(raw, prop.PropertyType, out object? conv))
+            {
+                prop.SetValue(target, conv);
+            }
+        }
+    }
+
+    private static bool TryConvertArgument(object? value, Type targetType, out object? converted)
+    {
+        if (value is null)
+        {
+            converted = null;
+            return !targetType.IsValueType || Nullable.GetUnderlyingType(targetType) is not null;
+        }
+
+        if (targetType.IsInstanceOfType(value))
+        {
+            converted = value;
+            return true;
+        }
+
+        Type effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (effectiveType.IsInstanceOfType(value))
+        {
+            converted = value;
+            return true;
+        }
+
+        if (effectiveType == typeof(string[]))
+        {
+            if (value is IEnumerable<string> strEnum)
+            {
+                converted = strEnum.ToArray();
+                return true;
+            }
+        }
+        else if (effectiveType == typeof(List<string>))
+        {
+            if (value is IEnumerable<string> strEnum)
+            {
+                converted = strEnum.ToList();
+                return true;
+            }
+        }
+        else if (effectiveType == typeof(IReadOnlySet<string>) || effectiveType == typeof(HashSet<string>))
+        {
+            if (value is IEnumerable<string> strEnum)
+            {
+                converted = new HashSet<string>(strEnum, StringComparer.OrdinalIgnoreCase);
+                return true;
+            }
+        }
+        else if (effectiveType == typeof(IReadOnlyCollection<string>) || effectiveType == typeof(IReadOnlyList<string>))
+        {
+            if (value is IEnumerable<string> strEnum)
+            {
+                converted = strEnum.ToArray();
+                return true;
+            }
+        }
+        else if (effectiveType.IsEnum && value is string enumStr && Enum.TryParse(effectiveType, enumStr, ignoreCase: true, out object? parsedEnum))
+        {
+            converted = parsedEnum;
+            return true;
+        }
+        else if (effectiveType.IsPrimitive)
+        {
+            try
+            {
+                converted = Convert.ChangeType(value, effectiveType, CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+                converted = null;
+                return false;
+            }
+        }
+
+        converted = null;
+        return false;
+    }
+
     private static IDisposable AddToGameEvent(object gameEvent, string ownerId, Delegate bridge)
     {
         Type eventType = gameEvent.GetType();
@@ -1495,6 +2037,19 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
                 return null;
             }
 
+            Type? itemCatalog = FindTypeBySimpleOrFullName(assemblies, targetAssembly, "ItemCatalog");
+            Type? uniqueCatalog = FindTypeBySimpleOrFullName(assemblies, targetAssembly, "UniqueCatalog");
+            Type? dropPoolOverlays = FindTypeBySimpleOrFullName(assemblies, targetAssembly, "DropPoolOverlays")
+                ?? FindTypeBySimpleOrFullName(assemblies, targetAssembly, "DropPoolRegistry")
+                ?? FindTypeBySimpleOrFullName(assemblies, targetAssembly, "LootDropCatalog")
+                ?? FindTypeBySimpleOrFullName(assemblies, targetAssembly, "DropCatalog");
+            Type? dropDataProvider = FindTypeBySimpleOrFullName(assemblies, targetAssembly, "DropDataProvider");
+
+            MethodInfo? itemCatalogRegister = FindStaticRegisterMethod(itemCatalog, ["RegisterOverlay", "RegisterCustomBase", "RegisterBaseType", "RegisterCustomItem", "Register"]);
+            MethodInfo? uniqueCatalogRegister = FindStaticRegisterMethod(uniqueCatalog, ["RegisterOverlay", "RegisterCustomUnique", "RegisterUnique", "Register"]);
+            MethodInfo? dropPoolRegister = FindStaticRegisterMethod(dropPoolOverlays, ["Register", "RegisterOverlay", "RegisterDropPoolEntry", "RegisterEntry"])
+                ?? FindStaticRegisterMethod(gameEvents, ["RegisterDropPoolEntry", "RegisterLootDrop"]);
+
             GatewayTypes resolved = new(
                 ClientType: client,
                 ClientForPlayer: ResolveClientForPlayer(client),
@@ -1514,7 +2069,11 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
                 GameEventsCosmeticChanged: gameEvents.GetField("CosmeticChanged", BindingFlags.Public | BindingFlags.Static),
                 GameEventsCharacterCreated: gameEvents.GetField("CharacterCreated", BindingFlags.Public | BindingFlags.Static),
                 GameEventsQuoteVendor: gameEvents.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => m.Name == "QuoteVendor" && m.GetParameters().Length == 2));
+                    .FirstOrDefault(m => m.Name == "QuoteVendor" && m.GetParameters().Length == 2),
+                ItemCatalogRegister: itemCatalogRegister,
+                UniqueCatalogRegister: uniqueCatalogRegister,
+                DropPoolRegister: dropPoolRegister,
+                DropDataProviderType: dropDataProvider);
 
             _typesByAssembly.AddOrUpdate(targetAssembly, resolved);
             return resolved;
@@ -1642,6 +2201,86 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
         return null;
     }
 
+    private static Type? FindTypeBySimpleOrFullName(Assembly[] assemblies, Assembly targetAssembly, string typeName)
+    {
+        if (FindGlobalType(assemblies, targetAssembly, typeName) is { } direct)
+        {
+            return direct;
+        }
+
+        // Also scan types inside targetAssembly (and same ALC) by simple Name in case Part 2b types live in a namespace.
+        Type? match = TryFindSimpleTypeInAssembly(targetAssembly, typeName);
+        if (match is not null)
+        {
+            return match;
+        }
+
+        AssemblyLoadContext? targetAlc = AssemblyLoadContext.GetLoadContext(targetAssembly);
+        for (int i = assemblies.Length - 1; i >= 0; i--)
+        {
+            Assembly asm = assemblies[i];
+            if (asm == targetAssembly)
+            {
+                continue;
+            }
+
+            if (targetAlc is not null && AssemblyLoadContext.GetLoadContext(asm) != targetAlc)
+            {
+                continue;
+            }
+
+            if (TryFindSimpleTypeInAssembly(asm, typeName) is { } found)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    private static Type? TryFindSimpleTypeInAssembly(Assembly assembly, string simpleName)
+    {
+        try
+        {
+            foreach (Type t in assembly.GetExportedTypes())
+            {
+                if (string.Equals(t.Name, simpleName, StringComparison.Ordinal))
+                {
+                    return t;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore reflection load failures on unrelated dynamic/partial assemblies.
+        }
+
+        return null;
+    }
+
+    private static MethodInfo? FindStaticRegisterMethod(Type? type, string[] candidateNames)
+    {
+        if (type is null)
+        {
+            return null;
+        }
+
+        MethodInfo[] methods = type.GetMethods(BindingFlags.Public | BindingFlags.Static);
+        foreach (string name in candidateNames)
+        {
+            MethodInfo? found = methods
+                .Where(m => string.Equals(m.Name, name, StringComparison.Ordinal) && m.GetParameters().Length >= 1)
+                .OrderByDescending(m => m.GetParameters().Length)
+                .FirstOrDefault();
+            if (found is not null)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
     private sealed record GatewayTypes(
         Type? ClientType,
         MethodInfo? ClientForPlayer,
@@ -1658,5 +2297,9 @@ internal sealed class ReflectionGatewayAdapter(Assembly? defaultHintAssembly = n
         FieldInfo? GameEventsClientMessage,
         FieldInfo? GameEventsCosmeticChanged,
         FieldInfo? GameEventsCharacterCreated,
-        MethodInfo? GameEventsQuoteVendor);
+        MethodInfo? GameEventsQuoteVendor,
+        MethodInfo? ItemCatalogRegister,
+        MethodInfo? UniqueCatalogRegister,
+        MethodInfo? DropPoolRegister,
+        Type? DropDataProviderType);
 }

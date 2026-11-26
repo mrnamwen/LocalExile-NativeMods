@@ -1786,10 +1786,14 @@ internal sealed class ScopedGameServices : IGameServices
 
     private sealed class TrackedContentRegistry(IContentRegistry inner, Action<IDisposable> track) : IContentRegistry
     {
+        public ContentRowMap? RowMap => inner.RowMap;
+        public string? ContentRowMapDigest => inner.ContentRowMapDigest;
         public IReadOnlyList<DatRowDeclaration> DatRows => inner.DatRows;
         public IReadOnlyList<ItemBaseDeclaration> ItemBases => inner.ItemBases;
         public IReadOnlyList<WorldObjectDeclaration> WorldObjects => inner.WorldObjects;
         public IReadOnlyList<ObjectOverlayDeclaration> Overlays => inner.Overlays;
+        public bool TryResolveRow(string tableName, string entryKey, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ContentRowEntry? entry) =>
+            inner.TryResolveRow(tableName, entryKey, out entry);
         public IDisposable DeclareDatRow(DatRowDeclaration row) { IDisposable d = inner.DeclareDatRow(row); track(d); return d; }
         public IDisposable DeclareItemBase(ItemBaseDeclaration itemBase) { IDisposable d = inner.DeclareItemBase(itemBase); track(d); return d; }
         public IDisposable DeclareWorldObject(WorldObjectDeclaration worldObject) { IDisposable d = inner.DeclareWorldObject(worldObject); track(d); return d; }
