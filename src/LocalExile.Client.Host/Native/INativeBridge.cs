@@ -217,6 +217,93 @@ public interface INativeBridge : IDisposable
     /// <summary>Subscribes a managed callback to a live native 3.29 Button's clicked event list.</summary>
     IDisposable SubscribeNativeUiClick(nint buttonControl, Action onClicked) => NoopDisposable.Instance;
 
+    /// <summary>Reads live visibility of a native 3.29 UI control (including ancestor visibility).</summary>
+    bool TryGetNativeUiVisible(nint control, out bool visible) { visible = false; return false; }
+
+    /// <summary>Reads the native <c>id</c> string (<c>Control+0x1b8</c>) of a live 3.29 UI control.</summary>
+    string? GetNativeUiId(nint control) => null;
+
+    /// <summary>Reads the primary vtable address (<c>*(uint64_t*)control</c>) of a live 3.29 UI control.</summary>
+    ulong GetNativeUiVtable(nint control) => 0;
+
+    /// <summary>Reads the numeric tag (<c>Control+0x1d8</c>) of a live 3.29 UI control.</summary>
+    uint GetNativeUiTag(nint control) => 0;
+
+    /// <summary>Reads the parent pointer (<c>Control+0x1e0</c>) of a live 3.29 UI control.</summary>
+    nint GetNativeUiParent(nint control) => nint.Zero;
+
+    /// <summary>Enumerates direct native child pointers (<c>Control+0xb8</c>) of a live 3.29 UI control.</summary>
+    IReadOnlyList<nint> GetNativeUiChildren(nint control) => [];
+
+    /// <summary>Sets control width via native <c>Control::SetWidth</c>.</summary>
+    void SetNativeUiWidth(nint control, float width) { }
+
+    /// <summary>Sets control height via native <c>Control::SetHeight</c>.</summary>
+    void SetNativeUiHeight(nint control, float height) { }
+
+    /// <summary>Sets horizontal/vertical layout anchors and offsets on a native 3.29 UI control.</summary>
+    void SetNativeUiAnchor(nint control, byte xAnchor, float xOffset, byte yAnchor, float yOffset) { }
+
+    /// <summary>Enables or disables automatic width sizing on a native control.</summary>
+    void SetNativeUiAutoWidth(nint control, bool enabled) { }
+
+    /// <summary>Triggers a native <c>Layout::Update</c> recalculation on a control.</summary>
+    void UpdateNativeUiLayout(nint control) { }
+
+    /// <summary>Creates a pool-allocated native <c>CheckBox</c> child under <paramref name="parentControl"/>.</summary>
+    nint CreateNativeUiCheckBoxChild(nint parentControl, string caption, bool initialChecked) => nint.Zero;
+
+    /// <summary>Returns the current <see cref="PreGameScreen"/> derived from <c>StateStack</c>.</summary>
+    PreGameScreen GetPreGameScreen() => PreGameScreen.Unknown;
+
+    /// <summary>Returns the active <c>InGameUI*</c> pointer (changes across every zone transition).</summary>
+    nint GetInGameUiHandle() => nint.Zero;
+
+    /// <summary>Returns the bitmask of currently visible stock in-game panels.</summary>
+    GamePanel GetActivePanels() => GamePanel.None;
+
+    /// <summary>Returns the live native control handle for a stock panel (or <see cref="nint.Zero"/>).</summary>
+    nint GetPanelControlHandle(GamePanel panel) => nint.Zero;
+
+    /// <summary>Returns the preferred native parent control handle for a managed <see cref="ScreenSlot"/> (or <see cref="nint.Zero"/> if inactive).</summary>
+    nint GetSlotParentHandle(ScreenSlot slot) => nint.Zero;
+
+    /// <summary>Returns metadata for the currently selected stash tab, or <c>null</c>.</summary>
+    StashTabInfo? GetActiveStashTab() => null;
+
+    /// <summary>Returns whether the corner minimap (<c>InGameUI+0x6e0</c>) is currently visible.</summary>
+    bool IsMinimapVisible() => false;
+
+    /// <summary>Returns whether a right side panel (<c>InGameUI+0x610</c>) is currently visible.</summary>
+    bool IsRightSidePanelOpen() => false;
+
+    /// <summary>Registers a callback fired after <c>LeagueOverlay::Fill</c> rebuilds league cards.</summary>
+    IDisposable RegisterLeagueOverlayFilledCallback(Action<nint, IReadOnlyList<LeagueCardInfo>> onFilled) => NoopDisposable.Instance;
+
+    /// <summary>Returns whether a PoE text input control (<c>TextBox</c>, chat, search) currently has keyboard focus.</summary>
+    bool IsTextInputFocused() => false;
+
+    /// <summary>Registers a low-level suppressible keyboard hook callback (return <c>true</c> to suppress).</summary>
+    IDisposable RegisterKeyCallback(Func<KeyEventArgs, bool> onKey) => NoopDisposable.Instance;
+
+    /// <summary>Registers a low-level suppressible mouse hook callback (return <c>true</c> to suppress).</summary>
+    IDisposable RegisterMouseCallback(Func<MouseEventArgs, bool> onMouse) => NoopDisposable.Instance;
+
+    /// <summary>Returns the currently hovered native <c>UI::Control*</c> pointer, or <see cref="nint.Zero"/>.</summary>
+    nint GetHoveredControlHandle() => nint.Zero;
+
+    /// <summary>Returns a snapshot of the currently hovered inventory/stash item, or <c>null</c>.</summary>
+    HoveredItemInfo? GetHoveredItem() => null;
+
+    /// <summary>Returns a snapshot of the item currently held on the cursor or in currency use mode, or <c>null</c>.</summary>
+    CursorItemInfo? GetCursorItem() => null;
+
+    /// <summary>Registers a pre-hook on <c>C→S 0x12</c> (<c>WriteCreateCharacter_0x12</c>); returns modified start-state or <c>null</c> for unchanged.</summary>
+    IDisposable RegisterCharacterCreatingCallback(Func<string, string, string, string?> onCreating) => NoopDisposable.Instance;
+
+    /// <summary>Registers a callback fired on <c>S→C 0x13</c> (<c>CreateCharacterState::OnCreateResult</c>).</summary>
+    IDisposable RegisterCharacterCreatedCallback(Action<string, string, ushort> onCreated) => NoopDisposable.Instance;
+
     /// <summary>Reads text from the system clipboard, or <c>null</c> if unavailable.</summary>
     string? GetClipboardText() => null;
 
@@ -373,6 +460,16 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     private readonly ConcurrentDictionary<string, int> _localStats = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<uint, WorldObjectInfo> _clientObjects = new();
     private readonly ConcurrentDictionary<ushort, List<Action<ReadOnlyMemory<byte>>>> _rawReceivers = new();
+    private readonly Lock _phase1Gate = new();
+    private readonly List<Action<nint, IReadOnlyList<LeagueCardInfo>>> _leagueFillCallbacks = [];
+    private readonly List<Func<KeyEventArgs, bool>> _keyCallbacks = [];
+    private readonly List<Func<MouseEventArgs, bool>> _mouseCallbacks = [];
+    private readonly List<Func<string, string, string, string?>> _charCreatingCallbacks = [];
+    private readonly List<Action<string, string, ushort>> _charCreatedCallbacks = [];
+    private GCHandle _selfCallbackHandle;
+    private bool _screensNativeHooked;
+    private bool _inputNativeHooked;
+    private bool _preGameNativeHooked;
     private int _nextAudioChannel = 1;
     private uint _nextClientObjectId = 0x8000_0001u;
     private ulong _managedFileOverlayToken;
@@ -1371,6 +1468,15 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     /// <inheritdoc/>
     public nint GetNativeUiRoot()
     {
+        if (_table->UiGetActiveRoot is not null)
+        {
+            void* activeRoot = null;
+            if (_table->UiGetActiveRoot(&activeRoot) == NmStatus.Ok && activeRoot is not null)
+            {
+                return (nint)activeRoot;
+            }
+        }
+
         if (_table->UiGetRoot is null)
         {
             return nint.Zero;
@@ -1654,6 +1760,700 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             onClicked,
             _table->UiSubscribeClick);
 
+    /// <inheritdoc/>
+    public bool TryGetNativeUiVisible(nint control, out bool visible)
+    {
+        visible = false;
+        if (_table->UiIsVisible is null || control == nint.Zero)
+        {
+            return false;
+        }
+
+        int raw = 0;
+        if (_table->UiIsVisible((void*)control, &raw) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        visible = raw != 0;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public string? GetNativeUiId(nint control)
+    {
+        if (_table->UiGetControlId is null || control == nint.Zero)
+        {
+            return null;
+        }
+
+        nuint length = 0;
+        NmStatus st = _table->UiGetControlId((void*)control, null, 0, &length);
+        if (st != NmStatus.Ok)
+        {
+            return null;
+        }
+
+        if (length == 0)
+        {
+            return string.Empty;
+        }
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            int cap = checked((int)length + 1);
+            byte[] buf = new byte[cap];
+            fixed (byte* pBuf = buf)
+            {
+                nuint actual = 0;
+                st = _table->UiGetControlId((void*)control, pBuf, (nuint)cap, &actual);
+                if (st == NmStatus.Ok)
+                {
+                    return Encoding.UTF8.GetString(buf, 0, checked((int)actual));
+                }
+
+                if (st != NmStatus.ErrBufferTooSmall || actual == 0)
+                {
+                    return null;
+                }
+
+                length = actual;
+            }
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc/>
+    public ulong GetNativeUiVtable(nint control)
+    {
+        if (_table->UiGetVtable is null || control == nint.Zero)
+        {
+            return 0;
+        }
+
+        ulong vt = 0;
+        return _table->UiGetVtable((void*)control, &vt) == NmStatus.Ok ? vt : 0;
+    }
+
+    /// <inheritdoc/>
+    public uint GetNativeUiTag(nint control)
+    {
+        if (_table->UiGetControlTag is null || control == nint.Zero)
+        {
+            return 0;
+        }
+
+        ushort tag = 0;
+        return _table->UiGetControlTag((void*)control, &tag) == NmStatus.Ok ? tag : 0u;
+    }
+
+    /// <inheritdoc/>
+    public nint GetNativeUiParent(nint control)
+    {
+        if (_table->UiGetControlParent is null || control == nint.Zero)
+        {
+            return nint.Zero;
+        }
+
+        void* parent = null;
+        return _table->UiGetControlParent((void*)control, &parent) == NmStatus.Ok ? (nint)parent : nint.Zero;
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<nint> GetNativeUiChildren(nint control)
+    {
+        if (_table->UiGetChildCount is null || _table->UiGetChildAt is null || control == nint.Zero)
+        {
+            return [];
+        }
+
+        uint count = 0;
+        if (_table->UiGetChildCount((void*)control, &count) != NmStatus.Ok || count == 0)
+        {
+            return [];
+        }
+
+        int capped = (int)Math.Min(count, 4096u);
+        var result = new List<nint>(capped);
+        for (uint i = 0; i < (uint)capped; i++)
+        {
+            void* child = null;
+            if (_table->UiGetChildAt((void*)control, i, &child) == NmStatus.Ok && child is not null)
+            {
+                result.Add((nint)child);
+            }
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiWidth(nint control, float width)
+    {
+        if (_table->UiSetWidth is not null && control != nint.Zero)
+        {
+            _table->UiSetWidth((void*)control, width);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiHeight(nint control, float height)
+    {
+        if (_table->UiSetHeight is not null && control != nint.Zero)
+        {
+            _table->UiSetHeight((void*)control, height);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetNativeUiAnchor(nint control, byte xAnchor, float xOffset, byte yAnchor, float yOffset)
+    {
+        if (_table->UiSetAnchor is not null && control != nint.Zero)
+        {
+            _table->UiSetAnchor((void*)control, xAnchor, xOffset, yAnchor, yOffset);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void UpdateNativeUiLayout(nint control)
+    {
+        if (_table->UiLayoutUpdate is not null && control != nint.Zero)
+        {
+            _table->UiLayoutUpdate((void*)control);
+        }
+    }
+
+    /// <inheritdoc/>
+    public nint CreateNativeUiCheckBoxChild(nint parentControl, string caption, bool initialChecked)
+    {
+        if (_table->UiCreateCheckBoxChild is null || parentControl == nint.Zero)
+        {
+            return nint.Zero;
+        }
+
+        byte[] utf8 = ToNullTerminatedUtf8(caption ?? string.Empty);
+        fixed (byte* pCaption = utf8)
+        {
+            void* cb = null;
+            if (_table->UiCreateCheckBoxChild((void*)parentControl, pCaption, &cb) != NmStatus.Ok || cb is null)
+            {
+                return nint.Zero;
+            }
+
+            if (initialChecked && _table->UiCheckboxSetChecked is not null)
+            {
+                _table->UiCheckboxSetChecked(cb, 1);
+            }
+
+            return (nint)cb;
+        }
+    }
+
+    private bool TryGetNativeScreensState(out NmScreensState state)
+    {
+        state = default;
+        if (_table->ScreensGetState is null)
+        {
+            return false;
+        }
+
+        NmScreensState local = default;
+        local.StructSize = (uint)sizeof(NmScreensState);
+        if (_table->ScreensGetState(&local) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        state = local;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public PreGameScreen GetPreGameScreen()
+    {
+        if (!TryGetNativeScreensState(out NmScreensState state))
+        {
+            return PreGameScreen.Unknown;
+        }
+
+        return (NmPreGameScreen)state.Screen switch
+        {
+            NmPreGameScreen.Login => PreGameScreen.Login,
+            NmPreGameScreen.SelectCharacter => PreGameScreen.SelectCharacter,
+            NmPreGameScreen.CreateCharacter => PreGameScreen.CreateCharacter,
+            NmPreGameScreen.LeagueOverlay => PreGameScreen.LeagueOverlay,
+            NmPreGameScreen.InGame => PreGameScreen.InGame,
+            _ => PreGameScreen.Unknown,
+        };
+    }
+
+    /// <inheritdoc/>
+    public nint GetInGameUiHandle() =>
+        TryGetNativeScreensState(out NmScreensState state) ? (nint)state.HudRoot : nint.Zero;
+
+    /// <inheritdoc/>
+    public GamePanel GetActivePanels()
+    {
+        if (!TryGetNativeScreensState(out NmScreensState state))
+        {
+            return GamePanel.None;
+        }
+
+        var flags = (NmPanelFlags)state.VisiblePanels;
+        GamePanel result = GamePanel.None;
+        if (flags.HasFlag(NmPanelFlags.Hud)) result |= GamePanel.Hud;
+        if (flags.HasFlag(NmPanelFlags.Inventory)) result |= GamePanel.Inventory;
+        if (flags.HasFlag(NmPanelFlags.Stash) || flags.HasFlag(NmPanelFlags.GuildStash) || flags.HasFlag(NmPanelFlags.TradeStash)) result |= GamePanel.Stash;
+        if (flags.HasFlag(NmPanelFlags.MapStash)) result |= GamePanel.MapStash;
+        if (flags.HasFlag(NmPanelFlags.BlightStash)) result |= GamePanel.BlightStash;
+        if (flags.HasFlag(NmPanelFlags.PassiveTree)) result |= GamePanel.PassiveTree;
+        if (flags.HasFlag(NmPanelFlags.AtlasTree)) result |= GamePanel.AtlasPassiveTree;
+        if (flags.HasFlag(NmPanelFlags.VendorBuy) || flags.HasFlag(NmPanelFlags.VendorSell)) result |= GamePanel.Vendor;
+        if (flags.HasFlag(NmPanelFlags.NpcDialogue)) result |= GamePanel.NpcDialogue;
+        if (flags.HasFlag(NmPanelFlags.PlayerTrade)) result |= GamePanel.PlayerTrade;
+        return result;
+    }
+
+    /// <inheritdoc/>
+    public nint GetPanelControlHandle(GamePanel panel)
+    {
+        if (!TryGetNativeScreensState(out NmScreensState state))
+        {
+            return nint.Zero;
+        }
+
+        return panel switch
+        {
+            GamePanel.Hud => (nint)state.HudRoot,
+            GamePanel.Inventory => (nint)state.InventoryPanel,
+            GamePanel.Stash => (nint)state.StashPanel,
+            GamePanel.MapStash => (nint)state.MapStashPage,
+            GamePanel.BlightStash => (nint)state.BlightStashPage,
+            GamePanel.PassiveTree => (nint)state.PassivePanel,
+            GamePanel.Vendor => (nint)state.VendorPanel,
+            _ => nint.Zero,
+        };
+    }
+
+    /// <inheritdoc/>
+    public nint GetSlotParentHandle(ScreenSlot slot)
+    {
+        if (!TryGetNativeScreensState(out NmScreensState state))
+        {
+            return nint.Zero;
+        }
+
+        var flags = (NmPanelFlags)state.VisiblePanels;
+        return slot switch
+        {
+            ScreenSlot.InventoryToolbar => flags.HasFlag(NmPanelFlags.Inventory)
+                ? (state.InventoryContent is not null ? (nint)state.InventoryContent : (nint)state.InventoryPanel)
+                : nint.Zero,
+            ScreenSlot.StashHeader or ScreenSlot.StashFooter =>
+                (flags.HasFlag(NmPanelFlags.Stash) || flags.HasFlag(NmPanelFlags.GuildStash) || flags.HasFlag(NmPanelFlags.TradeStash))
+                    ? (nint)state.StashPanel
+                    : nint.Zero,
+            ScreenSlot.MapTabBar => flags.HasFlag(NmPanelFlags.MapStash) ? (nint)state.MapStashPage : nint.Zero,
+            ScreenSlot.BlightTabBar => flags.HasFlag(NmPanelFlags.BlightStash) ? (nint)state.BlightStashPage : nint.Zero,
+            ScreenSlot.PassiveTreeHeader => flags.HasFlag(NmPanelFlags.PassiveTree)
+                ? (state.PassiveTitleBar is not null ? (nint)state.PassiveTitleBar : (nint)state.PassivePanel)
+                : nint.Zero,
+            ScreenSlot.HudTopRight => (nint)state.HudRoot,
+            ScreenSlot.CreateCharacterBar => (NmPreGameScreen)state.Screen == NmPreGameScreen.CreateCharacter
+                ? (nint)state.CreateCharFrame
+                : nint.Zero,
+            _ => nint.Zero,
+        };
+    }
+
+    /// <inheritdoc/>
+    public StashTabInfo? GetActiveStashTab()
+    {
+        if (!TryGetNativeScreensState(out NmScreensState state) || state.ActiveStashTabIndex < 0)
+        {
+            return null;
+        }
+
+        StashTabType type = Enum.IsDefined(typeof(StashTabType), (int)state.ActiveStashTabType)
+            ? (StashTabType)(int)state.ActiveStashTabType
+            : StashTabType.Unknown;
+        int? mapTier = type == StashTabType.Map && state.ActiveMapTier >= 0 ? state.ActiveMapTier : null;
+        return new StashTabInfo(
+            Index: state.ActiveStashTabIndex,
+            Id: state.ActiveStashTabId,
+            Type: type,
+            Name: state.GetActiveStashTabName(),
+            MapTier: mapTier,
+            IsGuild: state.StashMode == 1u);
+    }
+
+    /// <inheritdoc/>
+    public bool IsMinimapVisible() =>
+        TryGetNativeScreensState(out NmScreensState state) && ((NmPanelFlags)state.VisiblePanels).HasFlag(NmPanelFlags.Minimap);
+
+    /// <inheritdoc/>
+    public bool IsRightSidePanelOpen() =>
+        TryGetNativeScreensState(out NmScreensState state) && ((NmPanelFlags)state.VisiblePanels).HasFlag(NmPanelFlags.RightSide);
+
+    /// <inheritdoc/>
+    public IDisposable RegisterLeagueOverlayFilledCallback(Action<nint, IReadOnlyList<LeagueCardInfo>> onFilled)
+    {
+        ArgumentNullException.ThrowIfNull(onFilled);
+        lock (_phase1Gate)
+        {
+            _leagueFillCallbacks.Add(onFilled);
+            if (!_screensNativeHooked && _table->ScreensSetCallback is not null)
+            {
+                void* ud = EnsureSelfCallbackUserDataLocked();
+                if (_table->ScreensSetCallback(&OnNativeScreenEvent, ud) == NmStatus.Ok)
+                {
+                    _screensNativeHooked = true;
+                }
+            }
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _leagueFillCallbacks.Remove(onFilled);
+                if (_leagueFillCallbacks.Count == 0 && _screensNativeHooked && _table->ScreensSetCallback is not null)
+                {
+                    _table->ScreensSetCallback(null, null);
+                    _screensNativeHooked = false;
+                }
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public bool IsTextInputFocused()
+    {
+        if (_table->InputIsTextFocused is null)
+        {
+            return false;
+        }
+
+        int focused = 0;
+        return _table->InputIsTextFocused(&focused) == NmStatus.Ok && focused != 0;
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterKeyCallback(Func<KeyEventArgs, bool> onKey)
+    {
+        ArgumentNullException.ThrowIfNull(onKey);
+        lock (_phase1Gate)
+        {
+            _keyCallbacks.Add(onKey);
+            EnsureInputCallbackHookedLocked();
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _keyCallbacks.Remove(onKey);
+                ReleaseInputCallbackIfUnusedLocked();
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterMouseCallback(Func<MouseEventArgs, bool> onMouse)
+    {
+        ArgumentNullException.ThrowIfNull(onMouse);
+        lock (_phase1Gate)
+        {
+            _mouseCallbacks.Add(onMouse);
+            EnsureInputCallbackHookedLocked();
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _mouseCallbacks.Remove(onMouse);
+                ReleaseInputCallbackIfUnusedLocked();
+            }
+        });
+    }
+
+    private bool TryGetNativeHoverState(out NmHoverState state)
+    {
+        state = default;
+        if (_table->HoverGetState is null)
+        {
+            return false;
+        }
+
+        NmHoverState local = default;
+        local.StructSize = (uint)sizeof(NmHoverState);
+        if (_table->HoverGetState(&local) != NmStatus.Ok)
+        {
+            return false;
+        }
+
+        state = local;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public nint GetHoveredControlHandle() =>
+        TryGetNativeHoverState(out NmHoverState state) ? (nint)state.HoveredControl : nint.Zero;
+
+    /// <inheritdoc/>
+    public HoveredItemInfo? GetHoveredItem()
+    {
+        if (!TryGetNativeHoverState(out NmHoverState state) || state.HoveredItem.Present == 0)
+        {
+            return null;
+        }
+
+        NmItemSnapshot snap = state.HoveredItem;
+        return new HoveredItemInfo(
+            EntityHandle: (nint)snap.ItemEntity,
+            ControlHandle: (nint)snap.ItemView,
+            ItemId: snap.ItemId,
+            InventoryId: snap.InventoryId,
+            GridX: snap.GridX,
+            GridY: snap.GridY,
+            Width: snap.GridW,
+            Height: snap.GridH,
+            MetadataPath: snap.GetMetadataPath(),
+            BaseName: snap.GetBaseName(),
+            StackSize: snap.StackSize > 0 ? snap.StackSize : 1u,
+            MaxStackSize: snap.MaxStackSize > 0 ? snap.MaxStackSize : 1u,
+            Rarity: MapItemRarity(snap.Rarity),
+            IsIdentified: snap.Identified != 0,
+            IsCorrupted: snap.Corrupted != 0,
+            ItemLevel: snap.ItemLevel,
+            ItemClassId: snap.ItemClassId);
+    }
+
+    /// <inheritdoc/>
+    public CursorItemInfo? GetCursorItem()
+    {
+        if (!TryGetNativeHoverState(out NmHoverState state))
+        {
+            return null;
+        }
+
+        CursorMode mode = (NmCursorMode)state.CursorMode switch
+        {
+            NmCursorMode.Holding => CursorMode.HoldingItem,
+            NmCursorMode.UseMode => CursorMode.UsingItem,
+            _ => CursorMode.Empty,
+        };
+        if (mode == CursorMode.Empty && state.CursorItem.Present == 0)
+        {
+            return null;
+        }
+
+        NmItemSnapshot snap = state.CursorItem;
+        uint sourceInvId = mode == CursorMode.UsingItem && state.UseSourceInvId != 0 ? state.UseSourceInvId : snap.InventoryId;
+        int sourceX = mode == CursorMode.UsingItem ? state.UseCellX : snap.GridX;
+        int sourceY = mode == CursorMode.UsingItem ? state.UseCellY : snap.GridY;
+        return new CursorItemInfo(
+            Mode: mode == CursorMode.Empty ? CursorMode.HoldingItem : mode,
+            EntityHandle: (nint)snap.ItemEntity,
+            ItemId: snap.ItemId,
+            SourceInventoryId: sourceInvId,
+            SourceGridX: sourceX,
+            SourceGridY: sourceY,
+            Width: snap.GridW,
+            Height: snap.GridH,
+            MetadataPath: snap.GetMetadataPath(),
+            BaseName: snap.GetBaseName(),
+            StackSize: snap.StackSize > 0 ? snap.StackSize : 1u,
+            MaxStackSize: snap.MaxStackSize > 0 ? snap.MaxStackSize : 1u,
+            Rarity: MapItemRarity(snap.Rarity),
+            IsIdentified: snap.Identified != 0,
+            IsCorrupted: snap.Corrupted != 0);
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterCharacterCreatingCallback(Func<string, string, string, string?> onCreating)
+    {
+        ArgumentNullException.ThrowIfNull(onCreating);
+        lock (_phase1Gate)
+        {
+            _charCreatingCallbacks.Add(onCreating);
+            EnsurePreGameCallbacksHookedLocked();
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _charCreatingCallbacks.Remove(onCreating);
+                ReleasePreGameCallbacksIfUnusedLocked();
+            }
+        });
+    }
+
+    /// <inheritdoc/>
+    public IDisposable RegisterCharacterCreatedCallback(Action<string, string, ushort> onCreated)
+    {
+        ArgumentNullException.ThrowIfNull(onCreated);
+        lock (_phase1Gate)
+        {
+            _charCreatedCallbacks.Add(onCreated);
+            EnsurePreGameCallbacksHookedLocked();
+        }
+
+        return new ActionDisposable(() =>
+        {
+            lock (_phase1Gate)
+            {
+                _charCreatedCallbacks.Remove(onCreated);
+                ReleasePreGameCallbacksIfUnusedLocked();
+            }
+        });
+    }
+
+    private void* EnsureSelfCallbackUserDataLocked()
+    {
+        if (!_selfCallbackHandle.IsAllocated)
+        {
+            _selfCallbackHandle = GCHandle.Alloc(this);
+        }
+
+        return (void*)GCHandle.ToIntPtr(_selfCallbackHandle);
+    }
+
+    private void EnsureInputCallbackHookedLocked()
+    {
+        if (!_inputNativeHooked && _table->InputSetCallback is not null)
+        {
+            void* ud = EnsureSelfCallbackUserDataLocked();
+            if (_table->InputSetCallback(&OnNativeInput, ud) == NmStatus.Ok)
+            {
+                _inputNativeHooked = true;
+            }
+        }
+    }
+
+    private void ReleaseInputCallbackIfUnusedLocked()
+    {
+        if (_keyCallbacks.Count == 0 && _mouseCallbacks.Count == 0 && _inputNativeHooked && _table->InputSetCallback is not null)
+        {
+            _table->InputSetCallback(null, null);
+            _inputNativeHooked = false;
+        }
+    }
+
+    private void EnsurePreGameCallbacksHookedLocked()
+    {
+        if (!_preGameNativeHooked && _table->PreGameSetCallbacks is not null)
+        {
+            void* ud = EnsureSelfCallbackUserDataLocked();
+            if (_table->PreGameSetCallbacks(&OnNativePreGameCreating, &OnNativePreGameCreated, ud) == NmStatus.Ok)
+            {
+                _preGameNativeHooked = true;
+            }
+        }
+    }
+
+    private void ReleasePreGameCallbacksIfUnusedLocked()
+    {
+        if (_charCreatingCallbacks.Count == 0 && _charCreatedCallbacks.Count == 0 && _preGameNativeHooked && _table->PreGameSetCallbacks is not null)
+        {
+            _table->PreGameSetCallbacks(null, null, null);
+            _preGameNativeHooked = false;
+        }
+    }
+
+    private static ItemRarity MapItemRarity(uint raw) => raw switch
+    {
+        0u => ItemRarity.Normal,
+        1u => ItemRarity.Magic,
+        2u => ItemRarity.Rare,
+        3u => ItemRarity.Unique,
+        _ => ItemRarity.Unknown,
+    };
+
+    private List<LeagueCardInfo> CollectActiveLeagueCards(nint overlayHandle)
+    {
+        var cards = new List<LeagueCardInfo>();
+        if (!TryGetNativeScreensState(out NmScreensState state) || state.LeagueCardsFlow is null)
+        {
+            return cards;
+        }
+
+        nint flowHandle = (nint)state.LeagueCardsFlow;
+        IReadOnlyList<nint> flowChildren = GetNativeUiChildren(flowHandle);
+        ResolveSymbol("ui.vtable_stack_layout", out _, out nint stackLayoutVt);
+        ulong stackLayoutVtU64 = unchecked((ulong)stackLayoutVt);
+
+        int cardIndex = 0;
+        foreach (nint child in flowChildren)
+        {
+            if (GetNativeUiTag(child) != NativeShimConstants.TagLeagueCard)
+            {
+                continue;
+            }
+
+            IReadOnlyList<nint> cardChildren = GetNativeUiChildren(child);
+            nint modeStack = nint.Zero;
+            float descBottomY = 580f;
+            float modeStackY = 628f;
+            int stockCount = 0;
+            float maxStockW = 0f;
+
+            if (cardChildren.Count >= 4 && TryGetNativeUiRect(cardChildren[3], out UiRect descRect))
+            {
+                descBottomY = descRect.Y + descRect.Height;
+            }
+
+            foreach (nint cardChild in cardChildren)
+            {
+                if (stackLayoutVtU64 != 0 && GetNativeUiVtable(cardChild) == stackLayoutVtU64)
+                {
+                    modeStack = cardChild;
+                    break;
+                }
+            }
+
+            if (modeStack == nint.Zero && cardChildren.Count >= 5)
+            {
+                modeStack = cardChildren[4];
+            }
+
+            if (modeStack != nint.Zero)
+            {
+                if (TryGetNativeUiRect(modeStack, out UiRect stackRect) && stackRect.Y > 0f)
+                {
+                    modeStackY = stackRect.Y;
+                }
+
+                IReadOnlyList<nint> stockCheckBoxes = GetNativeUiChildren(modeStack);
+                stockCount = stockCheckBoxes.Count;
+                foreach (nint cb in stockCheckBoxes)
+                {
+                    if (TryGetNativeUiRect(cb, out UiRect cbRect) && cbRect.Width > maxStockW)
+                    {
+                        maxStockW = cbRect.Width;
+                    }
+                }
+            }
+
+            string leagueId = GetNativeUiId(child) is { Length: > 0 } id ? id : $"league_{cardIndex}";
+            cards.Add(new LeagueCardInfo(
+                CardIndex: cardIndex,
+                LeagueId: leagueId,
+                CardHandle: child,
+                ModeStackHandle: modeStack,
+                StockCheckboxCount: stockCount,
+                DescBottomY: descBottomY,
+                ModeStackY: modeStackY,
+                MaxStockCheckboxWidth: maxStockW > 0f ? maxStockW : 220f));
+            cardIndex++;
+        }
+
+        return cards;
+    }
+
     private IDisposable SubscribeNativeUiEvent(
         CallbackKind kind,
         nint control,
@@ -1836,6 +2636,38 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         }
 
         Volatile.Write(ref _disposed, true);
+        lock (_phase1Gate)
+        {
+            if (_screensNativeHooked && _table->ScreensSetCallback is not null)
+            {
+                _table->ScreensSetCallback(null, null);
+                _screensNativeHooked = false;
+            }
+
+            if (_inputNativeHooked && _table->InputSetCallback is not null)
+            {
+                _table->InputSetCallback(null, null);
+                _inputNativeHooked = false;
+            }
+
+            if (_preGameNativeHooked && _table->PreGameSetCallbacks is not null)
+            {
+                _table->PreGameSetCallbacks(null, null, null);
+                _preGameNativeHooked = false;
+            }
+
+            _leagueFillCallbacks.Clear();
+            _keyCallbacks.Clear();
+            _mouseCallbacks.Clear();
+            _charCreatingCallbacks.Clear();
+            _charCreatedCallbacks.Clear();
+
+            if (_selfCallbackHandle.IsAllocated)
+            {
+                _selfCallbackHandle.Free();
+            }
+        }
+
         foreach (UiEventSlot slot in _uiEventSlots.Values)
         {
             Volatile.Write(ref slot.Handler, null);
@@ -2239,6 +3071,261 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         finally
         {
             s_inNativeGameFrame = prev;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativeScreenEvent(int eventKind, void* primaryHandle, ulong param0, void* userData)
+    {
+        try
+        {
+            if (userData is null)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            if ((NmScreenEventKind)eventKind == NmScreenEventKind.LeagueOverlayFilled)
+            {
+                Action<nint, IReadOnlyList<LeagueCardInfo>>[] callbacks;
+                lock (bridge._phase1Gate)
+                {
+                    callbacks = [.. bridge._leagueFillCallbacks];
+                }
+
+                if (callbacks.Length > 0)
+                {
+                    List<LeagueCardInfo> cards = bridge.CollectActiveLeagueCards((nint)primaryHandle);
+                    foreach (Action<nint, IReadOnlyList<LeagueCardInfo>> cb in callbacks)
+                    {
+                        cb((nint)primaryHandle, cards);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Never let managed exceptions unwind across native screen hooks.
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static int OnNativeInput(NmInputEvent* ev, void* userData)
+    {
+        try
+        {
+            if (ev is null || userData is null)
+            {
+                return 0;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return 0;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            var mods = (KeyModifiers)(ev->Modifiers & 0x7u);
+            bool textFocused = ev->IsTextInputFocused != 0;
+            var kind = (NmInputKind)ev->Kind;
+
+            if (kind is NmInputKind.KeyDown or NmInputKind.KeyUp)
+            {
+                Func<KeyEventArgs, bool>[] handlers;
+                lock (bridge._phase1Gate)
+                {
+                    handlers = [.. bridge._keyCallbacks];
+                }
+
+                if (handlers.Length == 0)
+                {
+                    return 0;
+                }
+
+                var args = new KeyEventArgs(
+                    unchecked((int)ev->VirtualKey),
+                    mods,
+                    isDown: kind == NmInputKind.KeyDown,
+                    isRepeat: ev->IsRepeat != 0,
+                    isTextInputFocused: textFocused);
+                bool suppressed = false;
+                foreach (Func<KeyEventArgs, bool> h in handlers)
+                {
+                    if (h(args) || args.Handled)
+                    {
+                        suppressed = true;
+                    }
+                }
+
+                return suppressed ? 1 : 0;
+            }
+
+            if (kind is NmInputKind.MouseDown or NmInputKind.MouseUp or NmInputKind.MouseWheel or NmInputKind.MouseMove)
+            {
+                Func<MouseEventArgs, bool>[] handlers;
+                lock (bridge._phase1Gate)
+                {
+                    handlers = [.. bridge._mouseCallbacks];
+                }
+
+                if (handlers.Length == 0)
+                {
+                    return 0;
+                }
+
+                InputEventKind managedKind = kind switch
+                {
+                    NmInputKind.MouseDown => InputEventKind.Down,
+                    NmInputKind.MouseUp => InputEventKind.Up,
+                    NmInputKind.MouseWheel => InputEventKind.Wheel,
+                    _ => InputEventKind.Move,
+                };
+                MouseButton button = (NmMouseButton)ev->MouseButton switch
+                {
+                    NmMouseButton.Left => MouseButton.Left,
+                    NmMouseButton.Right => MouseButton.Right,
+                    NmMouseButton.Middle => MouseButton.Middle,
+                    NmMouseButton.X1 => MouseButton.X1,
+                    NmMouseButton.X2 => MouseButton.X2,
+                    _ => MouseButton.None,
+                };
+
+                var args = new MouseEventArgs(button, managedKind, ev->MouseX, ev->MouseY, mods, ev->WheelDelta, textFocused);
+                bool suppressed = false;
+                foreach (Func<MouseEventArgs, bool> h in handlers)
+                {
+                    if (h(args) || args.Handled)
+                    {
+                        suppressed = true;
+                    }
+                }
+
+                return suppressed ? 1 : 0;
+            }
+        }
+        catch
+        {
+            // Fail-open across Win32 WndProc / StateStack::OnWindowMessage boundary.
+        }
+
+        return 0;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static int OnNativePreGameCreating(
+        byte* nameUtf8,
+        byte* leagueUtf8,
+        byte* startStateUtf8,
+        byte* outStartStateUtf8,
+        nuint outCapacity,
+        void* userData)
+    {
+        try
+        {
+            if (userData is null || outStartStateUtf8 is null || outCapacity == 0)
+            {
+                return 0;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return 0;
+            }
+
+            Func<string, string, string, string?>[] handlers;
+            lock (bridge._phase1Gate)
+            {
+                handlers = [.. bridge._charCreatingCallbacks];
+            }
+
+            if (handlers.Length == 0)
+            {
+                return 0;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            string name = nameUtf8 is not null ? Marshal.PtrToStringUTF8((nint)nameUtf8) ?? string.Empty : string.Empty;
+            string league = leagueUtf8 is not null ? Marshal.PtrToStringUTF8((nint)leagueUtf8) ?? string.Empty : string.Empty;
+            string currentStartState = startStateUtf8 is not null ? Marshal.PtrToStringUTF8((nint)startStateUtf8) ?? string.Empty : string.Empty;
+            string originalStartState = currentStartState;
+
+            foreach (Func<string, string, string, string?> h in handlers)
+            {
+                string? updated = h(name, league, currentStartState);
+                if (!string.IsNullOrEmpty(updated))
+                {
+                    currentStartState = updated;
+                }
+            }
+
+            if (string.Equals(currentStartState, originalStartState, StringComparison.Ordinal))
+            {
+                return 0;
+            }
+
+            byte[] utf8 = Encoding.UTF8.GetBytes(currentStartState);
+            if ((nuint)(utf8.Length + 1) > outCapacity)
+            {
+                return 0;
+            }
+
+            utf8.CopyTo(new Span<byte>(outStartStateUtf8, utf8.Length));
+            outStartStateUtf8[utf8.Length] = 0;
+            return 1;
+        }
+        catch
+        {
+            // Never let managed exceptions unwind across LoginClient::WriteCreateCharacter_0x12.
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnNativePreGameCreated(byte* nameUtf8, byte* leagueUtf8, ushort resultCode, void* userData)
+    {
+        try
+        {
+            if (userData is null)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr((nint)userData);
+            if (handle.Target is not NativeShimBridge bridge || Volatile.Read(ref bridge._disposed))
+            {
+                return;
+            }
+
+            Action<string, string, ushort>[] handlers;
+            lock (bridge._phase1Gate)
+            {
+                handlers = [.. bridge._charCreatedCallbacks];
+            }
+
+            if (handlers.Length == 0)
+            {
+                return;
+            }
+
+            using var _ = bridge.EnterNativeGameThreadScope(captureGameThreadId: true);
+            string name = nameUtf8 is not null ? Marshal.PtrToStringUTF8((nint)nameUtf8) ?? string.Empty : string.Empty;
+            string league = leagueUtf8 is not null ? Marshal.PtrToStringUTF8((nint)leagueUtf8) ?? string.Empty : string.Empty;
+            foreach (Action<string, string, ushort> h in handlers)
+            {
+                h(name, league, resultCode);
+            }
+        }
+        catch
+        {
+            // Never let managed exceptions unwind across CreateCharacterState::OnCreateResult.
         }
     }
 

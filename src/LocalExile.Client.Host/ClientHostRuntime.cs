@@ -34,6 +34,9 @@ public sealed record ClientHostOptions
     /// <summary>Optional shadow-copy root directory for collectible mod loading.</summary>
     public string? ShadowCopyRoot { get; init; }
 
+    /// <summary>Optional path for the centralized keybind registry JSON file (defaults to <c>Mods/Client/keybinds.json</c>).</summary>
+    public string? KeybindsPath { get; init; }
+
     /// <summary>Optional structured log sink <c>(level, source, message)</c>.</summary>
     public Action<string, string, string>? LogSink { get; init; }
 
@@ -129,6 +132,24 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Client lifecycle events.</summary>
     public GameLifecycle Lifecycle { get; }
 
+    /// <summary>In-game and pre-game screen/panel state and managed auto-flow toolbar slots.</summary>
+    public ScreensService Screens { get; }
+
+    /// <summary>Centralized keybind registry persisted to <c>Mods/Client/keybinds.json</c>.</summary>
+    public KeybindRegistry Keybinds { get; }
+
+    /// <summary>Low-level suppressible keyboard/mouse input service.</summary>
+    public InputService Input { get; }
+
+    /// <summary>Hovered UI control, hovered item, and cursor item inspection service.</summary>
+    public HoverService Hover { get; }
+
+    /// <summary>NativeMods-owned HUD toast notification overlay service.</summary>
+    public ToastService Toasts { get; }
+
+    /// <summary>Pre-game Login-TCP character creation hook service.</summary>
+    public PreGameService PreGame { get; }
+
     /// <summary>World object &amp; effect service.</summary>
     public WorldService World { get; }
 
@@ -176,6 +197,12 @@ public sealed class ClientHostRuntime : IDisposable
         Audio = new AudioService(_bridge);
         Stats = new StatsService(_bridge);
         Lifecycle = new GameLifecycle();
+        Screens = new ScreensService(_bridge, Ui, FileOverlayService);
+        Keybinds = new KeybindRegistry(_options.KeybindsPath, Log);
+        Input = new InputService(_bridge, Keybinds);
+        Hover = new HoverService(_bridge, Ui);
+        Toasts = new ToastService(Ui, FileOverlayService, Screens);
+        PreGame = new PreGameService(_bridge, Log);
         World = new WorldService(_bridge, Lifecycle);
         Rulesets = new RulesetRegistry(_bridge);
         Opcodes = new OpcodeRegistry(_bridge);
@@ -243,6 +270,11 @@ public sealed class ClientHostRuntime : IDisposable
                 "geal.builtins",
                 "rulesets.0x2c9",
                 "chat.fallback",
+                "screens.slots",
+                "input.keybinds",
+                "hover.items",
+                "toasts.hud",
+                "pregame.options",
             ]);
 
         _systemChannel.Send(handshake);
@@ -287,8 +319,12 @@ public sealed class ClientHostRuntime : IDisposable
     /// <summary>Notifies lifecycle that the client connected to an instance server.</summary>
     public void NotifyConnected() => Lifecycle.RaiseConnected();
 
-    /// <summary>Notifies lifecycle that the client disconnected.</summary>
-    public void NotifyDisconnected(string? reason = null) => Lifecycle.RaiseDisconnected(reason);
+    /// <summary>Notifies lifecycle that the client disconnected from an instance server.</summary>
+    public void NotifyDisconnected(string? reason = null)
+    {
+        Toasts.HandleDisconnected();
+        Lifecycle.RaiseDisconnected(reason);
+    }
 
     internal void Log(string level, string source, string message) =>
         _options.LogSink?.Invoke(level, source, message);
@@ -410,6 +446,9 @@ public sealed class ClientHostRuntime : IDisposable
             }
         }
 
+        Screens.Tick();
+        Hover.Tick();
+        Toasts.Tick(deltaSeconds);
         Lifecycle.RaiseFrame(deltaSeconds);
         Loader.TickAllMods(deltaSeconds);
         Ui.TickCustomControls(deltaSeconds);
@@ -631,6 +670,10 @@ public sealed class ClientHostRuntime : IDisposable
         _systemSubs.Clear();
         _frameSub.Dispose();
         Loader.Dispose();
+        Toasts.Dispose();
+        Screens.Dispose();
+        Input.Dispose();
+        PreGame.Dispose();
         Router.Dispose();
     }
 }

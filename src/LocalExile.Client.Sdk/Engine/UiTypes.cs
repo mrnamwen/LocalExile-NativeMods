@@ -32,6 +32,15 @@ public interface IUiControl
     /// <summary>The control's <c>id</c> attribute (may be empty for anonymous layout controls).</summary>
     string Id { get; }
 
+    /// <summary>Underlying native <c>UI::Control*</c> pointer, or <see cref="nint.Zero"/> when managed-only.</summary>
+    nint NativeHandle => nint.Zero;
+
+    /// <summary>Native primary vtable address (<c>*(uint64_t*)NativeHandle</c>), or <c>0</c> if unavailable.</summary>
+    ulong VtableAddress => 0;
+
+    /// <summary>Native numeric tag at <c>Control+0x1d8</c> (for example <c>0xdc35</c> on <c>LeagueCard</c> or <c>0xc004</c> on <c>InventoryItemView</c>).</summary>
+    uint Tag => 0;
+
     /// <summary>The control type name (for example <c>Frame</c>, <c>Label</c>, <c>Button</c>, <c>TextBox</c>, <c>CheckBox</c>).</summary>
     string ControlType { get; }
 
@@ -59,6 +68,21 @@ public interface IUiControl
     /// <summary>Updates the control's dimensions.</summary>
     void SetSize(float width, float height);
 
+    /// <summary>Updates the control's width (native <c>Control::SetWidth</c> vtable slot 17).</summary>
+    void SetWidth(float width) => SetSize(width, Rect.Height);
+
+    /// <summary>Updates the control's height (native <c>Control::SetHeight</c> vtable slot 18).</summary>
+    void SetHeight(float height) => SetSize(Rect.Width, height);
+
+    /// <summary>Updates horizontal and vertical layout anchors and offsets (<c>Control+0x158..+0x164</c>).</summary>
+    void SetAnchor(byte xAnchor, float xOffset, byte yAnchor, float yOffset) { }
+
+    /// <summary>Enables or disables automatic width sizing on layout controls and checkboxes.</summary>
+    void SetAutoWidth(bool enabled) { }
+
+    /// <summary>Triggers a native layout recalculation (<c>Layout::Update</c>) for this control's layout container.</summary>
+    void UpdateLayout() { }
+
     /// <summary>Attaches a child control under this control.</summary>
     void AddChild(IUiControl child);
 
@@ -73,6 +97,9 @@ public interface IUiControl
 
     /// <summary>Ordered child controls directly under this control.</summary>
     IReadOnlyList<IUiControl> Children { get; }
+
+    /// <summary>Returns the live ordered child controls (enumerating native stock children at <c>+0xb8</c> when backed by a native control).</summary>
+    IReadOnlyList<IUiControl> GetChildren() => Children;
 
     /// <summary>Key-value properties parsed from the <c>.ui</c> layout or set dynamically at runtime.</summary>
     IReadOnlyDictionary<string, string> Properties { get; }
@@ -189,6 +216,10 @@ public interface IUiService
 
     /// <summary>Returns the live native UI root control, or <c>null</c> if unavailable.</summary>
     IUiControl? GetRootControl();
+
+    /// <summary>Wraps a raw native <c>UI::Control*</c> handle into a live <see cref="IUiControl"/> node, or returns <c>null</c> for <see cref="nint.Zero"/>.</summary>
+    /// <param name="nativeHandle">Raw native control pointer.</param>
+    IUiControl? WrapControl(nint nativeHandle) => null;
 
     /// <summary>Loads a <c>.ui</c> file through the file overlay and attaches a new isolated window to the active UI root.</summary>
     /// <param name="virtualPath">Virtual path to the <c>.ui</c> layout (for example <c>Metadata/UI/Mods/Garden/Stockpile.ui</c>).</param>

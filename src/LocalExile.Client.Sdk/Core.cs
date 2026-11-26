@@ -13,13 +13,13 @@ namespace LocalExile.Client.Sdk;
 public static class SdkVersion
 {
     /// <summary>The current semantic version string of the Client SDK.</summary>
-    public const string Current = "0.2.0";
+    public const string Current = "0.3.0";
 
     /// <summary>The current binary/envelope wire protocol version.</summary>
     public const int ProtocolVersion = 1;
 
     /// <summary>The parsed major.minor.patch version of the Client SDK.</summary>
-    public static Version Parsed { get; } = new(0, 2, 0);
+    public static Version Parsed { get; } = new(0, 3, 0);
 
     /// <summary>
     /// Evaluates whether <see cref="Current"/> satisfies a simplified SemVer range string
@@ -453,6 +453,21 @@ public interface IGameServices
 
     /// <summary>Client frame, area, and connection lifecycle events.</summary>
     IGameLifecycle Lifecycle { get; }
+
+    /// <summary>In-game and pre-game screen/panel state, active stash tab metadata, and managed auto-flow toolbar slots.</summary>
+    IScreensService Screens { get; }
+
+    /// <summary>Low-level suppressible keyboard/mouse hooks, text-input focus detection, and centralized keybind registry.</summary>
+    IInputService Input { get; }
+
+    /// <summary>Hovered UI control, hovered inventory item, and cursor-held/use-mode item inspection service.</summary>
+    IHoverService Hover { get; }
+
+    /// <summary>NativeMods-owned HUD toast notification overlay service anchored to <see cref="ScreenSlot.HudTopRight"/>.</summary>
+    IToastService Toasts { get; }
+
+    /// <summary>Pre-game character creation option injection (<c>C→S 0x12</c>) and creation result (<c>S→C 0x13</c>) service.</summary>
+    IPreGameService PreGame { get; }
 
     /// <summary>Registry for extending the GEAL VM with custom built-in functions.</summary>
     IGealBuiltinRegistry GealBuiltins { get; }

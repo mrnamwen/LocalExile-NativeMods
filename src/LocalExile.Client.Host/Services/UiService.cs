@@ -85,7 +85,24 @@ public class UiControlNode : IUiControl
     internal nint NativeControlHandle { get; set; }
     internal Native.INativeBridge? NativeBridge { get; set; }
     internal UiWindowNode? OwningWindow { get; set; }
+    internal UiService? OwningUiService { get; set; }
+    internal bool IsNativeStockControl { get; set; }
     internal bool IsDestroyed => _destroyed;
+
+    /// <inheritdoc/>
+    public nint NativeHandle => NativeControlHandle;
+
+    /// <inheritdoc/>
+    public ulong VtableAddress =>
+        NativeControlHandle != nint.Zero && NativeBridge is not null
+            ? NativeBridge.GetNativeUiVtable(NativeControlHandle)
+            : 0;
+
+    /// <inheritdoc/>
+    public uint Tag =>
+        NativeControlHandle != nint.Zero && NativeBridge is not null
+            ? NativeBridge.GetNativeUiTag(NativeControlHandle)
+            : 0;
 
     /// <summary>Creates a new control node.</summary>
     public UiControlNode(string id, string controlType, UiControlNode? parent, ICustomUiControl? customBehavior = null)
@@ -134,6 +151,13 @@ public class UiControlNode : IUiControl
         get
         {
             ThrowIfDestroyed();
+            if (NativeControlHandle != nint.Zero && NativeBridge is not null &&
+                NativeBridge.TryGetNativeUiVisible(NativeControlHandle, out bool nativeVisible))
+            {
+                _visible = nativeVisible;
+                return nativeVisible;
+            }
+
             return _visible;
         }
         set
@@ -183,6 +207,8 @@ public class UiControlNode : IUiControl
     }
 
     internal string RawBaseText => _text;
+
+    internal bool RawVisible => _visible;
 
     internal void SetBaseTextSilent(string text)
     {
@@ -269,10 +295,82 @@ public class UiControlNode : IUiControl
         }
     }
 
+    /// <inheritdoc/>
+    public void SetWidth(float width)
+    {
+        ThrowIfDestroyed();
+        _rect = _rect with { Width = width };
+        if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            NativeBridge.SetNativeUiWidth(NativeControlHandle, width);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetHeight(float height)
+    {
+        ThrowIfDestroyed();
+        _rect = _rect with { Height = height };
+        if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            NativeBridge.SetNativeUiHeight(NativeControlHandle, height);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetAnchor(byte xAnchor, float xOffset, byte yAnchor, float yOffset)
+    {
+        ThrowIfDestroyed();
+        if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            NativeBridge.SetNativeUiAnchor(NativeControlHandle, xAnchor, xOffset, yAnchor, yOffset);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void SetAutoWidth(bool enabled)
+    {
+        ThrowIfDestroyed();
+        if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            NativeBridge.SetNativeUiAutoWidth(NativeControlHandle, enabled);
+        }
+    }
+
+    /// <inheritdoc/>
+    public void UpdateLayout()
+    {
+        ThrowIfDestroyed();
+        if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            NativeBridge.UpdateNativeUiLayout(NativeControlHandle);
+        }
+    }
+
     /// <summary>Typed parent node.</summary>
     public UiControlNode? Parent { get; internal set; }
 
-    IUiControl? IUiControl.Parent => Parent;
+    IUiControl? IUiControl.Parent
+    {
+        get
+        {
+            if (Parent is not null)
+            {
+                return Parent;
+            }
+
+            if (NativeControlHandle != nint.Zero && NativeBridge is not null)
+            {
+                nint nativeParent = NativeBridge.GetNativeUiParent(NativeControlHandle);
+                if (nativeParent != nint.Zero)
+                {
+                    return WrapChildHandle(nativeParent);
+                }
+            }
+
+            return null;
+        }
+    }
 
     /// <inheritdoc/>
     public IReadOnlyList<IUiControl> Children
@@ -280,8 +378,70 @@ public class UiControlNode : IUiControl
         get
         {
             ThrowIfDestroyed();
+            return IsNativeStockControl ? GetChildren() : _children;
+        }
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<IUiControl> GetChildren()
+    {
+        ThrowIfDestroyed();
+        if (NativeControlHandle == nint.Zero || NativeBridge is null)
+        {
             return _children;
         }
+
+        IReadOnlyList<nint> nativeHandles = NativeBridge.GetNativeUiChildren(NativeControlHandle);
+        if (nativeHandles.Count == 0)
+        {
+            return _children;
+        }
+
+        var merged = new List<IUiControl>(_children.Count + nativeHandles.Count);
+        var seenHandles = new HashSet<nint>();
+        foreach (UiControlNode managedChild in _children)
+        {
+            merged.Add(managedChild);
+            if (managedChild.NativeControlHandle != nint.Zero)
+            {
+                seenHandles.Add(managedChild.NativeControlHandle);
+            }
+        }
+
+        foreach (nint handle in nativeHandles)
+        {
+            if (handle != nint.Zero && seenHandles.Add(handle))
+            {
+                IUiControl? wrapped = WrapChildHandle(handle);
+                if (wrapped is not null)
+                {
+                    merged.Add(wrapped);
+                }
+            }
+        }
+
+        return merged;
+    }
+
+    private IUiControl? WrapChildHandle(nint handle)
+    {
+        if (handle == nint.Zero)
+        {
+            return null;
+        }
+
+        if (OwningUiService is not null)
+        {
+            return OwningUiService.WrapControl(handle);
+        }
+
+        string id = NativeBridge?.GetNativeUiId(handle) ?? string.Empty;
+        return new UiControlNode(id, "Control", null)
+        {
+            NativeBridge = NativeBridge,
+            NativeControlHandle = handle,
+            IsNativeStockControl = true,
+        };
     }
 
     internal List<UiControlNode> MutableChildren => _children;
@@ -557,31 +717,56 @@ public class UiControlNode : IUiControl
         }
 
         string[] segments = idPath.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        UiControlNode? managedMatch = null;
         if (segments.Length == 1)
         {
-            return FindBySingleId(this, segments[0]);
+            managedMatch = FindBySingleId(this, segments[0]);
         }
-
-        // First try strict dotted traversal from this node (or matching root).
-        UiControlNode? current = this;
-        int startIndex = 0;
-        if (string.Equals(current.Id, segments[0], StringComparison.OrdinalIgnoreCase))
+        else
         {
-            startIndex = 1;
-        }
-
-        for (int i = startIndex; i < segments.Length; i++)
-        {
-            UiControlNode? next = FindBySingleId(current, segments[i]);
-            if (next is null)
+            // First try strict dotted traversal from this node (or matching root).
+            UiControlNode? current = this;
+            int startIndex = 0;
+            if (string.Equals(current.Id, segments[0], StringComparison.OrdinalIgnoreCase))
             {
-                return null;
+                startIndex = 1;
             }
 
-            current = next;
+            bool foundAll = true;
+            for (int i = startIndex; i < segments.Length; i++)
+            {
+                UiControlNode? next = FindBySingleId(current, segments[i]);
+                if (next is null)
+                {
+                    foundAll = false;
+                    break;
+                }
+
+                current = next;
+            }
+
+            if (foundAll)
+            {
+                managedMatch = current;
+            }
         }
 
-        return current;
+        if (managedMatch is not null)
+        {
+            return managedMatch;
+        }
+
+        // Fall back to live native stock UI tree query via FindNativeUiChild for native stock controls.
+        if (IsNativeStockControl && NativeControlHandle != nint.Zero && NativeBridge is not null)
+        {
+            nint nativeMatch = NativeBridge.FindNativeUiChild(NativeControlHandle, idPath.Trim());
+            if (nativeMatch != nint.Zero)
+            {
+                return WrapChildHandle(nativeMatch);
+            }
+        }
+
+        return null;
     }
 
     private static UiControlNode? FindBySingleId(UiControlNode root, string targetId)
@@ -1009,10 +1194,36 @@ public sealed class UiService : IUiService
             return null;
         }
 
-        return new UiControlNode("__root__", "Frame", null)
+        string id = _bridge.GetNativeUiId(root) ?? "__root__";
+        if (string.IsNullOrEmpty(id))
+        {
+            id = "__root__";
+        }
+
+        return new UiControlNode(id, "Frame", null)
         {
             NativeBridge = _bridge,
             NativeControlHandle = root,
+            OwningUiService = this,
+            IsNativeStockControl = true,
+        };
+    }
+
+    /// <inheritdoc/>
+    public IUiControl? WrapControl(nint nativeHandle)
+    {
+        if (nativeHandle == nint.Zero || _bridge is null)
+        {
+            return null;
+        }
+
+        string id = _bridge.GetNativeUiId(nativeHandle) ?? string.Empty;
+        return new UiControlNode(id, "Control", null)
+        {
+            NativeBridge = _bridge,
+            NativeControlHandle = nativeHandle,
+            OwningUiService = this,
+            IsNativeStockControl = true,
         };
     }
 
@@ -1111,7 +1322,7 @@ public sealed class UiService : IUiService
                 {
                     window.NativeBridge = _bridge;
                     window.NativeControlHandle = nativeChildWindow;
-                    _bridge.SetNativeUiVisible(nativeChildWindow, window.Visible);
+                    _bridge.SetNativeUiVisible(nativeChildWindow, window.RawVisible);
                     BindChildrenRecursive(window, nativeChildWindow, window);
                 }
             }
@@ -1222,7 +1433,7 @@ public sealed class UiService : IUiService
         AttachParsedTree(window, parsedRoot);
         if (window.NativeControlHandle != nint.Zero && _bridge is not null)
         {
-            _bridge.SetNativeUiVisible(window.NativeControlHandle, window.Visible);
+            _bridge.SetNativeUiVisible(window.NativeControlHandle, window.RawVisible);
             BindChildrenRecursive(window, window.NativeControlHandle, window);
         }
 
@@ -1330,7 +1541,7 @@ public sealed class UiService : IUiService
 
         window.NativeBridge = _bridge;
         window.NativeControlHandle = nativeRoot;
-        _bridge.SetNativeUiVisible(nativeRoot, window.Visible);
+        _bridge.SetNativeUiVisible(nativeRoot, window.RawVisible);
         BindChildrenRecursive(window, nativeRoot, window);
     }
 
@@ -1360,7 +1571,7 @@ public sealed class UiService : IUiService
 
                 // Synchronize parsed initial visibility & text so reused native windows reset any
                 // hidden rows or stale captions from previous open/close cycles.
-                _bridge.SetNativeUiVisible(nativeChild, child.Visible);
+                _bridge.SetNativeUiVisible(nativeChild, child.RawVisible);
                 if (child is UiButtonNode button)
                 {
                     if (UiControlNode.SupportsNativeButtonCaption(child.ControlType) &&
