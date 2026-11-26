@@ -3,7 +3,7 @@
 
 # AssetPipeline API Reference
 
-> **Assembly:** `LocalExile.Client.AssetPipeline` · **Public types:** `35`
+> **Assembly:** `LocalExile.Client.AssetPipeline` · **Public types:** `55`
 >
 > Deterministic 3.29.3d content conversion and `.datc64` row-appending library & CLI (`Bundles2Reader`, `Dat64Table`, `Dat64TablePatcher`, `MaxwellDatPatcher`, `CurrencyDatPatcher`, `PoeHashing`, `DdsTextureConverter`, `GlbToPoeMeshConverter`, `PoeSmdWriter`, `PoeAstWriter`, `AudioTranscoder`).
 
@@ -21,8 +21,28 @@
 | [`PatchedCurrencyEntry`](#patchedcurrencyentry) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Metadata and generated `.it` payload for a single appended currency item. |
 | [`PatchedCurrencyResult`](#patchedcurrencyresult) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Serialized output of appending one or more custom currencies across the three 3.29.3d `.datc64` tables. |
 | [`CurrencyDatPatcher`](#currencydatpatcher) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Reusable PoE 3.29.3d custom currency `.datc64` & `.it` patcher. Appends brand-new currency rows across `Data/BaseItemTypes.datc64`, `Data/ItemVisualIdentity.datc64`, and `Data/CurrencyItems.datc64` without modifying any stock row, while deep-copying or clearing every `foreignrow[]` / array variable-section offset so PoE 3.29's in-place loader resolution never aliases across rows (see `.codexmind/regressions/dat64-foreignrow-aliasing.md`). Supports layering cleanly onto already-patched tables so multiple currency mods can coexist. |
+| [`Dat64ColumnType`](#dat64columntype) | `enum` | `LocalExile.Client.AssetPipeline.Dat64` | Logical column types supported by Path of Exile 3.29 `.datc64` tables (matching `poe-tool-dev/dat-schema`). |
+| [`Dat64ColumnSchema`](#dat64columnschema) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Schema metadata for a single column inside a `.datc64` table. |
+| [`Dat64TableSchema`](#dat64tableschema) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Schema layout for a single Path of Exile 3.29 `.datc64` table. |
+| [`Dat64SchemaRegistry`](#dat64schemaregistry) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Registry of Path of Exile 3.29 `.datc64` table schemas, appendability policy, and verified dead `Stats` slots. |
 | [`Dat64Table`](#dat64table) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Binary representation of a Path of Exile 3.29 `.datc64` table: `u32 rowCount`, `rowCount * rowStride` fixed row bytes, an 8-byte `0xBBBBBBBBBBBBBBBB` sentinel, and the variable-length data section (UTF-16LE strings terminated by 4 zero bytes and counted arrays). |
 | [`Dat64TablePatcher`](#dat64tablepatcher) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Non-destructive `.datc64` patcher: preserves every existing row and variable-section offset byte-for-byte while appending brand-new rows, UTF-16LE strings (with PoE's 4-byte double-NUL terminator), and typed arrays. |
+| [`DatPatchDocument`](#datpatchdocument) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Declarative `.datpatch.json` document allowing a mod to compose append-only registry entries, safe in-place stock row edits, and 30-slot dead-stat allocations with Route A `StatDescriptions` overlays. |
+| [`DatTablePatch`](#dattablepatch) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Declarative append and in-place modify operations for a single `.datc64` table. |
+| [`DatAppendEntry`](#datappendentry) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | A single row to append to an appendable `.datc64` table. |
+| [`DatModifyEntry`](#datmodifyentry) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | An in-place column update on an existing stock row in a `.datc64` table. |
+| [`DeadStatAllocationSpec`](#deadstatallocationspec) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Declarative request to allocate one of the 30 live-verified dead `Stats.datc64` stock rows while preserving its stock `Stats[row].Id` (for `LocalExile` `Stat.Checksum` compatibility) and emitting a Route A `Metadata/StatDescriptions/<mod>_custom_stats.txt` overlay. |
+| [`DeadStatDescriptionSpec`](#deadstatdescriptionspec) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Tooltip description specification emitted into a Route A `Metadata/StatDescriptions/*.txt` overlay targeting the allocated dead stat's stock `Stats[row].Id`. |
+| [`DeadStatDescriptionVariant`](#deadstatdescriptionvariant) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | A single condition/text variant line in a PoE `Metadata/StatDescriptions/*.txt` block. |
+| [`IDat64Source`](#idat64source) | `interface` | `LocalExile.Client.AssetPipeline.Dat64` | Abstraction for loading stock baseline `.datc64` table bytes by logical table name (e.g. `"BaseItemTypes"`). |
+| [`InMemoryDat64Source`](#inmemorydat64source) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | In-memory `IDat64Source` backed by a table-name dictionary (ideal for tests and programmatic merging). |
+| [`DirectoryDat64Source`](#directorydat64source) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Directory-backed `IDat64Source` supporting loose `Data/<Table>.datc64`, direct `<Table>.datc64`, or live read-only extraction from PoE 3.29 `Bundles2/_.index.bin`. |
+| [`ContentRowMapEntry`](#contentrowmapentry) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Recorded metadata for a single merged content entry in `content-row-map.json`. |
+| [`ContentTableRowMap`](#contenttablerowmap) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Per-table summary and symbolic entry mapping recorded in `content-row-map.json`. |
+| [`GeneratedOverlayEntry`](#generatedoverlayentry) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Metadata for a generated Route A text overlay (e.g. `Metadata/StatDescriptions/<mod>_custom_stats.txt`). |
+| [`ContentRowMap`](#contentrowmap) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Deterministic `content-row-map.json` manifest + SHA-256 handshake digest emitted by `DatPatchMerger` so client and server can verify exact row-ID and hash parity at handshake. |
+| [`DatPatchMergeResult`](#datpatchmergeresult) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Complete output of a multi-mod `DatPatchMerger` run. |
+| [`DatPatchMerger`](#datpatchmerger) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Schema-driven multi-mod `.datc64` delta merger. Deterministically merges append/modify/allocateDeadStat patches from multiple mods into a single conflict-free set of `.datc64` binaries, Route A `Metadata/StatDescriptions/*.txt` overlays, and a SHA-256-digested `content-row-map.json`. |
 | [`PetMtxPatchSpec`](#petmtxpatchspec) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | Spec for appending a brand-new Pet MTX entry across the three 3.29.3d tables: `Data/MtxTypes.datc64`, `Data/MtxTypeGameSpecific.datc64`, and `Data/Pet.datc64`. |
 | [`PatchedPetMtxResult`](#patchedpetmtxresult) | `record` | `LocalExile.Client.AssetPipeline.Dat64` | — |
 | [`MaxwellDatPatcher`](#maxwelldatpatcher) | `class` | `LocalExile.Client.AssetPipeline.Dat64` | Appends a brand-new Pet MTX row cleanly across `MtxTypes.datc64`, `MtxTypeGameSpecific.datc64`, and `Pet.datc64` (verified column offsets against 3.29.3d `schema.min.json` and stock tables). Never modifies or replaces any stock pet row. |
@@ -330,6 +350,156 @@ public static class CurrencyDatPatcher
 
 ---
 
+### `Dat64ColumnType`
+
+**Kind:** `enum` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/Dat64Schema.cs`
+
+Logical column types supported by Path of Exile 3.29 `.datc64` tables (matching `poe-tool-dev/dat-schema`).
+
+```csharp
+public enum Dat64ColumnType
+```
+
+**Values:**
+
+| Value | Summary |
+|---|---|
+| `Bool` | — |
+| `I16` | — |
+| `U16` | — |
+| `I32` | — |
+| `U32` | — |
+| `F32` | — |
+| `String` | — |
+| `Row` | — |
+| `ForeignRow` | — |
+| `EnumRow` | — |
+| `Array` | — |
+
+---
+
+### `Dat64ColumnSchema`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/Dat64Schema.cs`
+
+Schema metadata for a single column inside a `.datc64` table.
+
+```csharp
+public sealed record Dat64ColumnSchema
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required int Index { get; init; }` | — |
+| `public required string Name { get; init; }` | — |
+| `public required Dat64ColumnType Type { get; init; }` | — |
+| `public bool IsArray { get; init; }` | — |
+| `public bool IsInterval { get; init; }` | — |
+| `public bool IsUnique { get; init; }` | — |
+| `public bool IsLocalized { get; init; }` | — |
+| `public required int Offset { get; init; }` | — |
+| `public required int Size { get; init; }` | — |
+| `public required int ElementSize { get; init; }` | — |
+| `public string? ReferenceTable { get; init; }` | — |
+| `public string? ReferenceColumn { get; init; }` | — |
+| `public bool IsOpaqueArray { get; }` | — |
+| `public bool IsForeignRowArray { get; }` | — |
+| `public bool IsRowArray { get; }` | — |
+| `public bool IsStringArray { get; }` | — |
+| `public bool UsesVariableSection { get; }` | — |
+
+---
+
+### `Dat64TableSchema`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/Dat64Schema.cs`
+
+Schema layout for a single Path of Exile 3.29 `.datc64` table.
+
+```csharp
+public sealed class Dat64TableSchema
+```
+
+**Constructors:**
+
+| Constructor | Summary |
+|---|---|
+| `public Dat64TableSchema(string name, int validFor, IReadOnlyList<Dat64ColumnSchema> columns)` | — |
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public string Name { get; }` | — |
+| `public int ValidFor { get; }` | — |
+| `public int RowStride { get; }` | — |
+| `public IReadOnlyList<Dat64ColumnSchema> Columns { get; }` | — |
+| `public Dat64ColumnSchema? PrimaryIdColumn { get; }` | — |
+| `public Dat64ColumnSchema? Hash32Column { get; }` | — |
+| `public Dat64ColumnSchema? Hash16Column { get; }` | — |
+| `public IReadOnlyList<Dat64ColumnSchema> UniqueColumns { get; }` | — |
+| `public IReadOnlyList<Dat64ColumnSchema> VariableSectionColumns { get; }` | — |
+| `public IReadOnlyList<Dat64ColumnSchema> PointerArrayColumns { get; }` | — |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public bool TryResolveColumn(string nameOrOffset, out Dat64ColumnSchema? column)` | Resolves a column by logical name (case-insensitive), `__colN`, or explicit byte offset (`@137` / `offset:137`). |
+| `public static bool TryParseByteOffset(string token, out int byteOffset)` | — |
+
+---
+
+### `Dat64SchemaRegistry`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/Dat64Schema.cs`
+
+Registry of Path of Exile 3.29 `.datc64` table schemas, appendability policy, and verified dead `Stats` slots.
+
+```csharp
+public sealed class Dat64SchemaRegistry
+```
+
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `public const int MaxTotalRows = 65_535` | — |
+| `public const int StockStatsRowCount329 = 23_362` | — |
+| `public const int ForbiddenDummyStatRow = 464` | — |
+| `public const int MtxTypesShortIdOffset = 137` | — |
+
+**Constructors:**
+
+| Constructor | Summary |
+|---|---|
+| `public Dat64SchemaRegistry(IReadOnlyDictionary<string, Dat64TableSchema> tables)` | — |
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public static IReadOnlySet<string> AppendableRegistryTables { get; }` | The 18 live-verified appendable registry tables in Path of Exile 3.29.3c/3.29.3d (mirrors `DualModPackageValidator.AppendableRegistryTables`). |
+| `public static IReadOnlySet<string> ClosedRegistryTables { get; }` | Closed tables that MUST NEVER accept appended rows in 3.29.3d (`ItemClasses` compiled 103-entry enum; `Stats` fixed 23,362 / 0x5b42 rows). |
+| `public static IReadOnlyList<int> DeadStatSlots { get; }` | The 30 live-verified dead `Stats.datc64` stock rows (`old_do_not_use_*` / `currently_unused_*`) with zero references in `Mods.sql`, `LocalExile`, and `Game.exe`'s virtual stat graph. Row `464` (`dummy_stat_display_nothing`, 375 stock refs) is strictly excluded. |
+| `public static IReadOnlySet<int> DeadStatSlotSet { get; }` | — |
+| `public IReadOnlyDictionary<string, Dat64TableSchema> Tables { get; }` | — |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static Dat64SchemaRegistry LoadDefault329()` | — |
+| `public static Dat64SchemaRegistry LoadFromFile(string path)` | — |
+| `public static Dat64SchemaRegistry LoadFromJson(string json)` | — |
+| `public bool TryGetTable(string tableName, out Dat64TableSchema? schema)` | — |
+| `public Dat64TableSchema GetRequiredTable(string tableName)` | — |
+| `public static int GetAtomSize(Dat64ColumnType type)` | — |
+
+---
+
 ### `Dat64Table`
 
 **Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/Dat64Table.cs`
@@ -346,6 +516,7 @@ public sealed class Dat64Table
 |---|---|
 | `public const ulong Sentinel = 0xBBBB_BBBB_BBBB_BBBBUL` | — |
 | `public const ulong NullForeignRow = 0xFEFE_FEFE_FEFE_FEFEUL` | — |
+| `public const uint NullEnumRow = 0xFEFE_FEFEu` | — |
 | `public const int SentinelLength = 8` | — |
 
 **Constructors:**
@@ -372,14 +543,23 @@ public sealed class Dat64Table
 | `public byte[] Serialize()` | — |
 | `public ReadOnlySpan<byte> GetRowSpan(int rowIndex)` | — |
 | `public byte ReadByte(int rowIndex, int columnOffset)` | — |
+| `public bool ReadBool(int rowIndex, int columnOffset)` | — |
+| `public short ReadInt16(int rowIndex, int columnOffset)` | — |
 | `public ushort ReadUInt16(int rowIndex, int columnOffset)` | — |
 | `public int ReadInt32(int rowIndex, int columnOffset)` | — |
 | `public uint ReadUInt32(int rowIndex, int columnOffset)` | — |
+| `public float ReadSingle(int rowIndex, int columnOffset)` | — |
 | `public ulong ReadUInt64(int rowIndex, int columnOffset)` | — |
+| `public ulong? ReadRow(int rowIndex, int columnOffset)` | — |
+| `public uint? ReadEnumRow(int rowIndex, int columnOffset)` | — |
 | `public ulong? ReadForeignRow(int rowIndex, int columnOffset)` | — |
 | `public string ReadString(int rowIndex, int columnOffset)` | Reads a UTF-16LE string referenced by the 8-byte variable-section offset stored at `columnOffset`. Supports PoE's 4-byte double-NUL terminator (and stops cleanly on any UTF-16LE NUL code unit). |
 | `public string ReadStringAtOffset(ulong varOffset)` | — |
 | `public int[] ReadInt32Array(int rowIndex, int columnOffset)` | — |
+| `public float[] ReadSingleArray(int rowIndex, int columnOffset)` | — |
+| `public uint[] ReadEnumRowArray(int rowIndex, int columnOffset)` | — |
+| `public ulong[] ReadRowArray(int rowIndex, int columnOffset)` | — |
+| `public string[] ReadStringArray(int rowIndex, int columnOffset)` | — |
 | `public ulong[] ReadForeignRowArray(int rowIndex, int columnOffset)` | — |
 | `public int FindRowByString(int stringColumnOffset, string value, StringComparison comparison = StringComparison.Ordinal)` | Finds the first row whose UTF-16LE string at `stringColumnOffset` equals `value`. |
 
@@ -414,20 +594,410 @@ public sealed class Dat64TablePatcher
 | Method | Summary |
 |---|---|
 | `public byte[] CloneRow(int templateRowIndex)` | Creates a mutable byte buffer initialized from an existing row so unknown/default columns stay valid. |
+| `public byte[] CloneRowDeep(int templateRowIndex, Dat64TableSchema schema)` | Creates a mutable byte buffer initialized from an existing row AND deep-copies every schema-known variable-section slice (`foreignrow[]`, `row[]`, `string[]`, `i32[]`, `enumrow[]`, `f32[]`, `string`, and opaque `array`) into freshly allocated offsets so PoE 3.29's in-place loader resolution can NEVER alias across two rows. |
+| `public string ReadStringAtOffset(ulong varOffset)` | — |
+| `public string ReadString(int rowIndex, int columnOffset)` | — |
+| `public byte[] CreateBlankRow(Dat64TableSchema schema)` | Creates a blank schema-initialized row with null row/foreignrow/enumrow sentinels, fresh empty strings, and fresh empty array headers so no column references invalid or aliased variable-section memory. |
+| `public void UpdateRow(int rowIndex, ReadOnlySpan<byte> rowBytes)` | Overwrites an existing row's fixed bytes in place (used for safe `modify` operations). |
 | `public ulong AppendString(string value)` | Appends a UTF-16LE string terminated by 4 zero bytes (`0x0000 0x0000`), matching real 3.29.3d `.datc64` tables. Returns its byte offset relative to the start of the variable-data sentinel. |
+| `public ulong AppendStringFresh(string value)` | Always appends a brand-new UTF-16LE string terminated by 4 zero bytes at a fresh variable-section offset without reusing any cached offset. |
 | `public (ulong Count, ulong Offset) AppendInt32Array(ReadOnlySpan<int> values)` | Appends a little-endian `i32[]` array to the variable section and returns `(count, offset)`. |
 | `public (ulong Count, ulong Offset) AppendForeignRowArray(ReadOnlySpan<ulong> targetRowIndices)` | Appends a `foreignrow[]` array (16 bytes per entry: `(rowIndex, 0)`) to the variable section. |
+| `public (ulong Count, ulong Offset) AppendRowArray(ReadOnlySpan<ulong> targetRowIndices)` | — |
+| `public (ulong Count, ulong Offset) AppendEnumRowArray(ReadOnlySpan<uint> values)` | — |
+| `public (ulong Count, ulong Offset) AppendSingleArray(ReadOnlySpan<float> values)` | — |
+| `public (ulong Count, ulong Offset) AppendStringArray(IReadOnlyList<string> values)` | — |
 | `public int AppendRow(ReadOnlySpan<byte> rowBytes)` | Appends a complete fixed-size row and returns its new 0-based row index. |
 | `public void SetString(Span<byte> row, int columnOffset, string value)` | — |
+| `public void SetStringFresh(Span<byte> row, int columnOffset, string value)` | — |
 | `public void SetInt32Array(Span<byte> row, int columnOffset, ReadOnlySpan<int> values)` | — |
+| `public void SetEnumRowArray(Span<byte> row, int columnOffset, ReadOnlySpan<uint> values)` | — |
+| `public void SetSingleArray(Span<byte> row, int columnOffset, ReadOnlySpan<float> values)` | — |
 | `public void SetForeignRowArray(Span<byte> row, int columnOffset, ReadOnlySpan<ulong> rowIndices)` | — |
+| `public void SetRowArray(Span<byte> row, int columnOffset, ReadOnlySpan<ulong> rowIndices)` | — |
+| `public void SetStringArray(Span<byte> row, int columnOffset, IReadOnlyList<string> values)` | — |
+| `public void SetEmptyArrayHeader(Span<byte> row, int columnOffset)` | — |
 | `public static void WriteBool(Span<byte> row, int columnOffset, bool value)` | — |
+| `public static void WriteInt16(Span<byte> row, int columnOffset, short value)` | — |
 | `public static void WriteUInt16(Span<byte> row, int columnOffset, ushort value)` | — |
 | `public static void WriteInt32(Span<byte> row, int columnOffset, int value)` | — |
 | `public static void WriteUInt32(Span<byte> row, int columnOffset, uint value)` | — |
+| `public static void WriteSingle(Span<byte> row, int columnOffset, float value)` | — |
+| `public static void WriteUInt64(Span<byte> row, int columnOffset, ulong value)` | — |
+| `public static void WriteRow(Span<byte> row, int columnOffset, ulong? targetRowIndex)` | — |
+| `public static void WriteEnumRow(Span<byte> row, int columnOffset, uint? enumValue)` | — |
 | `public static void WriteForeignRow(Span<byte> row, int columnOffset, ulong? targetRowIndex)` | — |
 | `public static void WriteArrayHeader(Span<byte> row, int columnOffset, ulong count, ulong varOffset)` | — |
 | `public Dat64Table BuildAndVerify()` | Finalizes the patched table and performs a full binary round-trip verification. |
+
+---
+
+### `DatPatchDocument`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchDocument.cs`
+
+Declarative `.datpatch.json` document allowing a mod to compose append-only registry entries, safe in-place stock row edits, and 30-slot dead-stat allocations with Route A `StatDescriptions` overlays.
+
+```csharp
+public sealed record DatPatchDocument
+```
+
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `public const int CurrentSchemaVersion = 1` | — |
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public int SchemaVersion { get; init; }` | Schema version of this `.datpatch.json` file (currently `1`). |
+| `public required string ModId { get; init; }` | Unique mod identifier owning this patch document. |
+| `public IReadOnlyList<string> Depends { get; init; }` | Optional mod IDs that should be merged before this mod (deterministic topological sort). |
+| `public IReadOnlyDictionary<string, DatTablePatch> Tables { get; init; }` | Per-table patch operations keyed by `.datc64` table name (e.g. `BaseItemTypes`, `CurrencyItems`, `Mods`). |
+| `public IReadOnlyList<DeadStatAllocationSpec> AllocateDeadStat { get; init; }` | Custom tooltip stat allocations carved out of the 30 live-verified dead `Stats.datc64` stock rows (keeping stock `Stats[row].Id` intact for `LocalExile`'s `Stat.Checksum` and emitting Route A `Metadata/StatDescriptions/<mod>_custom_stats.txt` overlays). |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static DatPatchDocument Parse(string json)` | — |
+| `public static DatPatchDocument LoadFromFile(string path)` | — |
+| `public string ToJson()` | — |
+
+---
+
+### `DatTablePatch`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchDocument.cs`
+
+Declarative append and in-place modify operations for a single `.datc64` table.
+
+```csharp
+public sealed record DatTablePatch
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public IReadOnlyList<DatAppendEntry> Append { get; init; }` | New rows to append to an appendable registry table (rejected on closed tables like `Stats`/`ItemClasses`). |
+| `public IReadOnlyList<DatModifyEntry> Modify { get; init; }` | In-place field updates on existing stock rows (by `rowIndex` or primary `id`). |
+
+---
+
+### `DatAppendEntry`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchDocument.cs`
+
+A single row to append to an appendable `.datc64` table.
+
+```csharp
+public sealed record DatAppendEntry
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required string Key { get; init; }` | Symbolic entry key unique per `(table, key)` across all merged mods. Referenced via `"$ref:TableName:EntryKey"` and exported in `content-row-map.json`. |
+| `public int? CloneFromRow { get; init; }` | Optional stock row index to deep-clone before applying `Fields` overrides. |
+| `public string? CloneFromId { get; init; }` | Optional stock row primary ID (e.g. `BaseItemTypes.Id`) to deep-clone before applying `Fields`. |
+| `public IReadOnlyDictionary<string, JsonElement> Fields { get; init; }` | Field overrides keyed by schema column name (e.g. `"Name"`, `"__col18"`) or byte offset (`"@137"` / `"offset:137"`). Values may use symbolic cross-table references `"$ref:TableName:EntryKey"` on row/foreignrow/array fields. |
+
+---
+
+### `DatModifyEntry`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchDocument.cs`
+
+An in-place column update on an existing stock row in a `.datc64` table.
+
+```csharp
+public sealed record DatModifyEntry
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public int? RowIndex { get; init; }` | Zero-based stock row index to modify (mutually exclusive with `Id`). |
+| `public string? Id { get; init; }` | Primary string ID (e.g. `BaseItemTypes.Id`, `Mods.Id`, or `CurrencyItems`' linked `BaseItemTypes.Id`) of the stock row to modify. |
+| `public IReadOnlyDictionary<string, JsonElement> Fields { get; init; }` | Field updates keyed by schema column name or byte offset (`"@offset"`). |
+
+---
+
+### `DeadStatAllocationSpec`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchDocument.cs`
+
+Declarative request to allocate one of the 30 live-verified dead `Stats.datc64` stock rows while preserving its stock `Stats[row].Id` (for `LocalExile` `Stat.Checksum` compatibility) and emitting a Route A `Metadata/StatDescriptions/<mod>_custom_stats.txt` overlay.
+
+```csharp
+public sealed record DeadStatAllocationSpec
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required string Key { get; init; }` | Symbolic entry key referenced via `"$ref:Stats:<key>"` and recorded in `content-row-map.json`. |
+| `public int? PreferredSlot { get; init; }` | Optional specific dead slot index from `DeadStatSlots` (never row 464). |
+| `public bool? IsPublic { get; init; }` | Optional override for `Stats.IsPublic`. |
+| `public bool? IsLocal { get; init; }` | Optional override for `Stats.IsLocal`. |
+| `public bool? IsWeaponLocal { get; init; }` | Optional override for `Stats.IsWeaponLocal`. |
+| `public int? Semantics { get; init; }` | Optional override for `Stats.Semantics` (`StatSemantics` enum value). |
+| `public bool? IsScalable { get; init; }` | Optional override for `Stats.IsScalable`. |
+| `public IReadOnlyDictionary<string, JsonElement> Fields { get; init; }` | Optional additional safe non-ID `Stats` column overrides (`Id` and `HASH32` are strictly forbidden). |
+| `public DeadStatDescriptionSpec? Description { get; init; }` | Optional Route A `Metadata/StatDescriptions/*.txt` tooltip template specification. |
+| `public string? OutputPath { get; init; }` | Optional virtual path for the generated stat description file; defaults to `Metadata/StatDescriptions/<modId>_custom_stats.txt`. |
+
+---
+
+### `DeadStatDescriptionSpec`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchDocument.cs`
+
+Tooltip description specification emitted into a Route A `Metadata/StatDescriptions/*.txt` overlay targeting the allocated dead stat's stock `Stats[row].Id`.
+
+```csharp
+public sealed record DeadStatDescriptionSpec
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public string? Template { get; init; }` | Shorthand single-variant display template (e.g. `"{0:+d}% increased Siphoned Power"`). |
+| `public string? Condition { get; init; }` | Shorthand condition when using `Template` (defaults to `"#"`). |
+| `public IReadOnlyList<string> Handlers { get; init; }` | Optional shorthand handlers when using `Template` (e.g. `["negate 1"]`). |
+| `public IReadOnlyList<DeadStatDescriptionVariant> Variants { get; init; }` | Explicit multi-variant stat description rules (takes precedence over `Template` when non-empty). |
+
+---
+
+### `DeadStatDescriptionVariant`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchDocument.cs`
+
+A single condition/text variant line in a PoE `Metadata/StatDescriptions/*.txt` block.
+
+```csharp
+public sealed record DeadStatDescriptionVariant
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public string Condition { get; init; }` | PoE stat condition expression (e.g. `"#"`, `"1\|#"`, `"#\|-1"`, `"!0"`). |
+| `public required string Text { get; init; }` | PoE stat display string (e.g. `"{0:+d}% increased Siphoned Power"`). |
+| `public IReadOnlyList<string> Handlers { get; init; }` | Optional PoE trailing handlers (e.g. `["negate 1", "canonical_line"]`). |
+
+---
+
+### `IDat64Source`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Abstraction for loading stock baseline `.datc64` table bytes by logical table name (e.g. `"BaseItemTypes"`).
+
+```csharp
+public interface IDat64Source
+```
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `bool TryReadTable(string tableName, out byte[] bytes)` | — |
+
+---
+
+### `InMemoryDat64Source`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+In-memory `IDat64Source` backed by a table-name dictionary (ideal for tests and programmatic merging).
+
+```csharp
+public sealed class InMemoryDat64Source: IDat64Source
+```
+
+**Constructors:**
+
+| Constructor | Summary |
+|---|---|
+| `public InMemoryDat64Source(IReadOnlyDictionary<string, byte[]> tables)` | — |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public bool TryReadTable(string tableName, out byte[] bytes)` | — |
+
+---
+
+### `DirectoryDat64Source`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Directory-backed `IDat64Source` supporting loose `Data/<Table>.datc64`, direct `<Table>.datc64`, or live read-only extraction from PoE 3.29 `Bundles2/_.index.bin`.
+
+```csharp
+public sealed class DirectoryDat64Source: IDat64Source, IDisposable
+```
+
+**Constructors:**
+
+| Constructor | Summary |
+|---|---|
+| `public DirectoryDat64Source(string rootDir)` | — |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public bool TryReadTable(string tableName, out byte[] bytes)` | — |
+| `public void Dispose()` | — |
+
+---
+
+### `ContentRowMapEntry`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Recorded metadata for a single merged content entry in `content-row-map.json`.
+
+```csharp
+public sealed record ContentRowMapEntry
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required string ModId { get; init; }` | — |
+| `public required int RowIndex { get; init; }` | — |
+| `public uint? Hash32 { get; init; }` | — |
+| `public ushort? Hash16 { get; init; }` | — |
+| `public string? StockId { get; init; }` | — |
+
+---
+
+### `ContentTableRowMap`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Per-table summary and symbolic entry mapping recorded in `content-row-map.json`.
+
+```csharp
+public sealed record ContentTableRowMap
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required int StockRowCount { get; init; }` | — |
+| `public required int MergedRowCount { get; init; }` | — |
+| `public required string TableSha256 { get; init; }` | — |
+| `public required IReadOnlyDictionary<string, ContentRowMapEntry> Entries { get; init; }` | — |
+
+---
+
+### `GeneratedOverlayEntry`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Metadata for a generated Route A text overlay (e.g. `Metadata/StatDescriptions/<mod>_custom_stats.txt`).
+
+```csharp
+public sealed record GeneratedOverlayEntry
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required string VirtualPath { get; init; }` | — |
+| `public required string Sha256 { get; init; }` | — |
+
+---
+
+### `ContentRowMap`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Deterministic `content-row-map.json` manifest + SHA-256 handshake digest emitted by `DatPatchMerger` so client and server can verify exact row-ID and hash parity at handshake.
+
+```csharp
+public sealed record ContentRowMap
+```
+
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `public const int CurrentSchemaVersion = 1` | — |
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public int SchemaVersion { get; init; }` | — |
+| `public required string Digest { get; init; }` | — |
+| `public required IReadOnlyList<string> Mods { get; init; }` | — |
+| `public required IReadOnlyDictionary<string, ContentTableRowMap> Tables { get; init; }` | — |
+| `public required IReadOnlyList<GeneratedOverlayEntry> GeneratedOverlays { get; init; }` | — |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public string ToJson()` | — |
+| `public static ContentRowMap Parse(string json)` | — |
+
+---
+
+### `DatPatchMergeResult`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Complete output of a multi-mod `DatPatchMerger` run.
+
+```csharp
+public sealed record DatPatchMergeResult(IReadOnlyDictionary<string, byte[]> MergedTables, IReadOnlyDictionary<string, byte[]> GeneratedOverlays, ContentRowMap RowMap, string RowMapJson)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `IReadOnlyDictionary<string, byte[]> MergedTables` | — |
+| `IReadOnlyDictionary<string, byte[]> GeneratedOverlays` | — |
+| `ContentRowMap RowMap` | — |
+| `string RowMapJson` | — |
+
+---
+
+### `DatPatchMerger`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Dat64` · **Source:** `LocalExile.Client.AssetPipeline/Dat64/DatPatchMerger.cs`
+
+Schema-driven multi-mod `.datc64` delta merger. Deterministically merges append/modify/allocateDeadStat patches from multiple mods into a single conflict-free set of `.datc64` binaries, Route A `Metadata/StatDescriptions/*.txt` overlays, and a SHA-256-digested `content-row-map.json`.
+
+```csharp
+public static class DatPatchMerger
+```
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static DatPatchMergeResult Merge(IDat64Source source, IReadOnlyList<DatPatchDocument> patches, Dat64SchemaRegistry? schemaRegistry = null, string? outputDirectory = null)` | Merges an ordered/unordered set of `DatPatchDocument` patches against stock `.datc64` tables and optionally writes the `Mods/Client/.merged-cache/` output directory layout. |
+| `public static byte[] BuildStatDescriptionsOverlayBytes(IReadOnlyList<(string StockId, DeadStatDescriptionSpec Spec)> blocks)` | Generates UTF-16LE (with BOM `FF FE` and `CRLF` line endings) PoE 3.29 `Metadata/StatDescriptions/*.txt` overlay bytes mapping custom display templates onto stock dead-slot `Stats[row].Id` identifiers. |
+| `public static void VerifyNoPointerArrayAliasing(Dat64TableSchema schema, Dat64Table table, int stockRowCount, IReadOnlySet<int>? modifiedRows = null)` | Verifies that no appended or modified row shares a non-empty variable-section offset on any `foreignrow[]` or `row[]` column with any other row in the table (preventing PoE 3.29's in-place pointer resolution crash at `Game.patched.exe + 0x129838`). |
 
 ---
 

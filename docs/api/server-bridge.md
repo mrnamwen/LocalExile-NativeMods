@@ -3,7 +3,7 @@
 
 # ServerBridge API Reference
 
-> **Assembly:** `LocalExile.Client.ServerBridge` · **Public types:** `67`
+> **Assembly:** `LocalExile.Client.ServerBridge` · **Public types:** `72`
 >
 > Gateway-side dual-mod host (`ClientBridgeHost`, `LocalExileGatewayHost`), Tier 1 `0.3.0`/`0.4.0` sessions (`IClientPhase1Session`, `IClientPhase2Session`), server-driven UI (`IClientUiSession`), atomic item transactions (`LocalExileGatewayTransactions`), custom Pet MTX & Currency registrars, and affix manipulation (`LocalExileItemAffixService`).
 
@@ -49,6 +49,9 @@
 | [`GatewayCosmeticChangeContext`](#gatewaycosmeticchangecontext) | `record` | `LocalExile.Client.ServerBridge` | Lightweight Gateway cosmetic change context forwarded from `GameEvents.CosmeticChanged`. |
 | [`GatewayCharacterCreatedContext`](#gatewaycharactercreatedcontext) | `class` | `LocalExile.Client.ServerBridge` | Lightweight mutable Gateway character-creation context forwarded from `GameEvents.CharacterCreated` (LocalExile Core Hooks Part 2a) without creating a compile-time dependency on `GameServer.Gateway`. Mutations to `StartingAreaId`, `StartingLevel`, and `SuppressStartKit` are propagated back onto the underlying Gateway `CharacterCreatedContext` before Auth completes creation. |
 | [`GatewayVendorQuoteResult`](#gatewayvendorquoteresult) | `record` | `LocalExile.Client.ServerBridge` | Lightweight result projected from LocalExile's `GameEvents.QuoteVendor` (`VendorQuoteResult`). |
+| [`GatewayCustomBaseItemRegistration`](#gatewaycustombaseitemregistration) | `record` | `LocalExile.Client.ServerBridge` | Declarative descriptor for registering a custom base item into LocalExile Part 2b's `ItemCatalog.RegisterOverlay` via reflection (zero hard compile-time dependency on `GameServer.Gateway`). |
+| [`GatewayCustomUniqueRegistration`](#gatewaycustomuniqueregistration) | `record` | `LocalExile.Client.ServerBridge` | Declarative descriptor for registering a custom unique item into LocalExile Part 2b's `UniqueCatalog.RegisterOverlay` via reflection (zero hard compile-time dependency on `GameServer.Gateway`). |
+| [`GatewayDropPoolEntryRegistration`](#gatewaydroppoolentryregistration) | `record` | `LocalExile.Client.ServerBridge` | Declarative descriptor for registering a custom drop-pool entry into LocalExile Part 2b's `DropPoolOverlays.Register` / `DropDataProvider.Default.Overlays` via reflection (zero hard compile-time dependency on `GameServer.Gateway`). |
 | [`ILocalExileGatewayAdapter`](#ilocalexilegatewayadapter) | `interface` | `LocalExile.Client.ServerBridge` | Abstraction over LocalExile's `global::Client`, `global::GameEvents`, and `global::Program` allowing `LocalExileGatewayHost` and `LocalExileGatewaySink` to work both via cached reflection against live Gateway assemblies and with fake adapters in unit tests. |
 | [`LocalExileGatewayHostOptions`](#localexilegatewayhostoptions) | `class` | `LocalExile.Client.ServerBridge` | Configuration options for `LocalExileGatewayHost`. |
 | [`LocalExileGatewayHostBuilder`](#localexilegatewayhostbuilder) | `class` | `LocalExile.Client.ServerBridge` | Fluent builder configuring a `LocalExileGatewayHost` created via `Create`. |
@@ -60,6 +63,7 @@
 | [`IBatchingGatewayPacketSink`](#ibatchinggatewaypacketsink) | `interface` | `LocalExile.Client.ServerBridge` | Optional extension of `IGatewayPacketSink` supporting batched delivery of outbound packets and chat replies flushed from an `IClientCommandBatch`. |
 | [`IClientCommandBatch`](#iclientcommandbatch) | `interface` | `LocalExile.Client.ServerBridge` | Deferred outbound command/UI batch scoped to a single `IClientSession`. Commands queued while the batch is active are coalesced safely and flushed in order on `FlushAsync` or `DisposeAsync`. Synchronous `Dispose` flushes non-blockingly without deadlocking. |
 | [`ClientBridgeOptions`](#clientbridgeoptions) | `record` | `LocalExile.Client.ServerBridge` | Configuration options for `ClientBridgeHost`. |
+| [`ContentRowMapDigestMismatchEventArgs`](#contentrowmapdigestmismatcheventargs) | `record` | `LocalExile.Client.ServerBridge` | Event payload raised by `ContentRowMapDigestMismatch` when a client's `ContentRowMapDigest` does not match the server's expected `content-row-map.json` SHA-256 digest. |
 | [`IClientUiSession`](#iclientuisession) | `interface` | `LocalExile.Client.ServerBridge` | Server-driven UI helper bound to a specific player connection, allowing server-only mods to open and update `.ui` windows and receive control click/submit events without a custom client DLL. |
 | [`ServerUiWindowHandle`](#serveruiwindowhandle) | `class` | `LocalExile.Client.ServerBridge` | Ergonomic handle referencing an open server-driven window on a specific client connection. |
 | [`IClientSession`](#iclientsession) | `interface` | `LocalExile.Client.ServerBridge` | Per-connection NativeMods session tracked by `ClientBridgeHost` on the LocalExile Gateway. |
@@ -80,6 +84,7 @@
 | [`ServerSlotButtonHandle`](#serverslotbuttonhandle) | `class` | `LocalExile.Client.ServerBridge` | Ergonomic handle representing a server-registered native toolbar button in a managed `ScreenSlot`. |
 | [`ServerHotkeyHandle`](#serverhotkeyhandle) | `class` | `LocalExile.Client.ServerBridge` | Ergonomic handle representing a server-registered centralized keybind/hotkey on a connected client. |
 | [`IClientPhase1Session`](#iclientphase1session) | `interface` | `LocalExile.Client.ServerBridge` | Tier 1 `ServerBridge 0.3.0` session surface allowing single-`.cs` server mods (with zero custom client DLL) to attach native toolbar buttons to managed `ScreenSlot`s, display HUD toasts, register suppressible keybinds/mouse chords, and query or subscribe to client screen, stash-tab, and item hover state. |
+| [`ServerContentRowMap`](#servercontentrowmap) | `class` | `LocalExile.Client.ServerBridge` | Server-side helper loader and resolver for `Mods/Client/.merged-cache/content-row-map.json`. Allows LocalExile server mods to load the Waypoint-built row map, bind its SHA-256 digest onto `ClientBridgeHost` for handshake verification, and resolve symbolic `(table, entryKey) -> { rowIndex, hash32, hash16, stockId }` values deterministically. |
 
 ## Namespace `LocalExile.Client.ServerBridge`
 
@@ -1096,6 +1101,108 @@ public sealed record GatewayVendorQuoteResult(IReadOnlyList<object> Rewards, IRe
 
 ---
 
+### `GatewayCustomBaseItemRegistration`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/LocalExileGatewayHost.cs`
+
+Declarative descriptor for registering a custom base item into LocalExile Part 2b's `ItemCatalog.RegisterOverlay` via reflection (zero hard compile-time dependency on `GameServer.Gateway`).
+
+```csharp
+public sealed record GatewayCustomBaseItemRegistration(string MetadataPath, string Name, string ItemClass, int Width = 1, int Height = 1, int DropLevel = 1, int StackSize = 1, uint? Hash32 = null, int? RowIndex = null, IReadOnlyList<string>? Tags = null, IReadOnlyDictionary<string, object?>? ExtraProperties = null, ushort VisualIdentityHash = 0, string? VisualIdentityId = null, IReadOnlyList<string>? Components = null, int MaxCharges = 0, int FullStackRow = - 1, string? CurrencyAction = null, uint? NameWordHash = null)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string MetadataPath` | — |
+| `string Name` | — |
+| `string ItemClass` | — |
+| `int Width = 1` | — |
+| `int Height = 1` | — |
+| `int DropLevel = 1` | — |
+| `int StackSize = 1` | — |
+| `uint? Hash32 = null` | — |
+| `int? RowIndex = null` | — |
+| `IReadOnlyList<string>? Tags = null` | — |
+| `IReadOnlyDictionary<string, object?>? ExtraProperties = null` | — |
+| `ushort VisualIdentityHash = 0` | — |
+| `string? VisualIdentityId = null` | — |
+| `IReadOnlyList<string>? Components = null` | — |
+| `int MaxCharges = 0` | — |
+| `int FullStackRow = - 1` | — |
+| `string? CurrencyAction = null` | — |
+| `uint? NameWordHash = null` | — |
+
+---
+
+### `GatewayCustomUniqueRegistration`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/LocalExileGatewayHost.cs`
+
+Declarative descriptor for registering a custom unique item into LocalExile Part 2b's `UniqueCatalog.RegisterOverlay` via reflection (zero hard compile-time dependency on `GameServer.Gateway`).
+
+```csharp
+public sealed record GatewayCustomUniqueRegistration(string UniqueId, string Name, string BaseItemMetadataPath, int DropLevel = 1, double Weight = 100.0, IReadOnlyList<string>? ImplicitModIds = null, IReadOnlyList<string>? ExplicitModIds = null, string? FlavourText = null, ushort? VisualIdentityHash = null, IReadOnlyDictionary<string, object?>? ExtraProperties = null, byte ItemLevel = 86, string? CustomName = null, uint? NameWordHash = null, double? RuthlessDropWeight = null)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string UniqueId` | — |
+| `string Name` | — |
+| `string BaseItemMetadataPath` | — |
+| `int DropLevel = 1` | — |
+| `double Weight = 100.0` | — |
+| `IReadOnlyList<string>? ImplicitModIds = null` | — |
+| `IReadOnlyList<string>? ExplicitModIds = null` | — |
+| `string? FlavourText = null` | — |
+| `ushort? VisualIdentityHash = null` | — |
+| `IReadOnlyDictionary<string, object?>? ExtraProperties = null` | — |
+| `byte ItemLevel = 86` | — |
+| `string? CustomName = null` | — |
+| `uint? NameWordHash = null` | — |
+| `double? RuthlessDropWeight = null` | — |
+
+---
+
+### `GatewayDropPoolEntryRegistration`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/LocalExileGatewayHost.cs`
+
+Declarative descriptor for registering a custom drop-pool entry into LocalExile Part 2b's `DropPoolOverlays.Register` / `DropDataProvider.Default.Overlays` via reflection (zero hard compile-time dependency on `GameServer.Gateway`).
+
+```csharp
+public sealed record GatewayDropPoolEntryRegistration(string PoolId, string EntryKey, string ItemMetadataPath, double Weight = 100.0, int MinAreaLevel = 1, int? MaxAreaLevel = null, bool IsUnique = false, IReadOnlyList<string>? RequiredAreaTags = null, IReadOnlyDictionary<string, object?>? ExtraProperties = null, string? Monsters = null, string? Sources = null, IReadOnlyList<string>? MonsterArchetypes = null, IReadOnlyList<string>? Leagues = null, bool? HardModeOnly = null, double? Chance = null, ushort StackSize = 1, bool ExceptionalGem = false, bool AtlasOnly = false, bool? IsUtilityFlask = null)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string PoolId` | — |
+| `string EntryKey` | — |
+| `string ItemMetadataPath` | — |
+| `double Weight = 100.0` | — |
+| `int MinAreaLevel = 1` | — |
+| `int? MaxAreaLevel = null` | — |
+| `bool IsUnique = false` | — |
+| `IReadOnlyList<string>? RequiredAreaTags = null` | — |
+| `IReadOnlyDictionary<string, object?>? ExtraProperties = null` | — |
+| `string? Monsters = null` | — |
+| `string? Sources = null` | — |
+| `IReadOnlyList<string>? MonsterArchetypes = null` | — |
+| `IReadOnlyList<string>? Leagues = null` | — |
+| `bool? HardModeOnly = null` | — |
+| `double? Chance = null` | — |
+| `ushort StackSize = 1` | — |
+| `bool ExceptionalGem = false` | — |
+| `bool AtlasOnly = false` | — |
+| `bool? IsUtilityFlask = null` | — |
+
+---
+
 ### `ILocalExileGatewayAdapter`
 
 **Kind:** `interface` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/LocalExileGatewayHost.cs`
@@ -1111,6 +1218,7 @@ public interface ILocalExileGatewayAdapter
 | Property | Summary |
 |---|---|
 | `bool SupportsCoreClientChannel { get; }` | Returns `true` when `global::Client.For(player)` / `OnRuleset` / `OnCommand` is available. |
+| `bool SupportsCatalogRegistration { get; }` | Returns `true` when LocalExile Part 2b custom catalog / drop-pool registration hooks (`ItemCatalog`, `UniqueCatalog`, or drop-pool registry) are available in the loaded Gateway. |
 
 **Methods:**
 
@@ -1135,6 +1243,9 @@ public interface ILocalExileGatewayAdapter
 | `IDisposable? SubscribeCosmeticChanged(string ownerId, Func<GatewayCosmeticChangeContext, Task> onCosmeticChanged)` | Subscribes to `GameEvents.CosmeticChanged` if available. |
 | `IDisposable? SubscribeCharacterCreated(string ownerId, Func<GatewayCharacterCreatedContext, Task> onCharacterCreated)` | Subscribes to `GameEvents.CharacterCreated` (LocalExile Core Hooks Part 2a) if available. |
 | `GatewayVendorQuoteResult? TryQuoteVendor(object player, IEnumerable offeredItems)` | Evaluates a vendor sale quote via `GameEvents.QuoteVendor` (LocalExile Core Hooks Part 2a) if available. |
+| `IDisposable? TryRegisterCustomBaseItem(string ownerId, GatewayCustomBaseItemRegistration registration)` | Registers a custom base item in LocalExile Part 2b's `ItemCatalog` if available. |
+| `IDisposable? TryRegisterCustomUnique(string ownerId, GatewayCustomUniqueRegistration registration)` | Registers a custom unique item in LocalExile Part 2b's `UniqueCatalog` if available. |
+| `IDisposable? TryRegisterDropPoolEntry(string ownerId, GatewayDropPoolEntryRegistration registration)` | Registers a declarative loot drop-pool entry in LocalExile Part 2b's drop-pool registry if available. |
 
 ---
 
@@ -1248,6 +1359,7 @@ public sealed class LocalExileGatewayHost: IDisposable
 | `public ClientBridgeHost Bridge { get; }` | Managed ServerBridge host. |
 | `public LocalExileGatewaySink Sink { get; }` | Outbound Gateway packet/chat sink backed by this host's active player registry. |
 | `public GatewayBridgeRegistration? BusRegistration { get; }` | Cross-ALC `GatewayBridgeBus` registration, if attached. |
+| `public bool SupportsCatalogRegistration { get; }` | Returns `true` when the loaded Gateway exposes Part 2b `ItemCatalog`, `UniqueCatalog`, or drop-pool registration entry points. |
 
 **Methods:**
 
@@ -1263,6 +1375,9 @@ public sealed class LocalExileGatewayHost: IDisposable
 | `public IDisposable RegisterPacket(ushort opcode, Func<GatewayPlayerContext, byte[], Task<bool >> handler)` | Registers a Gateway packet handler (`GameEvents.Packet(opcode)`) tracked for automatic disposal. |
 | `public IDisposable? RegisterCharacterCreated(Func<GatewayCharacterCreatedContext, Task> handler)` | Registers a `GameEvents.CharacterCreated` handler (Core Hooks Part 2a) tracked for automatic disposal. Returns `null` when running against an older Gateway build that does not expose `GameEvents.CharacterCreated`. |
 | `public GatewayVendorQuoteResult? QuoteVendor(object player, IEnumerable offeredItems)` | Evaluates a vendor sale quote via `GameEvents.QuoteVendor` (Core Hooks Part 2a), returning `null` when no vendor quote provider is registered or when running on an older Gateway build. |
+| `public IDisposable? RegisterCustomBaseItem(GatewayCustomBaseItemRegistration registration)` | Registers a custom base item into LocalExile Part 2b's `ItemCatalog` via reflection and tracks the returned `IDisposable` for automatic cleanup on unload. Returns `null` when running on an older Gateway build without Part 2b catalog hooks. |
+| `public IDisposable? RegisterCustomUnique(GatewayCustomUniqueRegistration registration)` | Registers a custom unique item into LocalExile Part 2b's `UniqueCatalog` via reflection and tracks the returned `IDisposable` for automatic cleanup on unload. Returns `null` when running on an older Gateway build without Part 2b catalog hooks. |
+| `public IDisposable? RegisterDropPoolEntry(GatewayDropPoolEntryRegistration registration)` | Registers a declarative drop-pool entry into LocalExile Part 2b's drop-pool registry via reflection and tracks the returned `IDisposable` for automatic cleanup on unload. Returns `null` when running on an older Gateway build without Part 2b drop-pool hooks. |
 | `public void Dispose()` | — |
 
 ---
@@ -1392,7 +1507,31 @@ public sealed record ClientBridgeOptions
 | `public NetTransportKind DefaultTransport { get; init; }` | Default transport used before a client's handshake selects a transport. |
 | `public string? DefaultChannel { get; init; }` | Optional default mod channel identifier used by channel-less `SendAsync` overloads. |
 | `public IReadOnlyList<string> RequiredMods { get; init; }` | Optional list of client mod ids requested by the server. |
+| `public string? ExpectedContentRowMapDigest { get; init; }` | Optional SHA-256 digest of the server's expected `content-row-map.json`. When configured (directly or via `ContentRowMap`), `ClientBridgeHost` verifies every incoming `ContentRowMapDigest` and raises `ContentRowMapDigestMismatch` rather than silently desyncing row IDs. |
+| `public ContentRowMap? ContentRowMap { get; init; }` | Optional server-loaded `ContentRowMap` whose `Digest` is used when `ExpectedContentRowMapDigest` is not explicitly set. |
 | `public IReadOnlyList<string> ServerCapabilities { get; init; }` | Server capabilities advertised in `ServerHandshake`. |
+
+---
+
+### `ContentRowMapDigestMismatchEventArgs`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgeContracts.cs`
+
+Event payload raised by `ContentRowMapDigestMismatch` when a client's `ContentRowMapDigest` does not match the server's expected `content-row-map.json` SHA-256 digest.
+
+```csharp
+public sealed record ContentRowMapDigestMismatchEventArgs(string ConnectionId, IClientSession Session, string? ClientDigest, string? ExpectedDigest, string Message)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string ConnectionId` | Unique Gateway connection identifier. |
+| `IClientSession Session` | The connected `IClientSession` whose digest mismatched. |
+| `string? ClientDigest` | Digest advertised by the client host, or `null` if the client mounted no `.merged-cache/`. |
+| `string? ExpectedDigest` | Expected SHA-256 digest configured on the server bridge. |
+| `string Message` | Human-readable diagnostic warning explaining the mismatch. |
 
 ---
 
@@ -1479,6 +1618,9 @@ public interface IClientSession: IClientPhase1Session, IClientPhase2Session
 | `ClientBuildId ClientBuild { get; }` | Detected 3.29 build of this client. |
 | `string? ExtenderVersion { get; }` | Extender version reported by this client, or `null` if stock. |
 | `string? ClientSdkVersion { get; }` | Client SDK version reported by this client, or `null` if stock. |
+| `string? ClientContentRowMapDigest { get; }` | SHA-256 `content-row-map.json` digest reported by this client during handshake, or `null` if none. |
+| `string? ExpectedContentRowMapDigest { get; }` | SHA-256 `content-row-map.json` digest expected by the server bridge, or `null` if not enforced. |
+| `bool? IsContentRowMapDigestMatched { get; }` | `true` if `ClientContentRowMapDigest` matches `ExpectedContentRowMapDigest`, `false` if mismatched, or `null` when the server has no expected digest configured or no handshake was received. |
 | `IReadOnlyCollection<InstalledClientModInfo> InstalledMods { get; }` | Client mods reported as installed and enabled during handshake. |
 | `IReadOnlyCollection<string> ClientMods { get; }` | Identifiers of installed client mods reported during handshake. |
 | `IClientUiSession Ui { get; }` | Server-driven UI helper for this connection. |
@@ -1996,5 +2138,47 @@ public interface IClientPhase1Session
 | `Task<IDisposable> OnHoverChangedAsync(Action<IClientSession, ClientHoverStateSnapshot> handler, CancellationToken cancellationToken = default)` | Subscribes synchronously to opt-in client hover/cursor state change notifications. |
 | `Task<IDisposable> OnHoverChangedAsync(Func<IClientSession, ClientHoverStateSnapshot, Task> handler, CancellationToken cancellationToken = default)` | Subscribes asynchronously to opt-in client hover/cursor state change notifications. |
 | `Task<IDisposable> OnHoverChangedAsync(Func<IClientSession, ClientHoverStateSnapshot, CancellationToken, Task> handler, CancellationToken cancellationToken = default)` | Subscribes asynchronously with cancellation support to opt-in client hover/cursor state change notifications. |
+
+---
+
+### `ServerContentRowMap`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerContentRowMap.cs`
+
+Server-side helper loader and resolver for `Mods/Client/.merged-cache/content-row-map.json`. Allows LocalExile server mods to load the Waypoint-built row map, bind its SHA-256 digest onto `ClientBridgeHost` for handshake verification, and resolve symbolic `(table, entryKey) -> { rowIndex, hash32, hash16, stockId }` values deterministically.
+
+```csharp
+public sealed class ServerContentRowMap
+```
+
+**Constructors:**
+
+| Constructor | Summary |
+|---|---|
+| `public ServerContentRowMap(ContentRowMap rowMap)` | Creates a new `ServerContentRowMap` wrapper around `rowMap`. |
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public ContentRowMap RowMap { get; }` | Underlying parsed `ContentRowMap` manifest. |
+| `public string Digest { get; }` | Deterministic SHA-256 digest of `RowMap` matching `ContentRowMapDigest`. |
+| `public IReadOnlyList<string> Mods { get; }` | Deterministically ordered mod identifiers included in this merged cache. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static ServerContentRowMap Parse(string json)` | Parses a `content-row-map.json` string into a `ServerContentRowMap`. |
+| `public static ServerContentRowMap LoadFromFile(string path)` | Loads `content-row-map.json` directly from `path`. |
+| `public static ServerContentRowMap? TryLoadFromMergedCache(string mergedCachePathOrFile)` | Attempts to load `content-row-map.json` from a `.merged-cache/` directory (or directly from a file path). Returns `null` if the file does not exist. |
+| `public static ServerContentRowMap? TryLoadFromLocalExileRoot(string localExileRoot)` | Attempts to load `<localExileRoot>/Mods/Client/.merged-cache/content-row-map.json`. Returns `null` if no merged cache exists. |
+| `public static ServerContentRowMap? TryLoadAndBind(ClientBridgeHost bridge, string pathOrMergedCacheDir)` | Loads `content-row-map.json` from `pathOrMergedCacheDir` and binds it onto `bridge` so all incoming client handshakes are verified against its digest. |
+| `public bool TryResolveRow(string tableName, string entryKey, [NotNullWhen(true)] out ContentRowEntry? entry)` | Resolves a merged entry by table name and symbolic entry key. |
+| `public ContentRowEntry RequireRow(string tableName, string entryKey)` | Resolves a merged entry or throws `KeyNotFoundException` if absent. |
+| `public int RequireRowIndex(string tableName, string entryKey)` | Resolves the merged row index for `(tableName, entryKey)`. |
+| `public uint RequireHash32(string tableName, string entryKey)` | Resolves the computed `HASH32` for `(tableName, entryKey)`. |
+| `public ushort RequireHash16(string tableName, string entryKey)` | Resolves the allocated `HASH16` for `(tableName, entryKey)`. |
+| `public string RequireStockId(string tableName, string entryKey)` | Resolves the preserved stock `Stats[row].Id` for a dead-stat allocation. |
 
 ---

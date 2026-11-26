@@ -3,7 +3,7 @@
 
 # Waypoint Integration API Reference
 
-> **Assembly:** `LocalExile.Client.Waypoint` · **Public types:** `39`
+> **Assembly:** `LocalExile.Client.Waypoint` · **Public types:** `40`
 >
 > Dual-side `mod.json` manifest models (`DualModManifest`, `NativeClientManifest`), package & `.ui` validation (`DualModPackageValidator`, `UiLayoutLinter`), stored-block `NMB1` bundling (`ModBundlePacker`), SemVer ranges, PE patcher bridge, and installer/extender management (`WaypointModInstaller`, `WaypointExtenderManager`).
 
@@ -46,6 +46,7 @@
 | [`ExtenderOperationResult`](#extenderoperationresult) | `record` | `LocalExile.Client.Waypoint` | Result of installing or removing the NativeMods script extender. |
 | [`WaypointExtenderManager`](#waypointextendermanager) | `class` | `LocalExile.Client.Waypoint` | High-level Waypoint API for inspecting, installing, verifying, and cleanly removing the NativeMods script extender (`LocalExile.ClientHost.dll` + managed host bundle + PE import patch). Never modifies `Client/Game.exe`, `Client/Content.ggpk`, or `Client/Bundles2/`. |
 | [`InstallOptions`](#installoptions) | `record` | `LocalExile.Client.Waypoint` | Options controlling how `WaypointModInstaller` deploys a dual-side mod. |
+| [`MergedCacheBuildResult`](#mergedcachebuildresult) | `record` | `LocalExile.Client.Waypoint` | Result of rebuilding `Mods/Client/.merged-cache/` via `DatPatchMerger`. |
 | [`DeployedFileRecord`](#deployedfilerecord) | `record` | `LocalExile.Client.Waypoint` | A single file recorded in the deployment ledger. |
 | [`InstalledDualModRecord`](#installeddualmodrecord) | `record` | `LocalExile.Client.Waypoint` | Deployment record for one installed dual-side mod in `Mods/Client/.nativemods-ledger.json`. |
 | [`DeploymentLedger`](#deploymentledger) | `record` | `LocalExile.Client.Waypoint` | Persistent deployment ledger stored at `<serverRoot>/Mods/Client/.nativemods-ledger.json`. |
@@ -207,6 +208,7 @@ public sealed record NativeClientManifest
 | `public string? BundleSha256 { get; init; }` | — |
 | `public IReadOnlyList<string> Overlays { get; init; }` | — |
 | `public IReadOnlyList<string> Replaces { get; init; }` | — |
+| `public IReadOnlyList<string> DatPatches { get; init; }` | Relative paths under `PayloadDir` to declarative `.datpatch.json` files merged conflict-free into `Mods/Client/.merged-cache/` by `DatPatchMerger`. |
 | `public bool RawAccess { get; init; }` | — |
 | `public string? RawAccessJustification { get; init; }` | — |
 | `public IReadOnlyList<CustomOpcodeDeclaration> CustomOpcodes { get; init; }` | — |
@@ -310,7 +312,7 @@ public sealed record WaypointCatalogModEntry
 **Kind:** `record` · **Namespace:** `LocalExile.Client.Waypoint` · **Source:** `LocalExile.Client.Waypoint/DualModManifest.cs`
 
 ```csharp
-public sealed record WaypointCatalogClientSummary([property: JsonPropertyName("required")] bool Required, [property: JsonPropertyName("sdkVersionRange")] string SdkVersionRange, [property: JsonPropertyName("rawAccess")] bool RawAccess, [property: JsonPropertyName("replacesCount")] int ReplacesCount, [property: JsonPropertyName("hasClientAssembly")] bool HasClientAssembly)
+public sealed record WaypointCatalogClientSummary([property: JsonPropertyName("required")] bool Required, [property: JsonPropertyName("sdkVersionRange")] string SdkVersionRange, [property: JsonPropertyName("rawAccess")] bool RawAccess, [property: JsonPropertyName("replacesCount")] int ReplacesCount, [property: JsonPropertyName("hasClientAssembly")] bool HasClientAssembly, [property: JsonPropertyName("datPatchesCount")] int DatPatchesCount = 0)
 ```
 
 **Parameters / Properties:**
@@ -322,6 +324,7 @@ public sealed record WaypointCatalogClientSummary([property: JsonPropertyName("r
 | `[property: JsonPropertyName("rawAccess")] bool RawAccess` | — |
 | `[property: JsonPropertyName("replacesCount")] int ReplacesCount` | — |
 | `[property: JsonPropertyName("hasClientAssembly")] bool HasClientAssembly` | — |
+| `[property: JsonPropertyName("datPatchesCount")] int DatPatchesCount = 0` | — |
 
 ---
 
@@ -425,6 +428,8 @@ public static class DualModPackageValidator
 | `public static ValidationReport ValidateManifest(DualModManifest manifest, SemVer? currentSdkVersion = null)` | Validates a `DualModManifest` without inspecting disk files. |
 | `public static ValidationReport ValidatePackageDirectory(string packageDir, SemVer? currentSdkVersion = null)` | Validates a complete dual-side mod package directory on disk (manifest, payload namespace rules, declared replaces/overlays vs actual files, `.ui` linting, file limits, and SHA-256 digests). |
 | `public static IReadOnlyList<CrossModConflict> DetectConflicts(IEnumerable<DualModManifest> manifests)` | Detects collisions across a set of dual-side mods (duplicate IDs, overlapping replaced/overlay paths, custom opcodes, GEAL built-ins, custom UI controls, and content registry entries). |
+| `public static ValidationReport ValidateDatPatchJson(string json, string? expectedModId = null, string? filePath = null)` | Validates a standalone `.datpatch.json` payload (JSON syntax, schema table membership, 18 verified `AppendableRegistryTables` for `append`, hard rejection of closed `Stats`/`ItemClasses` tables for `append`, and valid `allocateDeadStat` slots). |
+| `public static IReadOnlyList<CrossModConflict> DetectDatPatchConflicts(IEnumerable<DatPatchDocument> patches)` | Detects cross-mod collisions across declarative `.datpatch.json` documents. Two mods appending distinct entry keys to the SAME `.datc64` table produce ZERO conflicts; conflicts are reported only for duplicate `(table, entryKey)` keys, colliding explicit `allocateDeadStat.preferredSlot` assignments, or exceeding the 30-slot dead-stat pool. |
 | `public static bool IsModNamespacedPath(string virtualPath, string modId)` | Returns true if a virtual path is properly namespaced under a `Mods/<segment>/` path matching the mod id (or its final hyphen-separated component, e.g. `harvest-garden` -> `Mods/Garden/` or `Mods/harvest-garden/`). |
 | `public static string NormalizeVirtualPath(string path)` | — |
 | `public static bool IsSafeRelativeVirtualPath(string path)` | — |
@@ -898,6 +903,32 @@ public sealed record InstallOptions
 | `public bool AllowConflicts { get; init; }` | When false, cross-mod conflicts abort installation rather than warning. |
 | `public bool AllowRawAccess { get; init; }` | When false (the safe default), mods requesting `rawAccess: true` are blocked until explicitly approved by the player. |
 | `public bool? EnableOnInstall { get; init; }` | Whether to enable the mod in `Mods/Binaries/mod-state.txt` upon install (null uses manifest default). |
+| `public string? StockClientDirectory { get; init; }` | Optional stock PoE 3.29 client or `Data/` directory used by `DatPatchMerger` to build `Mods/Client/.merged-cache/` when installed mods declare `nativeClient.datPatches`. When omitted, `WaypointModInstaller` checks `<localExileRoot>/Client` automatically. |
+| `public IDat64Source? Dat64Source { get; init; }` | Optional explicit `IDat64Source` supplying stock `.datc64` tables for `DatPatchMerger` (takes precedence over `StockClientDirectory`). |
+| `public bool RebuildMergedCache { get; init; }` | Whether to deterministically build or update `Mods/Client/.merged-cache/` whenever installed mods declare `nativeClient.datPatches` and a stock `.datc64` source is available (default `true`). |
+
+---
+
+### `MergedCacheBuildResult`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Waypoint` · **Source:** `LocalExile.Client.Waypoint/WaypointModInstaller.cs`
+
+Result of rebuilding `Mods/Client/.merged-cache/` via `DatPatchMerger`.
+
+```csharp
+public sealed record MergedCacheBuildResult(bool Built, string MergedCacheDirectory, string? Digest, IReadOnlyList<string> IncludedMods, IReadOnlyList<string> MergedTables, IReadOnlyList<string> GeneratedOverlays)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `bool Built` | — |
+| `string MergedCacheDirectory` | — |
+| `string? Digest` | — |
+| `IReadOnlyList<string> IncludedMods` | — |
+| `IReadOnlyList<string> MergedTables` | — |
+| `IReadOnlyList<string> GeneratedOverlays` | — |
 
 ---
 
@@ -929,7 +960,7 @@ public sealed record DeployedFileRecord([property: JsonPropertyName("relativePat
 Deployment record for one installed dual-side mod in `Mods/Client/.nativemods-ledger.json`.
 
 ```csharp
-public sealed record InstalledDualModRecord([property: JsonPropertyName("id")] string Id, [property: JsonPropertyName("name")] string Name, [property: JsonPropertyName("version")] string Version, [property: JsonPropertyName("installedUtc")] DateTimeOffset InstalledUtc, [property: JsonPropertyName("serverDir")] string ServerDir, [property: JsonPropertyName("clientDir")] string? ClientDir, [property: JsonPropertyName("bundleFile")] string? BundleFile, [property: JsonPropertyName("rawAccess")] bool RawAccess, [property: JsonPropertyName("rawAccessJustification")] string? RawAccessJustification, [property: JsonPropertyName("replaces")] IReadOnlyList<string> Replaces, [property: JsonPropertyName("overlays")] IReadOnlyList<string> Overlays, [property: JsonPropertyName("customOpcodes")] IReadOnlyList<CustomOpcodeDeclaration> CustomOpcodes, [property: JsonPropertyName("gealBuiltins")] IReadOnlyList<string> GealBuiltins, [property: JsonPropertyName("customControls")] IReadOnlyList<string> CustomControls, [property: JsonPropertyName("contentRegistries")] IReadOnlyList<ContentRegistryDeclaration> ContentRegistries, [property: JsonPropertyName("manifest")] DualModManifest Manifest, [property: JsonPropertyName("files")] IReadOnlyList<DeployedFileRecord> Files)
+public sealed record InstalledDualModRecord([property: JsonPropertyName("id")] string Id, [property: JsonPropertyName("name")] string Name, [property: JsonPropertyName("version")] string Version, [property: JsonPropertyName("installedUtc")] DateTimeOffset InstalledUtc, [property: JsonPropertyName("serverDir")] string ServerDir, [property: JsonPropertyName("clientDir")] string? ClientDir, [property: JsonPropertyName("bundleFile")] string? BundleFile, [property: JsonPropertyName("rawAccess")] bool RawAccess, [property: JsonPropertyName("rawAccessJustification")] string? RawAccessJustification, [property: JsonPropertyName("replaces")] IReadOnlyList<string> Replaces, [property: JsonPropertyName("overlays")] IReadOnlyList<string> Overlays, [property: JsonPropertyName("customOpcodes")] IReadOnlyList<CustomOpcodeDeclaration> CustomOpcodes, [property: JsonPropertyName("gealBuiltins")] IReadOnlyList<string> GealBuiltins, [property: JsonPropertyName("customControls")] IReadOnlyList<string> CustomControls, [property: JsonPropertyName("contentRegistries")] IReadOnlyList<ContentRegistryDeclaration> ContentRegistries, [property: JsonPropertyName("manifest")] DualModManifest Manifest, [property: JsonPropertyName("files")] IReadOnlyList<DeployedFileRecord> Files, [property: JsonPropertyName("datPatches")] IReadOnlyList<string>? DatPatches = null)
 ```
 
 **Parameters / Properties:**
@@ -953,6 +984,7 @@ public sealed record InstalledDualModRecord([property: JsonPropertyName("id")] s
 | `[property: JsonPropertyName("contentRegistries")] IReadOnlyList<ContentRegistryDeclaration> ContentRegistries` | — |
 | `[property: JsonPropertyName("manifest")] DualModManifest Manifest` | — |
 | `[property: JsonPropertyName("files")] IReadOnlyList<DeployedFileRecord> Files` | — |
+| `[property: JsonPropertyName("datPatches")] IReadOnlyList<string>? DatPatches = null` | — |
 
 ---
 
@@ -963,7 +995,7 @@ public sealed record InstalledDualModRecord([property: JsonPropertyName("id")] s
 Persistent deployment ledger stored at `<serverRoot>/Mods/Client/.nativemods-ledger.json`.
 
 ```csharp
-public sealed record DeploymentLedger([property: JsonPropertyName("schemaVersion")] int SchemaVersion, [property: JsonPropertyName("updatedUtc")] DateTimeOffset UpdatedUtc, [property: JsonPropertyName("mods")] IReadOnlyList<InstalledDualModRecord> Mods)
+public sealed record DeploymentLedger([property: JsonPropertyName("schemaVersion")] int SchemaVersion, [property: JsonPropertyName("updatedUtc")] DateTimeOffset UpdatedUtc, [property: JsonPropertyName("mods")] IReadOnlyList<InstalledDualModRecord> Mods, [property: JsonPropertyName("mergedCacheDigest")] string? MergedCacheDigest = null, [property: JsonPropertyName("mergedCacheUpdatedUtc")] DateTimeOffset? MergedCacheUpdatedUtc = null)
 ```
 
 **Parameters / Properties:**
@@ -973,6 +1005,8 @@ public sealed record DeploymentLedger([property: JsonPropertyName("schemaVersion
 | `[property: JsonPropertyName("schemaVersion")] int SchemaVersion` | — |
 | `[property: JsonPropertyName("updatedUtc")] DateTimeOffset UpdatedUtc` | — |
 | `[property: JsonPropertyName("mods")] IReadOnlyList<InstalledDualModRecord> Mods` | — |
+| `[property: JsonPropertyName("mergedCacheDigest")] string? MergedCacheDigest = null` | — |
+| `[property: JsonPropertyName("mergedCacheUpdatedUtc")] DateTimeOffset? MergedCacheUpdatedUtc = null` | — |
 
 ---
 
@@ -983,7 +1017,7 @@ public sealed record DeploymentLedger([property: JsonPropertyName("schemaVersion
 Human-readable and machine-readable audit report returned by `WaypointModInstaller` before or after installing a dual-side mod.
 
 ```csharp
-public sealed record InstallAuditReport(bool Succeeded, bool IsUpgrade, string? PreviousVersion, string ModId, string ModName, string Version, bool HasNativeClient, bool RawAccessRequested, string? RawAccessJustification, IReadOnlyList<string> ReplacedStockPaths, IReadOnlyList<string> AddedOverlayPaths, IReadOnlyList<CustomOpcodeDeclaration> CustomOpcodes, IReadOnlyList<string> GealBuiltins, IReadOnlyList<string> CustomControls, IReadOnlyList<ContentRegistryDeclaration> ContentRegistries, ValidationReport Validation, IReadOnlyList<CrossModConflict> Conflicts, IReadOnlyList<DeployedFileRecord> DeployedFiles, string? ServerTargetDir, string? ClientTargetDir, string? BundleFile, string? FailureReason = null)
+public sealed record InstallAuditReport(bool Succeeded, bool IsUpgrade, string? PreviousVersion, string ModId, string ModName, string Version, bool HasNativeClient, bool RawAccessRequested, string? RawAccessJustification, IReadOnlyList<string> ReplacedStockPaths, IReadOnlyList<string> AddedOverlayPaths, IReadOnlyList<CustomOpcodeDeclaration> CustomOpcodes, IReadOnlyList<string> GealBuiltins, IReadOnlyList<string> CustomControls, IReadOnlyList<ContentRegistryDeclaration> ContentRegistries, ValidationReport Validation, IReadOnlyList<CrossModConflict> Conflicts, IReadOnlyList<DeployedFileRecord> DeployedFiles, string? ServerTargetDir, string? ClientTargetDir, string? BundleFile, string? FailureReason = null, IReadOnlyList<string>? DatPatches = null, string? MergedCacheDigest = null)
 ```
 
 **Parameters / Properties:**
@@ -1012,6 +1046,8 @@ public sealed record InstallAuditReport(bool Succeeded, bool IsUpgrade, string? 
 | `string? ClientTargetDir` | — |
 | `string? BundleFile` | — |
 | `string? FailureReason = null` | — |
+| `IReadOnlyList<string>? DatPatches = null` | — |
+| `string? MergedCacheDigest = null` | — |
 
 **Methods:**
 
@@ -1059,6 +1095,7 @@ public sealed class WaypointModInstaller
 |---|---|
 | `public const string LedgerFileName = ".nativemods-ledger.json"` | — |
 | `public const string ModStateFileName = "mod-state.txt"` | — |
+| `public const string MergedCacheDirectoryName = ".merged-cache"` | — |
 
 **Methods:**
 
@@ -1066,12 +1103,16 @@ public sealed class WaypointModInstaller
 |---|---|
 | `public static string GetServerBinariesRoot(string localExileRoot)` | — |
 | `public static string GetClientModsRoot(string localExileRoot)` | — |
+| `public static string GetMergedCacheDirectory(string localExileRoot)` | — |
 | `public static string GetLedgerPath(string localExileRoot)` | — |
 | `public static DeploymentLedger ReadLedger(string localExileRoot)` | Reads the deployment ledger, returning an empty ledger when none exists yet. |
 | `public InstallAuditReport AuditPackage(string packageDir, string localExileRoot, InstallOptions? options = null)` | Audits a candidate dual-side mod package directory against the target LocalExile checkout without modifying disk. |
 | `public InstallAuditReport InstallFromZip(string zipPath, string localExileRoot, InstallOptions? options = null)` | Installs or upgrades a dual-side mod from a `.zip` release archive into the LocalExile checkout. |
 | `public InstallAuditReport Install(string packageDir, string localExileRoot, InstallOptions? options = null)` | Installs or cleanly upgrades a dual-side mod from `packageDir` into `localExileRoot`. |
-| `public UninstallResult Uninstall(string modId, string localExileRoot)` | Cleanly uninstalls a dual-side mod from both `Mods/Binaries/<id>/` and `Mods/Client/<id>/`, removes it from `mod-state.txt` and the deployment ledger, and never touches stock client files. |
+| `public MergedCacheBuildResult RebuildMergedCache(string localExileRoot, IDat64Source source)` | Deterministically rebuilds `Mods/Client/.merged-cache/` from all currently installed mods' declared `datPatches` using `source` and updates the ledger's recorded digest. |
+| `public MergedCacheBuildResult RebuildMergedCache(string localExileRoot, string stockClientDirectory)` | Deterministically rebuilds `Mods/Client/.merged-cache/` from all currently installed mods' declared `datPatches` using stock tables in `stockClientDirectory` and updates the ledger. |
+| `public UninstallResult Uninstall(string modId, string localExileRoot)` | Cleanly uninstalls a dual-side mod from both `Mods/Binaries/<id>/` and `Mods/Client/<id>/`, removes it from `mod-state.txt` and the deployment ledger, updates or cleans `.merged-cache/`, and never touches stock client files. |
+| `public UninstallResult Uninstall(string modId, string localExileRoot, InstallOptions? options)` | Cleanly uninstalls a dual-side mod and rebuilds (or removes) `Mods/Client/.merged-cache/` using optional stock source settings from `options`. |
 | `public static Dictionary<string, bool> ReadModStateChoices(string serverBinariesRoot)` | Reads `Mods/Binaries/mod-state.txt` using Waypoint's exact format. |
 
 ---

@@ -77,7 +77,8 @@ Actual example from `examples/DualMod.HarvestGarden/mod.json`:
 | `payloadDir` | `string` | `"client"` — relative folder containing loose overlays. |
 | `bundleFile` / `bundleSha256` | `string?` | Optional prebuilt `.bundle.bin` filename and SHA-256. |
 | `overlays` | `IReadOnlyList<string>` | Declared namespaced paths (`Mods/<id>/` or hyphen suffix, e.g., `Mods/Garden/`). |
-| `replaces` | `IReadOnlyList<string>` | Stock game paths explicitly overridden by this mod. Any payload file outside `Mods/<namespace>/` **must** appear here (`PAY003`). |
+| `datPatches` | `IReadOnlyList<string>` | Relative paths under `payloadDir` to declarative `.datpatch.json` files (`DAT001`–`DAT009`, `NC022`–`NC023`, `PAY007`, cross-mod `CNF007`–`CNF009`). Merged atomically into `Mods/Client/.merged-cache/` + `content-row-map.json` on install/uninstall, with `DeploymentLedger.MergedCacheDigest` persisted. |
+| `replaces` | `IReadOnlyList<string>` | Stock game paths explicitly overridden by this mod. Any payload file outside `Mods/<namespace>/` (other than declared `datPatches`) **must** appear here (`PAY003`). |
 | `rawAccess` / `rawAccessJustification` | `bool` / `string?` | If `rawAccess` is `true`, `rawAccessJustification` is mandatory (`NC008`) and surfaced as a warning (`NC009`) + audit disclosure. |
 | `customOpcodes` | `IReadOnlyList<CustomOpcodeDeclaration>` | `{ id: ushort, name: string, direction: OpcodeDirection }` (`ClientToServer`, `ServerToClient`, `Bidirectional`). ID `0` is rejected (`NC012`); cross-mod duplicates trigger `CNF003`. |
 | `gealBuiltins` | `IReadOnlyList<string>` | Custom GEAL built-in names (`CNF004` on cross-mod collision). |

@@ -6,6 +6,7 @@
     <Project Path="src/LocalExile.Client.Patcher/LocalExile.Client.Patcher.csproj" />
     <Project Path="src/LocalExile.Client.Waypoint/LocalExile.Client.Waypoint.csproj" />
     <Project Path="src/LocalExile.Client.AssetPipeline/LocalExile.Client.AssetPipeline.csproj" />
+    <Project Path="src/LocalExile.Client.Cli/LocalExile.Client.Cli.csproj" />
   </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/DualMod.HarvestGarden/Shared/DualMod.HarvestGarden.Shared.csproj" />
@@ -32,11 +33,13 @@
     <Project Path="tests/LocalExile.Client.Patcher.Tests/LocalExile.Client.Patcher.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.Waypoint.Tests/LocalExile.Client.Waypoint.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.AssetPipeline.Tests/LocalExile.Client.AssetPipeline.Tests.csproj" />
+    <Project Path="tests/LocalExile.Client.Cli.Tests/LocalExile.Client.Cli.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.MaxwellPet.Tests/LocalExile.Client.MaxwellPet.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.SiphonOrb.Tests/LocalExile.Client.SiphonOrb.Tests.csproj" />
     <Project Path="tests/DualMod.StashQol.Tests/DualMod.StashQol.Tests.csproj" />
     <Project Path="tests/DualMod.SkipCampaign.Tests/DualMod.SkipCampaign.Tests.csproj" />
     <Project Path="tests/DualMod.LootTools.Tests/DualMod.LootTools.Tests.csproj" />
+    <Project Path="tests/DualMod.ContentPackDemo.Tests/DualMod.ContentPackDemo.Tests.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Shared/DualMod.Phase0E2E.Shared.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Client/DualMod.Phase0E2E.Client.csproj" />
     <Project Path="tests/LocalExile.Client.Phase0E2E/Server/DualMod.Phase0E2E.Server.csproj" />

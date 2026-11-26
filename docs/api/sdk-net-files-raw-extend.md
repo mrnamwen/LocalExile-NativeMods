@@ -3,7 +3,7 @@
 
 # Client SDK — Networking, Overlays, Protocol, Extend & Raw
 
-> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `42`
+> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `46`
 >
 > Typed bidirectional networking (`INetChannel`), GEAL script invocation (`IScriptService`), file overlays (`IFileOverlayService`, `ClientTextEncoding`), wire protocol codecs (`MessageCodec`, `ModEnvelope`), extend registries (`IGealBuiltinRegistry`, `IUiControlRegistry`, `IRulesetRegistry`, `IOpcodeRegistry`, `IContentRegistry`), and gated raw memory/hooks (`IRawMemory`).
 
@@ -40,7 +40,11 @@
 | [`ItemBaseDeclaration`](#itembasedeclaration) | `record` | `LocalExile.Client.Sdk.Extend` | Declares a new append-only item base riding an existing compiled `ItemClasses` enum value. |
 | [`WorldObjectDeclaration`](#worldobjectdeclaration) | `record` | `LocalExile.Client.Sdk.Extend` | Declares a new server-creatable world object type using one of the 8 carrier dat tables (for example `MiscObjects`). |
 | [`ObjectOverlayDeclaration`](#objectoverlaydeclaration) | `record` | `LocalExile.Client.Sdk.Extend` | Declares an inline `.ot` or `.it` overlay text file. |
-| [`IContentRegistry`](#icontentregistry) | `interface` | `LocalExile.Client.Sdk.Extend` | Collects append-only content declarations (dat rows, item bases, world objects, and `.ot`/`.it` overlays) with deterministic cross-side ID generation. |
+| [`ContentRowEntry`](#contentrowentry) | `record` | `LocalExile.Client.Sdk.Extend` | Recorded row assignment and hash metadata for a single merged `.datc64` content entry loaded from `Mods/Client/.merged-cache/content-row-map.json`. |
+| [`ContentTableMap`](#contenttablemap) | `record` | `LocalExile.Client.Sdk.Extend` | Per-table merged row counts, SHA-256 checksum, and symbolic key map recorded in `content-row-map.json`. |
+| [`ContentGeneratedOverlay`](#contentgeneratedoverlay) | `record` | `LocalExile.Client.Sdk.Extend` | Metadata for a generated Route A text overlay (such as `Metadata/StatDescriptions/<mod>_custom_stats.txt`) emitted alongside merged `.datc64` files in `.merged-cache/`. |
+| [`ContentRowMap`](#contentrowmap) | `record` | `LocalExile.Client.Sdk.Extend` | Deterministic `content-row-map.json` manifest shared between the client host (`IContentRegistry`) and `ServerBridge` so both sides resolve identical `(table, entryKey)` row indices, hashes, and handshake digests. |
+| [`IContentRegistry`](#icontentregistry) | `interface` | `LocalExile.Client.Sdk.Extend` | Collects append-only content declarations (dat rows, item bases, world objects, and `.ot`/`.it` overlays) and exposes the live `content-row-map.json` mounted at `t=0` from `Mods/Client/.merged-cache/`. |
 | [`ModEnvelope`](#modenvelope) | `record` | `LocalExile.Client.Sdk.Protocol` | Self-delimiting cross-side message envelope transported over HostRuleset (`0x2c9`/`0x2ca`), reserved opcodes (`0x2fc+`), or the chat fallback (`##NM` / `/nm`). |
 | [`InstalledClientModInfo`](#installedclientmodinfo) | `record` | `LocalExile.Client.Sdk.Protocol` | Summary of an installed client mod reported by the client host during handshake negotiation. |
 | [`ClientHandshake`](#clienthandshake) | `record` | `LocalExile.Client.Sdk.Protocol` | Handshake sent from the client host to the LocalExile server upon entering an area or connecting. |
@@ -725,11 +729,111 @@ public sealed record ObjectOverlayDeclaration(string VirtualPath, string Content
 
 ---
 
+### `ContentRowEntry`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Extend` · **Source:** `LocalExile.Client.Sdk/Extend/ExtendRegistries.cs`
+
+Recorded row assignment and hash metadata for a single merged `.datc64` content entry loaded from `Mods/Client/.merged-cache/content-row-map.json`.
+
+```csharp
+public sealed record ContentRowEntry
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required string ModId { get; init; }` | Owning mod identifier that declared this entry. |
+| `public required int RowIndex { get; init; }` | Deterministic zero-based row index inside the merged `.datc64` table. |
+| `public uint? Hash32 { get; init; }` | Computed or explicit 32-bit MurmurHash2 (`HASH32`) for tables with a `HASH32` column. |
+| `public ushort? Hash16 { get; init; }` | Allocated collision-free 16-bit hash (`HASH16`) for tables with a `HASH16` column. |
+| `public string? StockId { get; init; }` | Stock `Stats[row].Id` preserved for dead-stat slot allocations (null for appended rows). |
+
+---
+
+### `ContentTableMap`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Extend` · **Source:** `LocalExile.Client.Sdk/Extend/ExtendRegistries.cs`
+
+Per-table merged row counts, SHA-256 checksum, and symbolic key map recorded in `content-row-map.json`.
+
+```csharp
+public sealed record ContentTableMap
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required int StockRowCount { get; init; }` | Number of rows in the stock 3.29 `.datc64` table prior to merging. |
+| `public required int MergedRowCount { get; init; }` | Total row count in the merged `.datc64` table. |
+| `public required string TableSha256 { get; init; }` | Lowercase hex SHA-256 checksum of the merged `.datc64` binary. |
+| `public required IReadOnlyDictionary<string, ContentRowEntry> Entries { get; init; }` | Symbolic entry keys mapped to their merged row index and allocated hashes. |
+
+---
+
+### `ContentGeneratedOverlay`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Extend` · **Source:** `LocalExile.Client.Sdk/Extend/ExtendRegistries.cs`
+
+Metadata for a generated Route A text overlay (such as `Metadata/StatDescriptions/<mod>_custom_stats.txt`) emitted alongside merged `.datc64` files in `.merged-cache/`.
+
+```csharp
+public sealed record ContentGeneratedOverlay
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public required string VirtualPath { get; init; }` | Normalized virtual game path of the generated overlay. |
+| `public required string Sha256 { get; init; }` | Lowercase hex SHA-256 checksum of the generated overlay file. |
+
+---
+
+### `ContentRowMap`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.Sdk.Extend` · **Source:** `LocalExile.Client.Sdk/Extend/ExtendRegistries.cs`
+
+Deterministic `content-row-map.json` manifest shared between the client host (`IContentRegistry`) and `ServerBridge` so both sides resolve identical `(table, entryKey)` row indices, hashes, and handshake digests.
+
+```csharp
+public sealed record ContentRowMap
+```
+
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `public const int CurrentSchemaVersion = 1` | Current JSON schema version for `content-row-map.json`. |
+| `public const string FileName = "content-row-map.json"` | Canonical filename stored inside `Mods/Client/.merged-cache/`. |
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public int SchemaVersion { get; init; }` | Schema version of this row map (currently `1`). |
+| `public required string Digest { get; init; }` | Deterministic lowercase hex SHA-256 handshake digest covering all merged tables and overlays. |
+| `public IReadOnlyList<string> Mods { get; init; }` | Deterministically ordered list of mod identifiers included in this merged cache. |
+| `public IReadOnlyDictionary<string, ContentTableMap> Tables { get; init; }` | Merged table summaries keyed by canonical `.datc64` table name. |
+| `public IReadOnlyList<ContentGeneratedOverlay> GeneratedOverlays { get; init; }` | Generated Route A text overlays included in this merged cache. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public bool TryResolveRow(string tableName, string entryKey, [NotNullWhen(true)] out ContentRowEntry? entry)` | Resolves a merged content entry by table name and symbolic entry key (case-insensitive on both). |
+| `public static ContentRowMap Parse(string json)` | Parses a `ContentRowMap` from `content-row-map.json` text. |
+| `public static ContentRowMap LoadFromFile(string path)` | Loads and parses a `ContentRowMap` from disk. |
+| `public string ToJson()` | Serializes this `ContentRowMap` back to canonical indented JSON. |
+
+---
+
 ### `IContentRegistry`
 
 **Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Extend` · **Source:** `LocalExile.Client.Sdk/Extend/ExtendRegistries.cs`
 
-Collects append-only content declarations (dat rows, item bases, world objects, and `.ot`/`.it` overlays) with deterministic cross-side ID generation.
+Collects append-only content declarations (dat rows, item bases, world objects, and `.ot`/`.it` overlays) and exposes the live `content-row-map.json` mounted at `t=0` from `Mods/Client/.merged-cache/`.
 
 ```csharp
 public interface IContentRegistry
@@ -739,6 +843,8 @@ public interface IContentRegistry
 
 | Property | Summary |
 |---|---|
+| `ContentRowMap? RowMap { get; }` | Live `ContentRowMap` parsed from `Mods/Client/.merged-cache/content-row-map.json` at `t=0`, or `null` if none is mounted. |
+| `string? ContentRowMapDigest { get; }` | SHA-256 digest of the mounted `RowMap` advertised in `ClientHandshake`, or `null` if no merged cache is mounted. |
 | `IReadOnlyList<DatRowDeclaration> DatRows { get; }` | All declared append-only dat table rows. |
 | `IReadOnlyList<ItemBaseDeclaration> ItemBases { get; }` | All declared item base definitions. |
 | `IReadOnlyList<WorldObjectDeclaration> WorldObjects { get; }` | All declared world object definitions. |
@@ -748,6 +854,7 @@ public interface IContentRegistry
 
 | Method | Summary |
 |---|---|
+| `bool TryResolveRow(string tableName, string entryKey, [NotNullWhen(true)] out ContentRowEntry? entry)` | Resolves a merged content row from `RowMap` by `tableName` and `entryKey`. |
 | `IDisposable DeclareDatRow(DatRowDeclaration row)` | Registers an append-only dat row declaration. |
 | `IDisposable DeclareItemBase(ItemBaseDeclaration itemBase)` | Registers a new item base declaration. |
 | `IDisposable DeclareWorldObject(WorldObjectDeclaration worldObject)` | Registers a new world object declaration (and its optional `.ot` overlay). |
@@ -807,7 +914,7 @@ public sealed record InstalledClientModInfo(string Id, string Version, string? P
 Handshake sent from the client host to the LocalExile server upon entering an area or connecting.
 
 ```csharp
-public sealed record ClientHandshake(string ExtenderVersion, string SdkVersion, ClientBuildId Build, string BuildVersion, int ProtocolVersion, IReadOnlyList<InstalledClientModInfo> InstalledMods, IReadOnlyList<string> Capabilities)
+public sealed record ClientHandshake(string ExtenderVersion, string SdkVersion, ClientBuildId Build, string BuildVersion, int ProtocolVersion, IReadOnlyList<InstalledClientModInfo> InstalledMods, IReadOnlyList<string> Capabilities, string? ContentRowMapDigest = null)
 ```
 
 **Parameters / Properties:**
@@ -821,6 +928,7 @@ public sealed record ClientHandshake(string ExtenderVersion, string SdkVersion, 
 | `int ProtocolVersion` | — |
 | `IReadOnlyList<InstalledClientModInfo> InstalledMods` | — |
 | `IReadOnlyList<string> Capabilities` | — |
+| `string? ContentRowMapDigest = null` | — |
 
 ---
 
@@ -831,7 +939,7 @@ public sealed record ClientHandshake(string ExtenderVersion, string SdkVersion, 
 Handshake response sent from the LocalExile server bridge to the client host.
 
 ```csharp
-public sealed record ServerHandshake(string ServerVersion, string BridgeVersion, int ProtocolVersion, byte HostRulesetId, NetTransportKind PreferredTransport, IReadOnlyList<string> RequiredMods, IReadOnlyList<string> ServerCapabilities)
+public sealed record ServerHandshake(string ServerVersion, string BridgeVersion, int ProtocolVersion, byte HostRulesetId, NetTransportKind PreferredTransport, IReadOnlyList<string> RequiredMods, IReadOnlyList<string> ServerCapabilities, string? ExpectedContentRowMapDigest = null)
 ```
 
 **Parameters / Properties:**
@@ -845,6 +953,7 @@ public sealed record ServerHandshake(string ServerVersion, string BridgeVersion,
 | `NetTransportKind PreferredTransport` | — |
 | `IReadOnlyList<string> RequiredMods` | — |
 | `IReadOnlyList<string> ServerCapabilities` | — |
+| `string? ExpectedContentRowMapDigest = null` | — |
 
 ---
 

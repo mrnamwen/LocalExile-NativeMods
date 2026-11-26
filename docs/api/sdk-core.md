@@ -41,7 +41,7 @@ public static class SdkVersion
 
 | Member | Summary |
 |---|---|
-| `public const string Current = "0.4.0"` | The current semantic version string of the Client SDK. |
+| `public const string Current = "1.0.0"` | The current semantic version string of the Client SDK. |
 | `public const int ProtocolVersion = 1` | The current binary/envelope wire protocol version. |
 
 **Properties:**
@@ -84,7 +84,7 @@ public interface IClientMod
 Metadata describing a client mod, parsed from either a standalone client manifest or a LocalExile dual-side `mod.json`.
 
 ```csharp
-public sealed record ClientModManifest(string Id, string Name, string Version, string Author = "", string Description = "", string SdkVersionRange = "*", string? Assembly = null, string? PayloadDir = null, IReadOnlyList<string>? Depends = null, IReadOnlyList<string>? Replaces = null, bool RawAccess = false, string? RawAccessJustification = null, string? PayloadHash = null, bool Enabled = true, string? BundleSha256 = null)
+public sealed record ClientModManifest(string Id, string Name, string Version, string Author = "", string Description = "", string SdkVersionRange = "*", string? Assembly = null, string? PayloadDir = null, IReadOnlyList<string>? Depends = null, IReadOnlyList<string>? Replaces = null, bool RawAccess = false, string? RawAccessJustification = null, string? PayloadHash = null, bool Enabled = true, string? BundleSha256 = null, IReadOnlyList<string>? DatPatches = null)
 ```
 
 **Parameters / Properties:**
@@ -106,6 +106,7 @@ public sealed record ClientModManifest(string Id, string Name, string Version, s
 | `string? PayloadHash = null` | Optional SHA-256 digest of the managed client mod assembly DLL (`payloadHash`/`assemblyPayloadHash`/`assemblySha256`). |
 | `bool Enabled = true` | Whether the mod is enabled by default. |
 | `string? BundleSha256 = null` | Optional SHA-256 digest of the packed client `.bundle.bin` asset archive (`bundleSha256`/`integrity.packageSha256`). |
+| `IReadOnlyList<string>? DatPatches = null` | Optional list of declarative `.datpatch.json` relative paths under the mod's client payload. |
 
 **Properties:**
 
@@ -113,6 +114,7 @@ public sealed record ClientModManifest(string Id, string Name, string Version, s
 |---|---|
 | `public IReadOnlyList<string> EffectiveDepends { get; }` | Gets the non-null dependency list. |
 | `public IReadOnlyList<string> EffectiveReplaces { get; }` | Gets the non-null list of replaced stock paths. |
+| `public IReadOnlyList<string> EffectiveDatPatches { get; }` | Gets the non-null list of declarative `.datpatch.json` paths. |
 
 **Methods:**
 

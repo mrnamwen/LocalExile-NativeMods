@@ -1,6 +1,6 @@
 # ServerBridge, Networking & Extender Registries
 
-Wire bidirectional typed networking between LocalExile Gateway server mods and 3.29 client mods using **`LocalExile.Client.ServerBridge` (`0.4.0`)**, drive native client features from single-`.cs` Roslyn server mods with Tier 1 `IClientPhase1Session` / `IClientPhase2Session`, perform atomic Gateway item/affix transactions, and register custom GEAL built-ins, rulesets, opcodes, and raw hooks.
+Wire bidirectional typed networking between LocalExile Gateway server mods and 3.29 client mods using **`LocalExile.Client.ServerBridge` (`1.0.0`)**, drive native client features from single-`.cs` Roslyn server mods with Tier 1 `IClientPhase1Session` / `IClientPhase2Session`, verify multi-mod `content-row-map.json` digests at handshake, register custom items/uniques/drop-pool overlays via LocalExile Part 2b, perform atomic Gateway item/affix transactions, and register custom GEAL built-ins, rulesets, opcodes, and raw hooks.
 
 [← Documentation Home](../README.md) · [ServerBridge API Reference](../api/server-bridge.md) · [SDK Net, Protocol, Extend & Raw API Reference](../api/sdk-net-files-raw-extend.md)
 
@@ -185,7 +185,68 @@ string? customName = LocalExileItemAffixService.GetGatewayItemCustomName(namedIt
 
 ---
 
-## 6. Client-Side Networking, Chat, GEAL, Rulesets, Opcodes & `IRawMemory`
+## 6. Content-Row-Map Handshake Digest and LocalExile Part 2b Overlays (`1.0.0`)
+
+### `content-row-map.json` Handshake Verification (`ServerContentRowMap`)
+
+When multiple content mods share `.datc64` tables via `DatPatchMerger` (`Mods/Client/.merged-cache/`), bind the merged cache on your server mod so row indices, `HASH32`/`HASH16` IDs, and dead `Stats` stock IDs stay synchronized between client and server:
+
+```csharp
+using LocalExile.Client.ServerBridge;
+
+// 1. Load Mods/Client/.merged-cache/content-row-map.json and bind its SHA-256 digest onto ClientBridgeHost:
+ServerContentRowMap? rowMap = ServerContentRowMap.TryLoadAndBind(bridge, Path.Combine(localExileRoot, "Mods", "Client", ".merged-cache"));
+
+// 2. React if a connected client has a stale or mismatched .merged-cache/:
+bridge.ContentRowMapDigestMismatch += (session, expectedDigest, actualDigest) =>
+{
+    modContext.Log($"[warn] {session.CharacterName} content-row-map mismatch: expected={expectedDigest}, actual={actualDigest}");
+};
+
+// 3. Resolve symbolic keys deterministically on the server:
+if (rowMap is not null)
+{
+    int baseRow = rowMap.RequireRowIndex("BaseItemTypes", "aether_shard");
+    uint hash32 = rowMap.RequireHash32("BaseItemTypes", "aether_shard");
+    ushort hash16 = rowMap.RequireHash16("ItemVisualIdentity", "aether_shard_visual");
+    string deadStatStockId = rowMap.RequireStockId("Stats", "aether_resonance_pct");
+}
+```
+
+### LocalExile Part 2b Runtime Catalog & Drop-Pool Overlays
+
+LocalExile Core Hooks Part 2b (`a4c7cafa5`) exposes lock-free runtime overlays (`ItemCatalog.RegisterOverlay`, `UniqueCatalog.RegisterOverlay`, `ModCatalog`, `GemSources`, `DropDataProvider.Default.RegisterOverlay` / `DropPoolOverlays`, lazy `ItemDrops` rebuild across monster kills, containers, strongboxes, boss bonuses, map currency mods, and `HardModeDrops`, preserved across `/reload` and auto-cleaned via `GameEventOwners` — **zero SQLite mutation**).
+
+- **Direct Gateway APIs (Roslyn `IMod` entry point, e.g., `examples/DualMod.SiphonOrb/Server/SiphonLocalExileEntry.cs`):** Call `ItemCatalog.RegisterOverlay(...)` and `DropDataProvider.Default.RegisterOverlay(...)` directly under `mod.Manifest.Id`.
+- **Zero-hard-dependency `ServerBridge` reflection helpers (`LocalExileGatewayHost`):** For compiled server DLLs referencing only `LocalExile.Client.ServerBridge`:
+
+```csharp
+if (gatewayHost.SupportsCatalogRegistration)
+{
+    gatewayHost.RegisterCustomBaseItem(new GatewayCustomBaseItemRegistration(
+        Id: "Metadata/Items/Currency/Mods/MyMod/AetherShard",
+        Name: "Aether Shard",
+        ItemClass: "StackableCurrency",
+        Row: -1, // Synthetic row allocation (default)
+        Width: 1,
+        Height: 1,
+        MaxStack: 20,
+        VisualIdentityId: "AetherShardVisual",
+        VisualIdentityHash16: hash16,
+        Components: ["Base", "Stack"]));
+
+    gatewayHost.RegisterDropPoolEntry(new GatewayDropPoolEntryRegistration(
+        Category: "Currency",
+        BaseItemId: "Metadata/Items/Currency/Mods/MyMod/AetherShard",
+        Weight: 25.0,
+        MinAreaLevel: 45,
+        MaxAreaLevel: 0));
+}
+```
+
+---
+
+## 7. Client-Side Networking, Chat, GEAL, Rulesets, Opcodes & `IRawMemory`
 
 ### Typed Client Messaging & Chat Interception (`INetChannel` / `IChatService`)
 

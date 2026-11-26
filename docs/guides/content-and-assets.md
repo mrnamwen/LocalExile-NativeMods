@@ -1,12 +1,12 @@
 # Brand-New Content, Assets, Overlays, Audio & Packaging
 
-Add **brand-new** 3D models, textures, looping `.ogg` audio, Pet MTXs (appearing natively in the Cosmetics `K` menu), and Custom Currencies to Path of Exile 3.29 without replacing stock content or mutating `Client/` files.
+Add **brand-new** 3D models, textures, looping `.ogg` audio, Pet MTXs (appearing natively in the Cosmetics `K` menu), Custom Currencies with natural world drops, and composable multi-mod `.datpatch.json` content packs (including custom tooltip stats via the 30-slot dead `Stats` pool) to Path of Exile 3.29 without replacing stock content or mutating `Client/` files.
 
 [← Documentation Home](../README.md) · [AssetPipeline API Reference](../api/asset-pipeline.md) · [Waypoint API Reference](../api/waypoint.md) · [Capabilities & Limits](capabilities-and-limits.md)
 
 ---
 
-## 1. Route A Universal File Overlays (`IFileOverlayService`)
+## 1. Route A Universal File Overlays & `t=0` `.merged-cache/` Auto-Mount (`IFileOverlayService`)
 
 NativeMods arms **Route A universal live file overlay hooks** in `LocalExile.ClientHost.dll` at DLL init (`< 2 ms`, *before* CoreCLR boots and *before* PoE reads `Data/*.datc64`):
 - Hooked 3.29.3d functions: `files.exists_query` (`0x0e55340`), `files.size_query` (`0x0e557f0`), `files.read_variant_2` (`0x0e55aa0`), `files.read_whole_file` (`0x0e564d0`), and `files.read_variant_5` (`0x0e56af0`).
@@ -15,8 +15,9 @@ NativeMods arms **Route A universal live file overlay hooks** in `LocalExile.Cli
 ### Overlay Precedence (Highest Wins)
 
 1. Managed `IFileOverlayService`: `VirtualFile` (default priority `100`) > `LooseDirectory` (`0`) > `BundleOverlay` (`-10`).
-2. `NATIVEMODS_OVERLAY_DIR` environment variable (semicolon-separated directories, e.g., `dist/maxwell-assets;dist/siphon-assets` — active from millisecond 0 before CoreCLR boots, required for startup `.datc64` tables).
-3. Auto-discovered `<NATIVEMODS_MODS_DIR>/<mod>/{client,files}` (or `<dll_dir>\Mods\Client\<mod>\{client,files}`).
+2. **`Mods/Client/.merged-cache/` (`t=0` Auto-Mount in `1.0.0`):** `ClientHostRuntime` automatically mounts `Mods/Client/.merged-cache/` (`Data/*.datc64` and generated `Metadata/StatDescriptions/*_custom_stats.txt`) before any client mod loads, parses `content-row-map.json` onto `context.Game.Content.RowMap` (excluding `content-row-map.json` itself from game file overlays), and advertises `ContentRowMapDigest` in `ClientHandshake`.
+3. `NATIVEMODS_OVERLAY_DIR` environment variable (semicolon-separated directories, e.g., `dist/maxwell-assets;dist/siphon-assets` — active from millisecond 0 before CoreCLR boots).
+4. Auto-discovered `<NATIVEMODS_MODS_DIR>/<mod>/{client,files}` (or `<dll_dir>\Mods\Client\<mod>\{client,files}`).
 
 > **Diagnostic Env Vars:** Set `NATIVEMODS_TRACE_FILES=1` to trace `mods/` and `.dat` lookups in `nativemods-shim.log`, `NATIVEMODS_HOST_DIR` for an explicit self-contained `.NET 10` host directory, or `NATIVEMODS_DISABLE_AUTO_INIT=1` in unit harnesses.
 
@@ -129,7 +130,45 @@ int sfx = audio.PlayEvent("event:/UI/ButtonClick", volume: 1.0f);
 
 ---
 
-## 3. `.datc64` Hashing, Generic Row Appending & `foreignrow[]` Deep-Copy Rule
+## 3. Multi-Mod Declarative `.datpatch.json` Merging, Custom Stats & `content-row-map.json` (`1.0.0`)
+
+Instead of shipping conflicting whole-file `.datc64` binaries in `nativeClient.replaces`, `1.0.0` content mods declare **`nativeClient.datPatches`** (e.g., `client/patches/<mod>.datpatch.json`). Multiple mods can touch the **exact same `.datc64` tables** (`BaseItemTypes`, `ItemVisualIdentity`, `CurrencyItems`, `Mods`, dead `Stats` slots, etc.) and compose deterministically into **`Mods/Client/.merged-cache/`** via **`DatPatchMerger`** (`LocalExile.Client.AssetPipeline.Dat64`, bundled with the 3.29.3d `poe-dat-schema` via `Dat64SchemaRegistry`).
+
+### What `.datpatch.json` Supports
+
+| Operation | Semantics & Automatic Safety Invariants |
+|---|---|
+| **`append`** | Appends rows to any of the **18 verified appendable tables** via `cloneFromRow` / `cloneFromId` (deep-copying every `foreignrow[]`, `row[]`, `string[]`, `i32[]`, `enumrow[]`, `f32[]`, and `string` via `CloneRowDeep` + schema-wide `VerifyNoPointerArrayAliasing`), resolves cross-table **`$ref:TableName:EntryKey`** references across two passes, auto-computes `HASH32` (`PoeHashing.Hash32`), auto-allocates collision-free `HASH16` & unique `MtxTypes.__col18`, and enforces the `65,535` row ceiling. Hard-rejects closed `Stats`/`ItemClasses` appends. |
+| **`modify`** | In-place column updates by `rowIndex` or `id` (e.g., raising currency `StackSize` / `CurrencyTab_StackSize` to `65535`, or safe non-ID edits on existing `Mods` / `Stats` rows). Protects `Stats.Id` and `Stats.HASH32` from mutation. |
+| **`allocateDeadStat`** | Allocates a deterministic slot from the **30 verified dead stock `Stats` rows** (`old_do_not_use_*` / `currently_unused_*`, strictly excluding row `464`), **preserves each row's stock `Stats[row].Id` & `HASH32`** so both `Game.exe` and LocalExile's `Stat.Checksum` pass with zero hooks, wires `$ref:Stats:<key>` into `Mods.datc64`, and emits UTF-16LE BOM+CRLF **`Metadata/StatDescriptions/<mod>_custom_stats.txt`** overlays automatically. |
+
+### Reference Showcase: `examples/DualMod.ContentPackDemo/`
+
+`ModAlpha.AetherRelics` (`aether-relics`) and `ModBeta.StackMastery` (`stack-mastery`) both patch `ItemVisualIdentity`, `BaseItemTypes`, `CurrencyItems`, `Mods`, and dead `Stats` slots with zero conflicts, raising `CurrencyRemoveMod` `StackSize` to `65535` and emitting order-independent `content-row-map.json` SHA-256 digests:
+
+```bash
+# 1. Validate both mods together (checks schema, closed tables, row 464, $ref, and cross-mod conflicts)
+dotnet run --project src/LocalExile.Client.Cli -- validate \
+  examples/DualMod.ContentPackDemo/ModAlpha.AetherRelics \
+  --against examples/DualMod.ContentPackDemo/ModBeta.StackMastery
+
+# 2. Merge into deterministic .merged-cache/ + content-row-map.json against stock 3.29.3d Bundles2
+dotnet run --project src/LocalExile.Client.Cli -- merge \
+  --stock /path/to/LocalExile/Client \
+  --out ./Mods/Client/.merged-cache \
+  examples/DualMod.ContentPackDemo/ModAlpha.AetherRelics \
+  examples/DualMod.ContentPackDemo/ModBeta.StackMastery
+```
+
+### Runtime Row-Map Resolution (`IContentRegistry` & `ServerContentRowMap`)
+
+- **Client side (`LocalExile.Client.Sdk`):** `ClientHostRuntime` mounts `.merged-cache/` at `t=0` and exposes `context.Game.Content.RowMap`, `context.Game.Content.ContentRowMapDigest`, and `context.Game.Content.TryResolveRow(table, key, out ContentRowEntry? entry)`.
+- **Server side (`LocalExile.Client.ServerBridge`):** Call `ServerContentRowMap.TryLoadAndBind(bridge, mergedCacheDir)` to resolve `(table, entryKey) -> { RowIndex, Hash32, Hash16, StockId }` and verify every client's `ClientHandshake.ContentRowMapDigest` automatically (emitting `ClientBridgeHost.ContentRowMapDigestMismatch` on drift).
+- **Waypoint installer (`LocalExile.Client.Waypoint`):** `WaypointModInstaller.Install` / `Uninstall` automatically builds, rebuilds, and cleans up `Mods/Client/.merged-cache/` whenever installed mods declare `nativeClient.datPatches`, recording `DeploymentLedger.MergedCacheDigest`.
+
+---
+
+## 4. `.datc64` Hashing, Low-Level `Dat64TablePatcher` & `foreignrow[]` Deep-Copy Rule
 
 Path of Exile 3.29 computes `HASH32` (and `S→C 0x02bb` `ObjectTypeHash`) via **32-bit MurmurHash2 (seed `0`) over narrow UTF-8/ASCII bytes** (`Game.exe 0x140df6e10`), and `Pet.HASH16` via XOR fold `((hash32 >> 16) ^ (hash32 & 0xFFFF))`:
 
@@ -144,7 +183,7 @@ ushort petHash16 = PoeContentHash.FoldHash16(petHash32);                        
 
 See [Capabilities & Limits](capabilities-and-limits.md#what-you-can-do-vs-what-you-cannot-do) for the 18 appendable tables vs. closed `ItemClasses` & `Stats`.
 
-> **Critical `foreignrow[]` Deep-Copy Rule:** PoE resolves `foreignrow[]` entries in-place inside the variable-data section. **Never** leave a cloned row pointing at the template row's `foreignrow[]` variable-section offset (causes a `+0x129838` crash on town entry). Always deep-copy or clear every `foreignrow[]` array column via `SetForeignRowArray(...)`.
+> **Critical `foreignrow[]` Deep-Copy Rule:** PoE resolves `foreignrow[]` entries in-place inside the variable-data section. **Never** leave a cloned row pointing at the template row's `foreignrow[]` variable-section offset (causes a `+0x129838` crash on town entry). Always use `DatPatchMerger` (`CloneRowDeep`) or deep-copy/clear every `foreignrow[]` array column via `SetForeignRowArray(...)`.
 
 ```csharp
 using LocalExile.Client.AssetPipeline.Dat64;
@@ -164,7 +203,7 @@ byte[] outputBytes = patcher.BuildAndVerify().Serialize();
 
 ---
 
-## 4. Brand-New Pet MTXs (Cosmetics `K` Menu Integration)
+## 5. Brand-New Pet MTXs (Cosmetics `K` Menu Integration)
 
 Appends **1 row** to each of 3 tables (`MtxTypes` `8557`, `MtxTypeGameSpecific` `7849`, `Pet` `516`) with zero `BaseItemTypes` edits:
 
@@ -211,9 +250,9 @@ byte[] grantPacket = LocalExilePetMtxRegistrar.EncodeRecordUpsertPacket(myPet, j
 
 ---
 
-## 5. Brand-New Custom Currencies (`CurrencyDatPatcher` & `LocalExileCurrencyRegistrar`)
+## 6. Brand-New Custom Currencies & Natural World Drops (`DualMod.SiphonOrb` `1.0.0`)
 
-Appends rows across 3 tables (zero overlap with Pet MTX tables — both overlays compose cleanly via semicolon-separated `NATIVEMODS_OVERLAY_DIR`):
+Custom currencies append rows across 3 tables (`BaseItemTypes`, `ItemVisualIdentity`, `CurrencyItems`) — zero overlap with Pet MTX tables, and now fully composable with any other content mod via declarative `.datpatch.json` (see `examples/DualMod.SiphonOrb/client/patches/siphon-orb.datpatch.json`):
 
 | Table (3.29.3d) | Stride | Stock Rows | Critical Columns & Invariants |
 |---|---:|---:|---|
@@ -221,23 +260,20 @@ Appends rows across 3 tables (zero overlap with Pet MTX tables — both overlays
 | `Data/ItemVisualIdentity.datc64` | `604 B` | `15516` | Unique `Id` `@0`, unique non-zero **`HASH16` `@40`** (indexed directly by `Base::Read` `0x1421ed3ea`), `DDSFile` `@8`, `AOFile` `@16`, `InventorySoundEffect` `@24` = `33`. Clear all 16 array columns. |
 | `Data/CurrencyItems.datc64` | `205 B` | `1962` | Unique `BaseItemTypesKey` `@0`, `StackSize` `@16`, `CurrencyUseType` `@20` = `2` (right-click → left-click item), `Action` `@24` = `"remove_random_mod"` (emits `C→S 0x0071`/`0x0072`). |
 
-```csharp
-// 1. Patch .datc64 + generate UTF-16LE BOM .it metadata (SupportsStoredMods=true adds LocalStats {} + Mods {}):
-PatchedCurrencyResult patched = CurrencyDatPatcher.AppendCurrencies(
-    stockBaseItemTypes, stockItemVisualIdentity, stockCurrencyItems, specs);
-byte[] itBytes = CurrencyDatPatcher.BuildItemMetadataItBytes(specs[0]);
+### Pairing Client Overlays with Server Runtime Catalog & Drop-Pool Overlays (LocalExile Part 2b)
 
-// 2. Server-side registration & right-click routing (C->S 0x0071 UseItemOn / 0x0072 UseItemTypeOn):
-using var currencyRegistrar = new LocalExileCurrencyRegistrar();
-currencyRegistrar.Register(emptyOrbDef, async (CurrencyUseContext ctx) => await HandleSiphonUseAsync(ctx));
-currencyRegistrar.ApplyToLiveCatalog(Program.Items, mod.Log); // Cleanly removed on Dispose()
-```
+`examples/DualMod.SiphonOrb/Server/SiphonLocalExileEntry.cs` demonstrates the `1.0.0` Part 2b pattern with **zero SQLite mutation and zero private-field reflection**:
+1. Register custom base items via **`ItemCatalog.RegisterOverlay`** (`Row: -1` synthetic allocation, `VisualIdentityId`, `CurrencyAction`, `Components: ["Base", "Stack"]`) — visible across Standard, HardMode, and CharacterSaves and preserved across `/reload`.
+2. Register natural world drops via **`DropDataProvider.Default.RegisterOverlay`** (`DropPoolCategory.Currency`, configurable `settings.json` weight, `minAreaLevel`/`maxAreaLevel`, `sources` across `MonsterKill`/`Container`/`Strongbox`/`BossBonus`/`MapCurrency`, and `monsterRarity` filters), triggering LocalExile's lock-free lazy `ItemDrops` rebuild automatically.
+3. All registrations bind to **`GameEventOwners`** for leak-free mod unload.
+
+> **Fallback / Reflection API:** Mods compiling strictly against `LocalExile.Client.ServerBridge` without direct `GameServer.Gateway` references can register the same Part 2b overlays via `gatewayHost.RegisterCustomBaseItem(...)`, `gatewayHost.RegisterCustomUnique(...)`, and `gatewayHost.RegisterDropPoolEntry(...)`, or via `LocalExileCurrencyRegistrar.ApplyToLiveCatalog(...)` (which automatically uses Part 2b `ItemCatalog.Register`/`RegisterVisual` when available). See [ServerBridge Guide](server-bridge.md#6-content-row-map-handshake-digest-and-localexile-part-2b-overlays-100).
 
 ---
 
-## 6. Validation, Bundling (`NMB1`) & Waypoint Packaging
+## 7. Validation, Bundling (`NMB1`) & Waypoint Packaging
 
-Before shipping any mod, run `DualModPackageValidator`, `UiLayoutLinter`, and `ModBundlePacker` (stored-block `NMB1`: `[u32 chunkLen][0xCC 0x06][payload]`):
+Before shipping any mod, run `nativemods validate` (or `DualModPackageValidator`, `UiLayoutLinter`, and `ModBundlePacker` stored-block `NMB1`: `[u32 chunkLen][0xCC 0x06][payload]`):
 
 ```csharp
 using LocalExile.Client.Sdk;
@@ -248,7 +284,12 @@ if (!report.IsValid)
     throw new InvalidOperationException(string.Join('\n', report.Errors));
 
 var installer = new WaypointModInstaller();
-InstallAuditReport audit = installer.Install(packageDir, localExileRoot, new InstallOptions { PackClientBundle = true });
+// Automatically builds/rebuilds Mods/Client/.merged-cache/ + content-row-map.json when datPatches are declared:
+InstallAuditReport audit = installer.Install(packageDir, localExileRoot, new InstallOptions
+{
+    PackClientBundle = true,
+    StockClientDirectory = poeClientDir,
+});
 ```
 
 See [Waypoint Integration](../architecture/waypoint-integration.md) for the complete `mod.json` schema, security limits, and installer ledger format.

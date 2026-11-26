@@ -59,7 +59,7 @@ To guarantee your `*LocalExileEntry.cs` file compiles cleanly inside LocalExile'
 python3 scripts/generate-address-table.py --check
 python3 scripts/generate-api-docs.py --check
 
-# 2. .NET 10 solution build & all 10 xUnit test suites (37 projects, TreatWarningsAsErrors=true)
+# 2. .NET 10 solution build & all 12 xUnit test suites (40 projects, TreatWarningsAsErrors=true)
 dotnet build NativeMods.slnx -c Release
 dotnet test NativeMods.slnx -c Release --no-build
 
@@ -75,9 +75,10 @@ cmake --build build/native-shim-asan
 ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build/native-shim-asan --output-on-failure
 ```
 
-**Verified Phase 2 (`0.4.0`) Baselines:**
-- **.NET 10 xUnit:** **`349/349`** passing across all `10` test suites (`37` projects, `0` warnings, `0` errors).
+**Verified Phase 3 (`1.0.0`) Baselines:**
+- **.NET 10 xUnit:** **`381/381`** passing across all `12` test suites (`40` projects, `0` warnings, `0` errors).
 - **C++20 Native Shim:** **`28/28`** passing across Linux Release, Linux Debug ASan/UBSan, and Win64/Wine.
+- **LocalExile Part 2b (`a4c7cafa5`):** `43/43` `GameServer.Data.Tests`, `550/550` `GameServer.Core.Tests`, `953/953` `GameServer.Gateway.Tests` (`0` warnings/errors).
 
 ---
 
@@ -132,7 +133,7 @@ All headless Proton test runners enforce strict isolation and zero-mutation guar
 ./scripts/launch-desktop.sh --mod maxwell
 ```
 
-### Expected `nativemods-shim.log` Live Markers (`0.4.0`)
+### Expected `nativemods-shim.log` Live Markers (`1.0.0`)
 
 Verify these lines in `nativemods-shim.log` after a live Proton run:
 
@@ -143,11 +144,11 @@ Verify these lines in `nativemods-shim.log` after a live Proton run:
 [NET] Armed live channel hooks (chat_rx=OK ruleset_0x2c9=OK msg_pump=OK)
 [PHASE1] Armed live hooks (wndmsg=OK ui_init=OK ig_leave=OK league_fill=OK cc_enter=OK cc_leave=OK tab=OK map_grp=OK map_key=OK c2s_0x12=OK s2c_0x13=OK)
 [PHASE2] Armed live hooks (init_area=OK area_load_leave=OK ig_leave=OK filter_loaded=OK)
-[MANAGED] [INFO] [host] NativeMods managed host started (SDK 0.4.0, build 3.29.3d, transport HostRuleset).
+[MANAGED] [INFO] [host] NativeMods managed host started (SDK 1.0.0, build 3.29.3d, transport HostRuleset).
 [AUDIO] FMOD 2.03 initialized (output=default|nosound, sys=0x...)
 [AUDIO] Playing OGG 'Audio/Mods/Maxwell/stock_market.ogg' (bytes=..., loop=1, volume=..., handle=..., output=default|nosound, fmod_rc=0)
 [UI] Captured native UI root 0x...
 [UI] Loaded native window 'Metadata/UI/Mods/Maxwell/MaxwellPanel.ui' (root=0x..., control=0x...)
 ```
 
-Verified `0.4.0` live Proton baseline (`dbe7a13`): CoreCLR boot **`252.60 ms`**, **`25/25`** live hooks `OK` (`0` `SKIP`), **`16/16`** E2E PASS, **`2,700+`** frames, **`0`** `[WARN]`/`[ERROR]`/SEH faults, FMOD PCM `-24.4 dB` mean / `-10.2 dB` max, `0` Hyprland window leaks, exact SHA-256 baseline restored.
+Verified `1.0.0` live Proton baseline (`4c31abb`, run `20261126-215228-proxy-81856`): `abi=0x00000400`, `SDK 1.0.0`, `319` symbols / `300` offsets, **`25/25`** live hooks `OK` (`0` `SKIP`), **`16/16`** E2E PASS (`E2E-01 PASS sdk=1.0.0 parsed=1.0.0 isOnGameThread=True`), **`2,400+`** frames, **`0`** `[WARN]`/`[ERROR]`/SEH faults, FMOD PCM `-24.5 dB` mean / `-10.0 dB` max, `0` Hyprland window leaks, exact stock `Game.exe` / `Game.patched.exe` SHA-256 baseline restored.
