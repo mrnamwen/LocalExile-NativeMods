@@ -239,6 +239,66 @@ public sealed class CurrencyAndAffixServiceTests
         Assert.False(LocalExileItemAffixService.MatchesStatCondition("!0", 0));
     }
 
+    [Fact]
+    public void InspectGatewayItem_ResolvesRareNameWordsWithListPriorityAndCleanFallback()
+    {
+        const uint bootsHash = 0xCAFEBABEu;
+        var fakeCatalog = new FakeItemCatalog(stockRowCount: 5);
+        fakeCatalog.AddBaseType(new FakeItemCatalog.BaseType(
+            Row: 5,
+            Id: "Metadata/Items/Armours/Boots/BootsStr1",
+            Name: "Iron Greaves",
+            Hash: bootsHash,
+            Width: 2,
+            Height: 2,
+            VisualIdentity: 10,
+            Components: ["Base", "Mods"],
+            MaxCharges: 0,
+            Class: "Boots"));
+
+        var fakeRolls = new FakeItemRolls(
+        [
+            // Intentional key collision across lists: List 6 (monster/other) precedes List 1 (rare prefix).
+            new FakeItemRolls.Word(0xAA000001u, "WrongOtherWord", List: 6),
+            new FakeItemRolls.Word(0xAA000001u, "Miracle", List: 1),
+            new FakeItemRolls.Word(0xBB000002u, "Spur", List: 2),
+        ]);
+
+        var service = new LocalExileItemAffixService(defaultStatDescriptions: null, defaultItemRolls: fakeRolls);
+
+        // 1. Identified Rare item with NameWords resolves to authentic 2-word Rare name ("Miracle Spur") + BaseType ("Iron Greaves").
+        var rareBoots = new FakeGatewayItem(
+            TypeHash: bootsHash,
+            Rarity: ItemRarityKind.Rare,
+            ItemLevel: 12,
+            Identified: true,
+            Corrupted: false,
+            Mirrored: false,
+            FracturedCount: 0,
+            NameWords: [0xAA000001u, 0xBB000002u],
+            Mods: []);
+
+        ItemAffixView rareView = service.InspectGatewayItem(1, 42, rareBoots, fakeCatalog);
+        Assert.Equal("Miracle Spur", rareView.ItemName);
+        Assert.Equal("Iron Greaves", rareView.BaseType);
+
+        // 2. Unidentified Rare item keeps base type only.
+        ItemAffixView unidView = service.InspectGatewayItem(1, 43, rareBoots with { Identified = false }, fakeCatalog);
+        Assert.Equal("Iron Greaves", unidView.ItemName);
+
+        // 3. Rare item with empty NameWords or missing ItemRolls falls back cleanly to BaseType.
+        ItemAffixView noWordsView = service.InspectGatewayItem(1, 44, rareBoots with { NameWords = [] }, fakeCatalog);
+        Assert.Equal("Iron Greaves", noWordsView.ItemName);
+
+        var serviceWithoutRolls = new LocalExileItemAffixService();
+        ItemAffixView noRollsView = serviceWithoutRolls.InspectGatewayItem(1, 45, rareBoots, fakeCatalog);
+        Assert.Equal("Iron Greaves", noRollsView.ItemName);
+
+        // 4. Explicit per-call itemRolls overrides null default.
+        ItemAffixView perCallView = serviceWithoutRolls.InspectGatewayItem(1, 46, rareBoots, fakeCatalog, itemRolls: fakeRolls);
+        Assert.Equal("Miracle Spur", perCallView.ItemName);
+    }
+
     private static PortableItem CreateRarePlate(uint itemId, string name, IReadOnlyList<PortableItemMod> mods) =>
         new(
             ItemId: itemId,
@@ -298,5 +358,29 @@ public sealed class CurrencyAndAffixServiceTests
         public bool HasHash(uint hash) => _byHash.ContainsKey(hash);
         public bool HasVisual(string id) => _visualsById.ContainsKey(id);
         public string? GetAction(int row) => _currencyUses.Actions.GetValueOrDefault(row);
+        public BaseType? ByHash(uint hash) => _byHash.GetValueOrDefault(hash);
+        public void AddBaseType(BaseType baseType)
+        {
+            _rows.Rows.Add(baseType);
+            _byHash[baseType.Hash] = baseType;
+            _byId[baseType.Id] = baseType;
+        }
     }
+
+    private sealed class FakeItemRolls(IReadOnlyList<FakeItemRolls.Word> words)
+    {
+        public sealed record Word(uint Key, string Text, int List);
+        public IReadOnlyList<Word> Words { get; } = words;
+    }
+
+    private sealed record FakeGatewayItem(
+        uint TypeHash,
+        ItemRarityKind Rarity,
+        byte ItemLevel,
+        bool Identified,
+        bool Corrupted,
+        bool Mirrored,
+        byte FracturedCount,
+        IReadOnlyList<uint> NameWords,
+        IReadOnlyList<object> Mods);
 }
