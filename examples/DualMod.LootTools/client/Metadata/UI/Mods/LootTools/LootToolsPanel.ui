@@ -1,0 +1,389 @@
+// DualMod.LootTools — Native 3.29.3d Loot Tools Settings & Status Panel.
+// Uses stock 3.29.3d controls (Frame, StackLayout, Label, TextBox, CheckBox, BasicButton)
+// with explicit unique IDs and zero UiLayoutLinter diagnostics.
+
+<DEFINITIONS>
+
+const $w = 560;
+const $pad = 20;
+const $inner = 520;
+
+begin Frame
+	id = loottools_panel;
+	aspect_mode = scaley;
+	size = $w, 540;
+	min_size = $w, 500;
+	auto_size = false, true;
+	float = centre;
+	y = 120;
+	visible = true;
+	mouse_enabled = true;
+	propagate_properties = false;
+
+	background_colour = argb( 236, 12, 14, 20 );
+	pixel_border_colour = rgb( 137, 100, 64 );
+
+	begin StackLayout
+		id = body;
+		auto_size = true, true;
+		margin = $pad, 14, $pad, 16;
+		float = centre;
+
+		begin Frame
+			id = title_bar;
+			size = $inner, 42;
+			margin = 0, 0, 0, 8;
+
+			begin Label
+				id = title_label;
+				location = 42, 0;
+				size = $inner - 84, 42;
+				auto_size = false;
+				text_align = MiddleCentre;
+				font = Fonts.LargeSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				outline_colour = rgb( 0, 0, 0 );
+				text = "Loot Tools";
+			end
+
+			begin BasicButton
+				id = close_button;
+				location = $inner - 40, 1;
+				size = 40, 40;
+				mouse_enabled = true;
+				background = "Art/2DArt/UIImages/Common/ButtonCloseNormal", stretch;
+			end
+		end
+
+		begin Frame
+			id = header_divider;
+			float = centre;
+			background = "Art/2DArt/UIImages/InGame/Divider", stretch;
+			size = $inner - 20, 8;
+			margin = 0, 0, 0, 10;
+		end
+
+		begin Frame
+			id = filter_status_box;
+			size = $inner, 78;
+			margin = 0, 0, 0, 10;
+			background_colour = argb( 210, 18, 21, 29 );
+			pixel_border_colour = rgb( 98, 78, 56 );
+
+			begin Label
+				id = filter_name_label;
+				location = 12, 6;
+				size = $inner - 156, 22;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.Normal;
+				foreground_colour = rgb( 255, 232, 150 );
+				text = "Filter: None";
+			end
+
+			begin Label
+				id = visible_items_label;
+				location = 12, 30;
+				size = $inner - 156, 20;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormal;
+				foreground_colour = rgb( 168, 224, 176 );
+				text = "Visible Ground Items: 0";
+			end
+
+			begin Label
+				id = area_status_label;
+				location = 12, 52;
+				size = $inner - 156, 20;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormal;
+				foreground_colour = rgb( 176, 192, 210 );
+				text = "Area: None";
+			end
+
+			begin BasicButton
+				id = reload_filter_button;
+				location = $inner - 138, 19;
+				size = 126, 40;
+				mouse_enabled = true;
+				background_colour = argb( 228, 38, 52, 74 );
+				pixel_border_colour = rgb( 122, 162, 208 );
+
+				begin Label
+					id = reload_filter_label;
+					location = 0, 0;
+					size = 126, 40;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 225, 238, 255 );
+					mouse_enabled = false;
+					text = "Reload Filter";
+				end
+			end
+		end
+
+		begin Frame
+			id = radius_row;
+			size = $inner, 70;
+			margin = 0, 0, 0, 10;
+
+			begin Label
+				id = magnet_radius_caption;
+				location = 0, 0;
+				size = 160, 22;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormalSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				text = "Magnet Radius";
+			end
+
+			begin TextBox
+				id = magnet_radius_textbox;
+				location = 0, 26;
+				size = 156, 36;
+				max_length = 4;
+				font = Fonts.Normal;
+				foreground_colour = rgb( 245, 245, 245 );
+				background_colour = argb( 230, 8, 9, 13 );
+				pixel_border_colour = rgb( 120, 96, 68 );
+				text = "60";
+			end
+
+			begin Label
+				id = pickup_radius_caption;
+				location = 182, 0;
+				size = 160, 22;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormalSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				text = "Pickup Radius";
+			end
+
+			begin TextBox
+				id = pickup_radius_textbox;
+				location = 182, 26;
+				size = 156, 36;
+				max_length = 4;
+				font = Fonts.Normal;
+				foreground_colour = rgb( 245, 245, 245 );
+				background_colour = argb( 230, 8, 9, 13 );
+				pixel_border_colour = rgb( 120, 96, 68 );
+				text = "50";
+			end
+
+			begin Label
+				id = merge_radius_caption;
+				location = 364, 0;
+				size = 156, 22;
+				auto_size = false;
+				text_align = MiddleLeft;
+				font = Fonts.SmallNormalSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				text = "Merge Radius";
+			end
+
+			begin TextBox
+				id = merge_radius_textbox;
+				location = 364, 26;
+				size = 156, 36;
+				max_length = 4;
+				font = Fonts.Normal;
+				foreground_colour = rgb( 245, 245, 245 );
+				background_colour = argb( 230, 8, 9, 13 );
+				pixel_border_colour = rgb( 120, 96, 68 );
+				text = "60";
+			end
+		end
+
+		begin Frame
+			id = merge_options_row;
+			size = $inner, 40;
+			margin = 0, 0, 0, 10;
+
+			begin CheckBox
+				id = auto_merge_checkbox;
+				location = 0, 4;
+				size = 246, 32;
+				checked = false;
+				text = "Auto-Merge Nearby Stacks";
+			end
+
+			begin CheckBox
+				id = scope_merge_filter_checkbox;
+				location = 264, 4;
+				size = 256, 32;
+				checked = false;
+				text = "Filter-Only Manual Merge";
+			end
+		end
+
+		begin Frame
+			id = zoom_row;
+			size = $inner, 44;
+			margin = 0, 0, 0, 12;
+
+			begin CheckBox
+				id = zoom_override_checkbox;
+				location = 0, 6;
+				size = 246, 32;
+				checked = false;
+				text = "Camera Zoom Override";
+			end
+
+			begin Label
+				id = zoom_value_caption;
+				location = 264, 10;
+				size = 104, 24;
+				auto_size = false;
+				text_align = MiddleRight;
+				font = Fonts.SmallNormalSC;
+				foreground_colour = rgb( 227, 194, 146 );
+				text = "Zoom (0.25-3.0)";
+			end
+
+			begin TextBox
+				id = zoom_value_textbox;
+				location = 378, 4;
+				size = 142, 36;
+				max_length = 8;
+				font = Fonts.Normal;
+				foreground_colour = rgb( 245, 245, 245 );
+				background_colour = argb( 230, 8, 9, 13 );
+				pixel_border_colour = rgb( 120, 96, 68 );
+				text = "1.35";
+			end
+		end
+
+		begin Frame
+			id = quick_actions_row;
+			size = $inner, 44;
+			margin = 0, 0, 0, 10;
+
+			begin BasicButton
+				id = magnet_now_button;
+				location = 0, 0;
+				size = 164, 42;
+				mouse_enabled = true;
+				background_colour = argb( 230, 46, 54, 34 );
+				pixel_border_colour = rgb( 150, 184, 106 );
+
+				begin Label
+					id = magnet_now_label;
+					location = 0, 0;
+					size = 164, 42;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 236, 248, 224 );
+					mouse_enabled = false;
+					text = "Magnet (Alt+M)";
+				end
+			end
+
+			begin BasicButton
+				id = pickup_now_button;
+				location = 178, 0;
+				size = 164, 42;
+				mouse_enabled = true;
+				background_colour = argb( 230, 34, 62, 52 );
+				pixel_border_colour = rgb( 110, 196, 162 );
+
+				begin Label
+					id = pickup_now_label;
+					location = 0, 0;
+					size = 164, 42;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 226, 250, 240 );
+					mouse_enabled = false;
+					text = "Pickup (Alt+G)";
+				end
+			end
+
+			begin BasicButton
+				id = merge_now_button;
+				location = 356, 0;
+				size = 164, 42;
+				mouse_enabled = true;
+				background_colour = argb( 230, 56, 44, 28 );
+				pixel_border_colour = rgb( 196, 152, 92 );
+
+				begin Label
+					id = merge_now_label;
+					location = 0, 0;
+					size = 164, 42;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.SmallNormalSC;
+					foreground_colour = rgb( 250, 236, 210 );
+					mouse_enabled = false;
+					text = "Merge (Alt+R)";
+				end
+			end
+		end
+
+		begin Frame
+			id = footer_bar;
+			size = $inner, 44;
+			margin = 0, 2, 0, 8;
+
+			begin BasicButton
+				id = apply_settings_button;
+				location = 0, 0;
+				size = 250, 42;
+				mouse_enabled = true;
+				background_colour = argb( 235, 36, 72, 46 );
+				pixel_border_colour = rgb( 120, 200, 140 );
+
+				begin Label
+					id = apply_settings_label;
+					location = 0, 0;
+					size = 250, 42;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.NormalSC;
+					foreground_colour = rgb( 235, 255, 235 );
+					mouse_enabled = false;
+					text = "Apply Settings";
+				end
+			end
+
+			begin BasicButton
+				id = close_footer_button;
+				location = 270, 0;
+				size = 250, 42;
+				mouse_enabled = true;
+				background_colour = argb( 230, 62, 28, 28 );
+				pixel_border_colour = rgb( 170, 96, 86 );
+
+				begin Label
+					id = close_footer_label;
+					location = 0, 0;
+					size = 250, 42;
+					auto_size = false;
+					text_align = MiddleCentre;
+					font = Fonts.NormalSC;
+					foreground_colour = rgb( 245, 220, 215 );
+					mouse_enabled = false;
+					text = "Close";
+				end
+			end
+		end
+
+		begin Label
+			id = status_label;
+			size = $inner, 30;
+			auto_size = false;
+			text_align = MiddleLeft;
+			font = Fonts.SmallNormal;
+			foreground_colour = rgb( 196, 204, 216 );
+			text = "Ready. Alt+M Magnet, Alt+G AoE Pickup, Alt+R Merge.";
+		end
+	end
+end

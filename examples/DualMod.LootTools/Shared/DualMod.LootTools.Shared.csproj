@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DualMod.LootTools.Shared</RootNamespace>
+    <AssemblyName>DualMod.LootTools.Shared</AssemblyName>
+  </PropertyGroup>
+</Project>
