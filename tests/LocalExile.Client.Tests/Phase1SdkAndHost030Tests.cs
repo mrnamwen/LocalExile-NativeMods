@@ -15,14 +15,16 @@ namespace LocalExile.Client.Tests;
 public sealed class Phase1SdkAndHost030Tests
 {
     [Fact]
-    public void SdkVersion_Is030WithProtocolVersion1()
+    public void SdkVersion_Is040WithProtocolVersion1AndBackwardCompatibleRanges()
     {
-        Assert.Equal("0.3.0", SdkVersion.Current);
-        Assert.Equal(new Version(0, 3, 0), SdkVersion.Parsed);
+        Assert.Equal("0.4.0", SdkVersion.Current);
+        Assert.Equal(new Version(0, 4, 0), SdkVersion.Parsed);
         Assert.Equal(1, SdkVersion.ProtocolVersion);
-        Assert.True(SdkVersion.IsCompatible(">=0.3.0 <0.4.0"));
-        Assert.True(SdkVersion.IsCompatible("^0.3.0"));
-        Assert.False(SdkVersion.IsCompatible("<0.3.0"));
+        Assert.True(SdkVersion.IsCompatible(">=0.2.0 <2.0.0"));
+        Assert.True(SdkVersion.IsCompatible(">=0.3.0 <2.0.0"));
+        Assert.True(SdkVersion.IsCompatible(">=0.4.0 <0.5.0"));
+        Assert.True(SdkVersion.IsCompatible("^0.4.0"));
+        Assert.False(SdkVersion.IsCompatible("<0.4.0"));
     }
 
     [Fact]

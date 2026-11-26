@@ -1471,7 +1471,7 @@ public sealed class Host020AndReliabilityTests
         il.Emit(OpCodes.Callvirt, typeof(IGameServices).GetProperty(nameof(IGameServices.Stats))!.GetGetMethod()!);
         il.Emit(OpCodes.Ldstr, statKey);
         il.Emit(OpCodes.Ldc_I4, statValue);
-        il.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat))!);
+        il.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat), [typeof(string), typeof(int)])!);
         il.Emit(OpCodes.Ret);
 
         tb.DefineMethodOverride(loadMethod, ifaceLoad);
@@ -1501,7 +1501,7 @@ public sealed class Host020AndReliabilityTests
         fil.Emit(OpCodes.Ldfld, statsField);
         fil.Emit(OpCodes.Ldstr, "sub_frame_count");
         fil.Emit(OpCodes.Ldc_I4_1);
-        fil.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat))!);
+        fil.Emit(OpCodes.Callvirt, typeof(IStatsService).GetMethod(nameof(IStatsService.SetLocalStat), [typeof(string), typeof(int)])!);
         fil.Emit(OpCodes.Ret);
 
         MethodInfo ifaceLoad = typeof(IClientMod).GetMethod(nameof(IClientMod.Load))!;
