@@ -27,3 +27,8 @@ Never overwrites any stock Path of Exile currency row:
 
 - `CustomCurrencyItemDefinition` & `LocalExileCurrencyRegistrar`: appends custom currencies into LocalExile's live `ItemCatalog` on `Load` (cleanly removing on `Dispose`) and routes `C->S 0x0071`/`0x0072` strictly for registered custom `TypeHash`es without touching stock currencies.
 - `LocalExileItemAffixService`: inspects explicit affixes with formatted PoE `stat_descriptions.txt` lines, validates Prefix/Suffix/group/fracture rules, steals affixes, embeds them onto mod-bearing currencies, and replaces target affixes while preserving exact rolled values.
+
+## Natural World Currency Drops & Declarative `.datpatch.json`
+
+- **Natural Drop-Pool Integration (`SiphonLocalExileEntry.cs` + `settings.json`):** On mod load, `SiphonLocalExileEntry` registers both orbs into LocalExile's live `ItemCatalog` via `ItemCatalog.RegisterOverlay` and registers Empty Orbs of Siphoning into `DropDataProvider.Default.RegisterOverlay` (`DropPoolCategory.Currency`) with zero SQLite mutation and zero reflection. Drop weight (`dropWeight`, default `25`), level gates (`minAreaLevel = 45`, `maxAreaLevel = 0`), drop sources (`MonsterKill`, `Container`, `Strongbox`, `BossBonus`, `MapCurrency`), and `monsterRarity` filters are all configurable in `settings.json`, preserved across `/reload`, and automatically removed on mod unload via `GameEventOwners`.
+- **Composable `.datpatch.json` (`client/patches/siphon-orb.datpatch.json`):** Declares the `ItemVisualIdentity`, `BaseItemTypes`, and `CurrencyItems` appends in `DatPatchDocument` v1 format so `DualMod.SiphonOrb` can merge cleanly alongside other currency/content mods via `DatPatchMerger`.
