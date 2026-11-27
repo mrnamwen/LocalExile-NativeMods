@@ -321,17 +321,26 @@ public interface INativeBridge : IDisposable
     /// <summary>Returns tracked world objects in the current area.</summary>
     IReadOnlyCollection<WorldObjectInfo> GetWorldObjects();
 
-    /// <summary>Spawns a client-only world object.</summary>
+    /// <summary>
+    /// Spawns a client-only world object from an extensionless <c>.ot</c> metadata path
+    /// (an optional trailing <c>.ot</c> suffix is normalized; non-<c>.ot</c> asset extensions such as <c>.ao</c> or <c>.epk</c> are rejected).
+    /// </summary>
     uint SpawnClientObject(string metadataPath, float x, float y, float z);
 
-    /// <summary>Spawns a client-only world object with explicit yaw rotation and uniform scale.</summary>
+    /// <summary>
+    /// Spawns a client-only world object with explicit yaw rotation and uniform scale from an extensionless <c>.ot</c> metadata path
+    /// (an optional trailing <c>.ot</c> suffix is normalized; non-<c>.ot</c> asset extensions such as <c>.ao</c> or <c>.epk</c> are rejected).
+    /// </summary>
     uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale) =>
         SpawnClientObject(metadataPath, x, y, z);
 
     /// <summary>Removes a client-only world object.</summary>
     bool RemoveClientObject(uint objectId);
 
-    /// <summary>Plays an effect on a world object.</summary>
+    /// <summary>
+    /// Plays an effect on a world object using an extensionless <c>.ot</c> metadata path (optional <c>.ot</c> suffix)
+    /// or a bare GEAL entity function name. Non-<c>.ot</c> asset paths (such as <c>.ao</c> or <c>.epk</c>) are rejected cleanly.
+    /// </summary>
     void PlayEffect(uint targetObjectId, string effectPath);
 
     /// <summary>Returns the live local player entity snapshot, or <c>null</c> when outside an area.</summary>
@@ -2917,6 +2926,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     /// <inheritdoc/>
     public uint SpawnClientObject(string metadataPath, float x, float y, float z)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
         if (_table->WorldCreateClientObject is not null)
         {
             byte[] utf8 = ToNullTerminatedUtf8(metadataPath);
@@ -2924,7 +2934,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             fixed (byte* pMeta = utf8)
             {
                 NmStatus status = _table->WorldCreateClientObject(pMeta, x, y, z, &nativeHandle);
-                EnsureOk(status, $"WorldCreateClientObject({metadataPath})");
+                EnsureObjectTypeCallOk(status, $"WorldCreateClientObject({metadataPath})", metadataPath, nameof(metadataPath));
             }
 
             uint nativeId = unchecked((uint)nativeHandle);
@@ -2946,6 +2956,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     /// <inheritdoc/>
     public uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
         if (_table->WorldCreateClientObjectEx is not null)
         {
             byte[] utf8 = ToNullTerminatedUtf8(metadataPath);
@@ -2953,7 +2964,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
             fixed (byte* pMeta = utf8)
             {
                 NmStatus status = _table->WorldCreateClientObjectEx(pMeta, x, y, z, rotationRadians, scale, &nativeHandle);
-                EnsureOk(status, $"WorldCreateClientObjectEx({metadataPath})");
+                EnsureObjectTypeCallOk(status, $"WorldCreateClientObjectEx({metadataPath})", metadataPath, nameof(metadataPath));
             }
 
             uint nativeId = unchecked((uint)nativeHandle);
@@ -2993,7 +3004,12 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         return _clientObjects.TryRemove(objectId, out _);
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Plays an effect on <paramref name="targetObjectId"/> using an extensionless <c>.ot</c> metadata path
+    /// (optional <c>.ot</c> suffix) or a bare GEAL entity function name. Non-<c>.ot</c> asset paths (e.g. <c>.ao</c>,
+    /// <c>.epk</c>) fail cleanly with <see cref="ArgumentException"/>; missing <c>.ot</c> paths or target entities
+    /// fail cleanly with <see cref="FileNotFoundException"/>.
+    /// </summary>
     public void PlayEffect(uint targetObjectId, string effectPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(effectPath);
@@ -3006,7 +3022,7 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         fixed (byte* pEffect = utf8)
         {
             NmStatus status = _table->WorldPlayEffect(targetObjectId, pEffect);
-            EnsureOk(status, $"WorldPlayEffect({targetObjectId}, {effectPath})");
+            EnsureObjectTypeCallOk(status, $"WorldPlayEffect({targetObjectId}, {effectPath})", effectPath, nameof(effectPath));
         }
     }
 
@@ -5510,6 +5526,30 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         Encoding.UTF8.GetBytes(value, 0, value.Length, buf, 0);
         buf[len] = 0;
         return buf;
+    }
+
+    private static void EnsureObjectTypeCallOk(NmStatus status, string operation, string metadataPath, string paramName)
+    {
+        if (status == NmStatus.Ok)
+        {
+            return;
+        }
+
+        if (status == NmStatus.ErrInvalidArg)
+        {
+            throw new ArgumentException(
+                $"Native shim call {operation} rejected invalid metadata path '{metadataPath}': expected an extensionless .ot metadata path (optional .ot suffix) or bare GEAL function name; non-.ot asset extensions (such as .ao or .epk) are not valid object types.",
+                paramName);
+        }
+
+        if (status == NmStatus.ErrNotFound)
+        {
+            throw new FileNotFoundException(
+                $"Native shim call {operation} could not locate object type metadata '{metadataPath}' (or target entity) in the active file overlay or game bundles.",
+                metadataPath);
+        }
+
+        EnsureOk(status, operation);
     }
 
     private static void EnsureOk(NmStatus status, string operation)

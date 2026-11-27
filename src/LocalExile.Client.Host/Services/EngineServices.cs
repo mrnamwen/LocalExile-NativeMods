@@ -1243,14 +1243,20 @@ public sealed class WorldService(INativeBridge bridge, GameLifecycle lifecycle) 
     public WorldObjectInfo? FindObject(uint objectId) =>
         bridge.GetWorldObjects().FirstOrDefault(o => o.ObjectId == objectId);
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Spawns a client-only world object from an extensionless <c>.ot</c> metadata path (optional <c>.ot</c> suffix).
+    /// Non-<c>.ot</c> asset paths (e.g. <c>.ao</c>, <c>.epk</c>) are rejected by the native shim.
+    /// </summary>
     public uint SpawnClientObject(string metadataPath, float x, float y, float z = 0f)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
         return bridge.SpawnClientObject(metadataPath, x, y, z);
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Spawns a client-only world object with yaw rotation and uniform scale from an extensionless <c>.ot</c> metadata path
+    /// (optional <c>.ot</c> suffix). Non-<c>.ot</c> asset paths (e.g. <c>.ao</c>, <c>.epk</c>) are rejected by the native shim.
+    /// </summary>
     public uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale = 1.0f)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(metadataPath);
@@ -1270,7 +1276,11 @@ public sealed class WorldService(INativeBridge bridge, GameLifecycle lifecycle) 
     /// <inheritdoc/>
     public bool RemoveClientObject(uint objectId) => bridge.RemoveClientObject(objectId);
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Plays an effect on <paramref name="targetObjectId"/> using an extensionless <c>.ot</c> metadata path
+    /// (optional <c>.ot</c> suffix) or a bare GEAL entity function name. Non-<c>.ot</c> asset paths
+    /// (such as <c>.ao</c> or <c>.epk</c>) are rejected cleanly by the native shim.
+    /// </summary>
     public void PlayEffect(uint targetObjectId, string effectPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(effectPath);

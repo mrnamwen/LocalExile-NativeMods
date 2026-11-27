@@ -3873,6 +3873,234 @@ int test_phase5_compact_sockets_and_world_vfx() {
     return 0;
 }
 
+int test_object_type_path_and_slot_guards() {
+    using nativemods::Phase2Services;
+
+    // 1. Canonicalization & strict non-.ot rejection
+    {
+        std::string key, ot_file;
+        CHECK(Phase2Services::canonicalize_object_type_path("Metadata/Pet/Mods/Maxwell/MaxwellPet", key, ot_file));
+        CHECK(key == "Metadata/Pet/Mods/Maxwell/MaxwellPet");
+        CHECK(ot_file == "Metadata/Pet/Mods/Maxwell/MaxwellPet.ot");
+
+        CHECK(Phase2Services::canonicalize_object_type_path("  \\Metadata\\Pet\\Mods\\Maxwell\\MaxwellPet.ot  ", key, ot_file));
+        CHECK(key == "Metadata/Pet/Mods/Maxwell/MaxwellPet");
+        CHECK(ot_file == "Metadata/Pet/Mods/Maxwell/MaxwellPet.ot");
+
+        CHECK(Phase2Services::canonicalize_object_type_path("///Metadata/Effects/Spells/fireball/fireball.OT", key, ot_file));
+        CHECK(key == "Metadata/Effects/Spells/fireball/fireball");
+        CHECK(ot_file == "Metadata/Effects/Spells/fireball/fireball.ot");
+
+        // Dots in directory segments are allowed as long as the last segment is extensionless or ".ot".
+        CHECK(Phase2Services::canonicalize_object_type_path("Metadata/Mods/v1.2/CustomEffect.Ot", key, ot_file));
+        CHECK(key == "Metadata/Mods/v1.2/CustomEffect");
+        CHECK(ot_file == "Metadata/Mods/v1.2/CustomEffect.ot");
+
+        // All non-.ot extensions and malformed paths MUST be rejected!
+        const char* bad_paths[] = {
+            nullptr,
+            "",
+            "   ",
+            "/",
+            "\\",
+            "Metadata/Pet/Mods/Maxwell/",
+            "Metadata//Pet/MaxwellPet",
+            "Metadata/../Pet/MaxwellPet",
+            "Metadata/./Pet/MaxwellPet",
+            ".ot",
+            "Metadata/.ot",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.ao",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.AO",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.ao.ot",
+            "Metadata/Effects/Spells/breach/breach_ring.epk",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.pet",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.act",
+            "Art/Textures/Maxwell.dds",
+            "Art/Models/Maxwell.fmt",
+            "Art/Models/Maxwell.smd",
+            "Art/Models/Maxwell.ast",
+            "Art/Models/Maxwell.mat",
+            "Art/Models/Maxwell.sm",
+            "Art/Models/Maxwell.amd",
+            "Audio/Mods/Maxwell/stock_market.ogg",
+            "Audio/Mods/Maxwell/click.wav",
+            "Art/UI/MaxwellPanel.ui",
+            "Data/Pet.datc64",
+        };
+        for (const char* bad : bad_paths) {
+            CHECK(!Phase2Services::canonicalize_object_type_path(bad, key, ot_file));
+            CHECK(key.empty() && ot_file.empty());
+        }
+    }
+
+    // 2. C ABI entry points reject non-.ot paths with NM_ERR_INVALID_ARG up front
+    {
+        CHECK(nm_initialize_for_build(NM_BUILD_SYNTHETIC, 0x140000000ull, 0x1000000u, nullptr) == NM_OK);
+
+        uint64_t handle = 0xDEADBEEFull;
+        const char* bad_assets[] = {
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.ao",
+            "Metadata/Effects/Spells/breach/breach_ring.epk",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.pet",
+            "Metadata/Pet/Mods/Maxwell/MaxwellPet.act",
+            "Art/Textures/Icon.dds",
+            "Audio/Mods/Maxwell/stock_market.ogg",
+        };
+        for (const char* bad : bad_assets) {
+            CHECK(nm_world_create_client_object(bad, 1.0f, 2.0f, 3.0f, &handle) == NM_ERR_INVALID_ARG);
+            CHECK(handle == 0u);
+            handle = 0xDEADBEEFull;
+            CHECK(nm_world_create_client_object_ex(bad, 1.0f, 2.0f, 3.0f, 0.0f, 1.0f, &handle) == NM_ERR_INVALID_ARG);
+            CHECK(handle == 0u);
+            CHECK(nm_world_play_effect(67108870u, bad) == NM_ERR_INVALID_ARG);
+        }
+
+        // Bare GEAL function name (no '/' or '.') still passes pre-validation and reaches platform check.
+        CHECK(nm_world_play_effect(67108870u, "PlayBurstEffect") == NM_ERR_NOT_SUPPORTED_ON_PLATFORM);
+
+        // 3. ObjectTypeSlot validation (guards against 0-component / abstract / failed slots before EntityManager)
+        CHECK(!Phase2Services::validate_object_type_slot(nullptr));
+
+        alignas(8) uint8_t fake_slot[0x50] = {};
+        alignas(8) uint8_t fake_ot_data[0xA0] = {};
+        void* fake_factories[2] = {reinterpret_cast<void*>(0x1000), reinterpret_cast<void*>(0x2000)};
+
+        // load_state == 0 (unloaded lazy slot after existence verified) -> allowed
+        CHECK(Phase2Services::validate_object_type_slot(fake_slot));
+
+        // load_state == 3 (failed load w/ stored exception) -> rejected
+        uint32_t state = 3u;
+        std::memcpy(fake_slot + 0x40u, &state, sizeof(state));
+        CHECK(!Phase2Services::validate_object_type_slot(fake_slot));
+
+        // load_state == 2 with null ot_data -> rejected
+        state = 2u;
+        std::memcpy(fake_slot + 0x40u, &state, sizeof(state));
+        CHECK(!Phase2Services::validate_object_type_slot(fake_slot));
+
+        // load_state == 2 with valid ot_data pointer but 0 components (begin == end) -> rejected!
+        void* ot_data_ptr = fake_ot_data;
+        std::memcpy(fake_slot + 0x28u, &ot_data_ptr, sizeof(ot_data_ptr));
+        uintptr_t comp_begin = reinterpret_cast<uintptr_t>(&fake_factories[0]);
+        uintptr_t comp_end = comp_begin; // 0 components
+        std::memcpy(fake_ot_data + 0x10u, &comp_begin, sizeof(comp_begin));
+        std::memcpy(fake_ot_data + 0x18u, &comp_end, sizeof(comp_end));
+        CHECK(!Phase2Services::validate_object_type_slot(fake_slot));
+
+        // load_state == 2 with 2 components & is_abstract == 0 -> accepted!
+        comp_end = reinterpret_cast<uintptr_t>(&fake_factories[2]);
+        std::memcpy(fake_ot_data + 0x18u, &comp_end, sizeof(comp_end));
+        CHECK(Phase2Services::validate_object_type_slot(fake_slot));
+
+        // load_state == 2 with 2 components & is_abstract == 1 -> rejected!
+        uint8_t is_abstract = 1u;
+        std::memcpy(fake_ot_data + 0x88u, &is_abstract, sizeof(is_abstract));
+        CHECK(!Phase2Services::validate_object_type_slot(fake_slot));
+        is_abstract = 0u;
+        std::memcpy(fake_ot_data + 0x88u, &is_abstract, sizeof(is_abstract));
+
+        // 4. Full pre-flight + spawn pipeline: proves .ao/.epk -> NM_ERR_INVALID_ARG (0 game calls),
+        //    missing .ot -> NM_ERR_NOT_FOUND (0 GetObjectType/create calls), empty slot -> NM_ERR_INVALID_ARG
+        //    (0 create calls), and existing .ot -> canonical extensionless key + clean spawn!
+        uint64_t ov_tok = 0;
+        const char* kOverlayPath = "Metadata/Pet/Mods/Maxwell/MaxwellPet.ot";
+        auto ov_cb = [](const char* path, uint8_t** out_data, size_t* out_size, void*) -> nm_status_t {
+            if (!path || (std::strcmp(path, "metadata/pet/mods/maxwell/maxwellpet.ot") != 0 &&
+                          std::strcmp(path, "Metadata/Pet/Mods/Maxwell/MaxwellPet.ot") != 0)) {
+                return NM_ERR_NOT_FOUND;
+            }
+            static const char kBody[] = "version 2\nextends \"Metadata/Pet/Pet\"\n";
+            auto* copy = new uint8_t[sizeof(kBody) - 1u];
+            std::memcpy(copy, kBody, sizeof(kBody) - 1u);
+            *out_data = copy;
+            *out_size = sizeof(kBody) - 1u;
+            return NM_OK;
+        };
+        auto ov_free = [](uint8_t* p, void*) { delete[] p; };
+        CHECK(nm_register_file_overlay(ov_cb, ov_free, nullptr, &ov_tok) == NM_OK);
+        CHECK(nm_set_file_overlay_known_paths(ov_tok, &kOverlayPath, 1u) == NM_OK);
+
+        struct MockSpawnState {
+            int         overlay_calls = 0;
+            int         fs_calls = 0;
+            int         get_ot_calls = 0;
+            int         create_calls = 0;
+            bool        fs_has_file = false;
+            void*       slot_to_return = nullptr;
+            void*       ent_to_return = nullptr;
+            std::string last_ot_file;
+            std::string last_canonical_key;
+        } mock{};
+        uint8_t dummy_ent[16] = {};
+        mock.slot_to_return = fake_slot;
+        mock.ent_to_return = dummy_ent;
+
+        Phase2Services::ClientObjectSpawnOps ops{};
+        ops.has_overlay_file = [](const std::string& ot_file, void* ud) -> bool {
+            auto* m = static_cast<MockSpawnState*>(ud);
+            ++m->overlay_calls;
+            m->last_ot_file = ot_file;
+            size_t sz = 0;
+            return nm_has_file_overlay(ot_file.c_str(), &sz) == NM_OK;
+        };
+        ops.fs_exists = [](const std::string& ot_file, void* ud) -> bool {
+            auto* m = static_cast<MockSpawnState*>(ud);
+            ++m->fs_calls;
+            m->last_ot_file = ot_file;
+            return m->fs_has_file;
+        };
+        ops.get_object_type = [](const std::string& key, void* ud) -> void* {
+            auto* m = static_cast<MockSpawnState*>(ud);
+            ++m->get_ot_calls;
+            m->last_canonical_key = key;
+            return m->slot_to_return;
+        };
+        ops.create_client_object = [](void* /*slot*/, void* ud) -> void* {
+            auto* m = static_cast<MockSpawnState*>(ud);
+            ++m->create_calls;
+            return m->ent_to_return;
+        };
+        ops.user_data = &mock;
+
+        void* spawned = nullptr;
+
+        // 4a. Non-.ot (.ao / .epk) rejected with NM_ERR_INVALID_ARG; NEVER touches overlay/fs/GetObjectType/create!
+        CHECK(Phase2Services::spawn_client_object_guarded("Metadata/Pet/Mods/Maxwell/MaxwellPet.ao", ops, &spawned) == NM_ERR_INVALID_ARG);
+        CHECK(Phase2Services::spawn_client_object_guarded("Metadata/Effects/Spells/breach/breach_ring.epk", ops, &spawned) == NM_ERR_INVALID_ARG);
+        CHECK(spawned == nullptr);
+        CHECK(mock.overlay_calls == 0 && mock.fs_calls == 0 && mock.get_ot_calls == 0 && mock.create_calls == 0);
+
+        // 4b. Missing .ot returns NM_ERR_NOT_FOUND; NEVER touches GetObjectType or world.create_client_object!
+        CHECK(Phase2Services::spawn_client_object_guarded("Metadata/Effects/DoesNotExist.ot", ops, &spawned) == NM_ERR_NOT_FOUND);
+        CHECK(spawned == nullptr);
+        CHECK(mock.overlay_calls == 1 && mock.fs_calls == 1 && mock.last_ot_file == "Metadata/Effects/DoesNotExist.ot");
+        CHECK(mock.get_ot_calls == 0 && mock.create_calls == 0);
+
+        // 4c. Existing overlay .ot with 0-component slot rejected BEFORE create_client_object!
+        comp_end = comp_begin;
+        std::memcpy(fake_ot_data + 0x18u, &comp_end, sizeof(comp_end));
+        CHECK(Phase2Services::spawn_client_object_guarded("\\Metadata\\Pet\\Mods\\Maxwell\\MaxwellPet.ot", ops, &spawned) == NM_ERR_INVALID_ARG);
+        CHECK(spawned == nullptr);
+        CHECK(mock.get_ot_calls == 1 && mock.last_canonical_key == "Metadata/Pet/Mods/Maxwell/MaxwellPet");
+        CHECK(mock.create_calls == 0);
+
+        // 4d. Existing overlay .ot with valid loaded ObjectTypeSlot spawns cleanly with extensionless key!
+        comp_end = reinterpret_cast<uintptr_t>(&fake_factories[2]);
+        std::memcpy(fake_ot_data + 0x18u, &comp_end, sizeof(comp_end));
+        CHECK(Phase2Services::spawn_client_object_guarded("\\Metadata\\Pet\\Mods\\Maxwell\\MaxwellPet.OT", ops, &spawned) == NM_OK);
+        CHECK(spawned == dummy_ent);
+        CHECK(mock.get_ot_calls == 2 && mock.last_canonical_key == "Metadata/Pet/Mods/Maxwell/MaxwellPet");
+        CHECK(mock.create_calls == 1);
+
+        CHECK(nm_unregister_file_overlay(ov_tok) == NM_OK);
+        CHECK(nm_shutdown() == NM_OK);
+    }
+
+    ++g_tests_passed;
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -3911,6 +4139,7 @@ int main() {
     if (test_phase5_prologues_and_address_table() != 0) return 1;
     if (test_phase5_u32_stack_wire_format_and_override() != 0) return 1;
     if (test_phase5_compact_sockets_and_world_vfx() != 0) return 1;
+    if (test_object_type_path_and_slot_guards() != 0) return 1;
 
     std::printf("ALL %d NATIVEMODS C++20 SHIM TESTS PASSED!\n", g_tests_passed);
     return 0;

@@ -77,6 +77,52 @@ public sealed class Phase5AndLeagueGaps120Tests
     {
         s_abi060LastEffectEntityId = targetEntityId;
         s_abi060LastEffectPath = effectPathUtf8 is not null ? Marshal.PtrToStringUTF8((nint)effectPathUtf8) : null;
+        if (s_abi060LastEffectPath is not null)
+        {
+            if (s_abi060LastEffectPath.EndsWith(".ao", StringComparison.OrdinalIgnoreCase) ||
+                s_abi060LastEffectPath.EndsWith(".epk", StringComparison.OrdinalIgnoreCase))
+            {
+                return NmStatus.ErrInvalidArg;
+            }
+
+            if (s_abi060LastEffectPath.Contains("Missing", StringComparison.OrdinalIgnoreCase))
+            {
+                return NmStatus.ErrNotFound;
+            }
+        }
+
+        return NmStatus.Ok;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe NmStatus MockWorldCreateClientObject(
+        byte* metadataUtf8,
+        float x,
+        float y,
+        float z,
+        ulong* outHandle)
+    {
+        s_abi060LastObjectMeta = metadataUtf8 is not null ? Marshal.PtrToStringUTF8((nint)metadataUtf8) : null;
+        if (s_abi060LastObjectMeta is not null)
+        {
+            if (s_abi060LastObjectMeta.EndsWith(".ao", StringComparison.OrdinalIgnoreCase) ||
+                s_abi060LastObjectMeta.EndsWith(".epk", StringComparison.OrdinalIgnoreCase))
+            {
+                *outHandle = 0;
+                return NmStatus.ErrInvalidArg;
+            }
+
+            if (s_abi060LastObjectMeta.Contains("Missing", StringComparison.OrdinalIgnoreCase))
+            {
+                *outHandle = 0;
+                return NmStatus.ErrNotFound;
+            }
+        }
+
+        s_abi060LastObjX = x;
+        s_abi060LastObjY = y;
+        s_abi060LastObjZ = z;
+        *outHandle = ++s_abi060NextObjHandle;
         return NmStatus.Ok;
     }
 
@@ -91,6 +137,22 @@ public sealed class Phase5AndLeagueGaps120Tests
         ulong* outHandle)
     {
         s_abi060LastObjectMeta = metadataUtf8 is not null ? Marshal.PtrToStringUTF8((nint)metadataUtf8) : null;
+        if (s_abi060LastObjectMeta is not null)
+        {
+            if (s_abi060LastObjectMeta.EndsWith(".ao", StringComparison.OrdinalIgnoreCase) ||
+                s_abi060LastObjectMeta.EndsWith(".epk", StringComparison.OrdinalIgnoreCase))
+            {
+                *outHandle = 0;
+                return NmStatus.ErrInvalidArg;
+            }
+
+            if (s_abi060LastObjectMeta.Contains("Missing", StringComparison.OrdinalIgnoreCase))
+            {
+                *outHandle = 0;
+                return NmStatus.ErrNotFound;
+            }
+        }
+
         s_abi060LastObjX = x;
         s_abi060LastObjY = y;
         s_abi060LastObjZ = z;
@@ -152,9 +214,9 @@ public sealed class Phase5AndLeagueGaps120Tests
         bridge.SetCompactSocketsEnabled(true);
         Assert.Equal(1, s_abi060CompactSocketsEnabled);
 
-        bridge.PlayEffect(777u, "Metadata/Effects/Spells/breach/breach_ring.epk");
+        bridge.PlayEffect(777u, "Metadata/Effects/Spells/breach/breach_ring");
         Assert.Equal(777u, s_abi060LastEffectEntityId);
-        Assert.Equal("Metadata/Effects/Spells/breach/breach_ring.epk", s_abi060LastEffectPath);
+        Assert.Equal("Metadata/Effects/Spells/breach/breach_ring", s_abi060LastEffectPath);
 
         uint objId = bridge.SpawnClientObject("Metadata/MiscellaneousObjects/Mods/League/Monolith", 120f, 340f, 15f, 1.5707964f, 1.35f);
         Assert.Equal(0x4000_0101u, objId);
@@ -164,6 +226,48 @@ public sealed class Phase5AndLeagueGaps120Tests
         Assert.Equal(15f, s_abi060LastObjZ, precision: 3);
         Assert.Equal(1.5707964f, s_abi060LastObjRot, precision: 4);
         Assert.Equal(1.35f, s_abi060LastObjScale, precision: 3);
+    }
+
+    [Fact]
+    public unsafe void NativeShimBridge_WorldPlayEffectAndSpawnClientObject_RejectAoAndMissingOtCleanly()
+    {
+        s_abi060LastEffectEntityId = 0;
+        s_abi060LastEffectPath = null;
+        s_abi060LastObjectMeta = null;
+        s_abi060NextObjHandle = 0x5000_0000ul;
+
+        NmAbiTable table = default;
+        table.StructSize = (uint)sizeof(NmAbiTable);
+        table.AbiVersion = NativeShimConstants.AbiVersion;
+        table.GetHostInfo = &MockGetHostInfo060;
+        table.WorldCreateClientObject = &MockWorldCreateClientObject;
+        table.WorldPlayEffect = &MockWorldPlayEffect;
+        table.WorldCreateClientObjectEx = &MockWorldCreateClientObjectEx;
+
+        using var bridge = new NativeShimBridge((nint)(&table));
+
+        // Non-.ot asset paths (.ao / .epk) rejected with ArgumentException cleanly
+        var playAoEx = Assert.Throws<ArgumentException>(() =>
+            bridge.PlayEffect(67108870u, "Metadata/Pet/Mods/Maxwell/MaxwellPet.ao"));
+        Assert.Contains(".ot", playAoEx.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Throws<ArgumentException>(() =>
+            bridge.PlayEffect(67108870u, "Metadata/Effects/Spells/breach/breach_ring.epk"));
+        Assert.Throws<ArgumentException>(() =>
+            bridge.SpawnClientObject("Metadata/Pet/Mods/Maxwell/MaxwellPet.ao", 1f, 2f, 3f));
+        Assert.Throws<ArgumentException>(() =>
+            bridge.SpawnClientObject("Metadata/Pet/Mods/Maxwell/MaxwellPet.ao", 1f, 2f, 3f, 0f, 1f));
+
+        // Missing .ot paths rejected with FileNotFoundException cleanly
+        Assert.Throws<FileNotFoundException>(() =>
+            bridge.PlayEffect(67108870u, "Metadata/Effects/MissingEffect"));
+        Assert.Throws<FileNotFoundException>(() =>
+            bridge.SpawnClientObject("Metadata/Effects/MissingObject", 1f, 2f, 3f));
+        Assert.Throws<FileNotFoundException>(() =>
+            bridge.SpawnClientObject("Metadata/Effects/MissingObject", 1f, 2f, 3f, 0f, 1f));
+
+        // Failed spawns MUST NOT leave phantom objects tracked in GetWorldObjects()
+        Assert.Empty(bridge.GetWorldObjects());
     }
 
     [Fact]
@@ -315,7 +419,7 @@ public sealed class Phase5AndLeagueGaps120Tests
         Assert.True(bridge.IsAudioPlaying(leagueMod.SpatialHandle));
         Assert.NotEqual(0u, leagueMod.SpawnedObjectId);
         Assert.Equal((1.25f, 2.0f), bridge.SimulatedClientObjectTransforms[leagueMod.SpawnedObjectId]);
-        Assert.Contains(bridge.PlayedEffects, e => e.ObjectId == leagueMod.SpawnedObjectId && e.EffectPath == "Metadata/Effects/League/Pulse.epk");
+        Assert.Contains(bridge.PlayedEffects, e => e.ObjectId == leagueMod.SpawnedObjectId && e.EffectPath == "Metadata/Effects/League/Pulse");
 
         await runtime.Loader.UnloadModAsync("league-mod");
         Assert.False(bridge.IsAudioPlaying(leagueMod.SpatialHandle));
@@ -420,7 +524,7 @@ public sealed class Phase5AndLeagueGaps120Tests
         {
             SpatialHandle = context.Game.Audio.PlaySoundAtPosition("event:/League/EncounterHum", 100f, 0f, 0f, volume: 0.9f, maxDistance: 1200f, loop: true);
             SpawnedObjectId = context.Game.World.SpawnClientObject("Metadata/MiscellaneousObjects/Mods/League/Altar", 100f, 0f, 0f, rotationRadians: 1.25f, scale: 2.0f);
-            context.Game.World.PlayEffect(SpawnedObjectId, "Metadata/Effects/League/Pulse.epk");
+            context.Game.World.PlayEffect(SpawnedObjectId, "Metadata/Effects/League/Pulse");
         }
     }
 }
