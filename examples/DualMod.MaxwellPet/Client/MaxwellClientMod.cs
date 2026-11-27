@@ -141,11 +141,6 @@ public sealed class MaxwellClientMod : IClientMod
                     window.SetProperty("maxwell_dance_object", $"0x{objectId:X}");
                     RefreshTelemetryLabel();
                 }
-
-                if (objectId != 0)
-                {
-                    game.World.PlayEffect(objectId, MaxwellProtocol.PetAoPath);
-                }
             });
 
             context.Logger.Info($"GEAL {MaxwellProtocol.GealDanceBuiltin} triggered on object 0x{objectId:X} (boost={boost}, total={_danceCalls}).");

@@ -648,6 +648,13 @@ nm_status_t Phase5Services::world_create_client_object_ex(
         return NM_ERR_INVALID_ARG;
     }
     *out_handle = 0;
+
+    std::string canonical_key;
+    std::string ot_file_path;
+    if (!Phase2Services::canonicalize_object_type_path(metadata_utf8, canonical_key, ot_file_path)) {
+        return NM_ERR_INVALID_ARG;
+    }
+
     const float effective_scale = (scale > 0.0f) ? scale : 1.0f;
 
 #if defined(_WIN32)
@@ -655,50 +662,105 @@ nm_status_t Phase5Services::world_create_client_object_ex(
         return NM_ERR_NOT_SUPPORTED_ON_PLATFORM;
     }
 
-    const std::string normalized = normalize_effect_path(metadata_utf8);
-    const std::wstring meta_w = utf8_to_wide_p5(normalized.c_str());
-    if (meta_w.empty()) return NM_ERR_INVALID_ARG;
+    const std::wstring meta_w = utf8_to_wide_p5(canonical_key.c_str());
+    const std::wstring ot_file_w = utf8_to_wide_p5(ot_file_path.c_str());
+    if (meta_w.empty() || ot_file_w.empty()) return NM_ERR_INVALID_ARG;
+
+    // Pre-check virtual FileOverlay outside invoke_guarded (avoids C++ mutex inside VEH/SEH frame).
+    size_t overlay_sz = 0;
+    const bool in_overlay = (nm_has_file_overlay(ot_file_path.c_str(), &overlay_sz) == NM_OK);
 
     struct Ctx {
         nm_build_id_t  bid;
         uint64_t       base;
         const wchar_t* meta_ptr;
         uint64_t       meta_len;
+        const wchar_t* ot_file_ptr;
+        uint64_t       ot_file_len;
+        bool           in_overlay;
         float          x;
         float          y;
         float          z;
         float          rotation_rad;
         float          scale;
         void*          created = nullptr;
+        nm_status_t    status = NM_ERR_GAME_EXCEPTION;
     } ctx{
-        build_id_, image_base_, meta_w.c_str(), static_cast<uint64_t>(meta_w.size()),
-        x, y, z, rotation_rad, effective_scale, nullptr,
+        build_id_, image_base_,
+        meta_w.c_str(), static_cast<uint64_t>(meta_w.size()),
+        ot_file_w.c_str(), static_cast<uint64_t>(ot_file_w.size()),
+        in_overlay,
+        x, y, z, rotation_rad, effective_scale, nullptr, NM_ERR_GAME_EXCEPTION,
     };
 
     auto fn = [](void* raw) -> int64_t {
         auto* c = static_cast<Ctx*>(raw);
         void* world = resolve_client_world_unguarded(c->bid, c->base);
-        if (!world) return -1;
+        if (!world) {
+            c->status = NM_ERR_NOT_INITIALIZED;
+            return -1;
+        }
 
-        const uint64_t fn_rm_inst = sym_addr_p5(c->bid, c->base, "world.resource_mgr_instance");
-        const uint64_t fn_rm_get  = sym_addr_p5(c->bid, c->base, "world.resource_mgr_get_ot");
-        const uint64_t fn_ctor    = sym_addr_p5(c->bid, c->base, "world.create_client_object");
-        const uint64_t fn_alloc   = sym_addr_p5(c->bid, c->base, "allocator.alloc");
-        const uint64_t fn_free    = sym_addr_p5(c->bid, c->base, "allocator.free");
-        if (fn_rm_inst == 0 || fn_rm_get == 0 || fn_ctor == 0 || fn_alloc == 0) return -2;
+        const uint64_t fn_rm_inst   = sym_addr_p5(c->bid, c->base, "world.resource_mgr_instance");
+        const uint64_t fn_rm_get    = sym_addr_p5(c->bid, c->base, "world.resource_mgr_get_ot");
+        const uint64_t fn_ctor      = sym_addr_p5(c->bid, c->base, "world.create_client_object");
+        const uint64_t fn_alloc     = sym_addr_p5(c->bid, c->base, "allocator.alloc");
+        const uint64_t fn_free      = sym_addr_p5(c->bid, c->base, "allocator.free");
+        const uint64_t fn_fs_holder = sym_addr_p5(c->bid, c->base, "files.filesystem_holder_get");
+        const uint64_t fn_fs_exists = sym_addr_p5(c->bid, c->base, "files.exists_query");
+        if (fn_rm_inst == 0 || fn_rm_get == 0 || fn_ctor == 0 || fn_alloc == 0) {
+            c->status = NM_ERR_SYMBOL_NOT_FOUND;
+            return -2;
+        }
+
+        // Verify "<canonical>.ot" exists BEFORE touching ResourceManager::GetObjectType so a missing
+        // metadata file never allocates an empty 0-component ObjectTypeSlot or poisons EntityManager.
+        if (!c->in_overlay) {
+            if (fn_fs_holder == 0 || fn_fs_exists == 0) {
+                c->status = NM_ERR_SYMBOL_NOT_FOUND;
+                return -2;
+            }
+            using HolderGetFn = void*(NM_CALL*)();
+            void* holder = reinterpret_cast<HolderGetFn>(static_cast<uintptr_t>(fn_fs_holder))();
+            void* fs = nullptr;
+            if (!holder || !read_mem_p5(holder, 0x08u, fs) || !fs) {
+                c->status = NM_ERR_NOT_INITIALIZED;
+                return -1;
+            }
+            WStringViewP5 ot_wsv{c->ot_file_ptr, c->ot_file_len};
+            using FsExistsFn = uint8_t(NM_CALL*)(void*, const WStringViewP5*);
+            const uint8_t exists = reinterpret_cast<FsExistsFn>(static_cast<uintptr_t>(fn_fs_exists))(fs, &ot_wsv);
+            if (exists == 0u) {
+                c->status = NM_ERR_NOT_FOUND;
+                return -3;
+            }
+        }
 
         using RmInstFn = void*(NM_CALL*)();
         void* rm = reinterpret_cast<RmInstFn>(static_cast<uintptr_t>(fn_rm_inst))();
-        if (!rm) return -1;
+        if (!rm) {
+            c->status = NM_ERR_NOT_INITIALIZED;
+            return -1;
+        }
 
         WStringViewP5 wsv{c->meta_ptr, c->meta_len};
         using RmGetOtFn = void*(NM_CALL*)(void*, const WStringViewP5*, const WStringViewP5*);
         void* ot_slot = reinterpret_cast<RmGetOtFn>(static_cast<uintptr_t>(fn_rm_get))(rm, &wsv, &wsv);
-        if (!ot_slot) return -3;
+        if (!ot_slot) {
+            c->status = NM_ERR_NOT_FOUND;
+            return -3;
+        }
+        if (!Phase2Services::validate_object_type_slot(ot_slot)) {
+            c->status = NM_ERR_INVALID_ARG;
+            return -6;
+        }
 
         auto raw_alloc = reinterpret_cast<GameAllocator::RawAllocFn>(static_cast<uintptr_t>(fn_alloc));
         void* mem = raw_alloc(0x248u, 16u);
-        if (!mem) return -4;
+        if (!mem) {
+            c->status = NM_ERR_ALLOC_FAILED;
+            return -4;
+        }
         std::memset(mem, 0, 0x248u);
 
         void* slot_handle = ot_slot;
@@ -710,6 +772,7 @@ nm_status_t Phase5Services::world_create_client_object_ex(
                 auto raw_free = reinterpret_cast<GameAllocator::RawFreeFn>(static_cast<uintptr_t>(fn_free));
                 raw_free(mem);
             }
+            c->status = NM_ERR_GAME_EXCEPTION;
             return -5;
         }
 
@@ -736,6 +799,7 @@ nm_status_t Phase5Services::world_create_client_object_ex(
             c->x, c->y, c->z, c->rotation_rad, c->scale);
 
         c->created = ent;
+        c->status = NM_OK;
         return 0;
     };
 
@@ -743,10 +807,8 @@ nm_status_t Phase5Services::world_create_client_object_ex(
     nm_exception_info_t ex{};
     const nm_status_t st = invoke_guarded(fn, &ctx, &rc, &ex);
     if (st != NM_OK) return st;
-    if (rc == -1) return NM_ERR_NOT_INITIALIZED;
-    if (rc == -2 || rc == -3) return NM_ERR_SYMBOL_NOT_FOUND;
-    if (rc == -4) return NM_ERR_ALLOC_FAILED;
-    if (rc != 0 || !ctx.created) return NM_ERR_GAME_EXCEPTION;
+    if (rc != 0) return ctx.status;
+    if (!ctx.created) return NM_ERR_GAME_EXCEPTION;
     *out_handle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ctx.created));
     return NM_OK;
 #else
@@ -760,6 +822,16 @@ nm_status_t Phase5Services::world_play_effect(uint32_t target_entity_id, const c
 
     const std::string normalized = normalize_effect_path(effect_path_utf8);
     if (normalized.empty()) return NM_ERR_INVALID_ARG;
+
+    // Validate metadata-like paths up front so non-.ot asset paths (.ao, .epk, .pet, .ogg, etc.)
+    // are rejected with NM_ERR_INVALID_ARG before ever touching ResourceManager or EntityManager.
+    const bool is_metadata_path = looks_like_metadata_path(normalized);
+    std::string canonical_key;
+    std::string ot_file_path;
+    if (is_metadata_path &&
+        !Phase2Services::canonicalize_object_type_path(effect_path_utf8, canonical_key, ot_file_path)) {
+        return NM_ERR_INVALID_ARG;
+    }
 
 #if defined(_WIN32)
     if (build_id_ == NM_BUILD_SYNTHETIC || build_id_ == NM_BUILD_UNKNOWN || image_base_ == 0) {
@@ -822,8 +894,8 @@ nm_status_t Phase5Services::world_play_effect(uint32_t target_entity_id, const c
     if (rc == -1) return NM_ERR_NOT_INITIALIZED;
     if (rc == -2 || rc == -3) return NM_ERR_NOT_FOUND;
 
-    // 1. If the caller supplied a bare GEAL entity function name (no path separators), try GEAL invocation first.
-    if (!looks_like_metadata_path(normalized) && phase4_ != nullptr && tctx.resolved_entity_id != 0u) {
+    // 1. If the caller supplied a bare GEAL entity function name (no path separators / dots), try GEAL invocation first.
+    if (!is_metadata_path && phase4_ != nullptr && tctx.resolved_entity_id != 0u) {
         size_t out_len = 0;
         const nm_status_t geal_st = phase4_->geal_invoke_function(
             tctx.resolved_entity_id, normalized.c_str(), "[]", nullptr, 0, &out_len);
@@ -832,15 +904,11 @@ nm_status_t Phase5Services::world_play_effect(uint32_t target_entity_id, const c
         }
     }
 
-    // 2. Spawn client-side VFX object at the target entity's world coordinates.
+    // 2. Spawn client-side VFX object at the target entity's world coordinates (using canonical extensionless .ot key).
     uint64_t spawned = 0;
-    nm_status_t spawn_st = world_create_client_object_ex(
-        normalized.c_str(), tctx.wx, tctx.wy, tctx.wz, tctx.rot, 1.0f, &spawned);
-    if (spawn_st != NM_OK && normalized.size() > 3u && normalized.compare(normalized.size() - 3u, 3u, ".ot") == 0) {
-        const std::string without_ext = normalized.substr(0, normalized.size() - 3u);
-        spawn_st = world_create_client_object_ex(
-            without_ext.c_str(), tctx.wx, tctx.wy, tctx.wz, tctx.rot, 1.0f, &spawned);
-    }
+    const char* spawn_path = is_metadata_path ? canonical_key.c_str() : normalized.c_str();
+    const nm_status_t spawn_st = world_create_client_object_ex(
+        spawn_path, tctx.wx, tctx.wy, tctx.wz, tctx.rot, 1.0f, &spawned);
     if (spawn_st != NM_OK) {
         return spawn_st;
     }

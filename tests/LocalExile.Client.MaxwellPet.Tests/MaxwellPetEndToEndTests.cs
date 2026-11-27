@@ -228,7 +228,8 @@ public sealed class MaxwellPetEndToEndTests
         // Trigger custom GEAL MaxwellDance via button click
         window.Require<IButton>("dance_button").Click();
         Assert.Equal("1", window.GetProperty("maxwell_dance_calls"));
-        Assert.Contains(simBridge.PlayedEffects, e => e.ObjectId == spawned.EntityId && e.EffectPath == MaxwellProtocol.PetAoPath);
+        Assert.Equal($"0x{spawned.EntityId:X}", window.GetProperty("maxwell_dance_object"));
+        Assert.Empty(simBridge.PlayedEffects);
 
         // Adjust audio volume, mute, and unmute
         window.Require<IButton>("vol_up_button").Click();

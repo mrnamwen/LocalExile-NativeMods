@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace nativemods {
@@ -126,6 +127,37 @@ public:
         float*      out_sx,
         float*      out_sy,
         int32_t*    out_in_front) noexcept;
+
+    // Canonicalizes a metadata path for ResourceManager::GetObjectType (0x1401b48b0):
+    //   - trims ASCII whitespace, normalizes '\' -> '/', strips leading '/'
+    //   - rejects empty paths, trailing '/', empty segments ("//"), "."/".." segments,
+    //     or any non-".ot" file extension in the last segment (e.g. .ao, .epk, .pet, .ogg, .dds)
+    //   - trims an optional trailing ".ot" (case-insensitive) into out_canonical_key
+    //   - writes "<out_canonical_key>.ot" into out_ot_file_path
+    static bool canonicalize_object_type_path(
+        const char*  raw_metadata_utf8,
+        std::string& out_canonical_key,
+        std::string& out_ot_file_path);
+
+    // Validates an ObjectTypeSlot* returned by ResourceManager::GetObjectType (0x1401b48b0)
+    // before passing it to world.create_client_object (0x141ec47e0).
+    // Rejects nullptr, failed load states (> 2), and loaded slots (state == 2) whose
+    // ObjectTypeData (+0x28) is null, abstract (+0x88 != 0), or has 0 component factories (+0x10/+0x18).
+    static bool validate_object_type_slot(const void* ot_slot) noexcept;
+
+    struct ClientObjectSpawnOps {
+        bool  (*has_overlay_file)(const std::string& ot_file_utf8, void* ud) = nullptr;
+        bool  (*fs_exists)(const std::string& ot_file_utf8, void* ud) = nullptr;
+        void* (*get_object_type)(const std::string& canonical_key_utf8, void* ud) = nullptr;
+        void* (*create_client_object)(void* ot_slot, void* ud) = nullptr;
+        void* user_data = nullptr;
+    };
+
+    // Guarded object-type pre-flight & spawn pipeline exposed for deterministic unit tests.
+    static nm_status_t spawn_client_object_guarded(
+        const char*                 raw_metadata_utf8,
+        const ClientObjectSpawnOps& ops,
+        void**                      out_entity);
 
 private:
     nm_build_id_t                 build_id_ = NM_BUILD_UNKNOWN;
