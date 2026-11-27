@@ -1,4 +1,4 @@
-**NativeMods 3.29 Wiki (`1.1.0`)**
+**NativeMods 3.29 Wiki (`1.2.0`)**
 
 - **Home**
   - [Documentation Home](README.md)

@@ -50,14 +50,28 @@ if (files.Exists("Metadata/UI/Mods/MyMod/Panel.ui"))
 
 ---
 
-## 2. 3D Meshes (`.glb` → `.smd`/`.sm`/`.mat`/`.ast`/`.amd`), `.dds` Textures & FMOD `.ogg` Audio
+## 2. 3D Meshes (`.fmt` Static, Multi-Bone `.ast`, Rigged `.smd`), `.dds` Textures & FMOD `.ogg` Audio
 
 ### CLI Commands (`LocalExile.Client.AssetPipeline`)
 
 ```bash
-# 1. glTF 2.0 .glb -> native 3.29.3d .smd + .smd.header + .sm + .ast v7 + .amd + .mat + .ot/.ao/.act
+# 1a. glTF 2.0 .glb -> native 3.29.3d .smd + .smd.header + .sm + .ast v7 + .amd + .mat + .ot/.ao/.act (rigid Pet/Misc pipeline)
 dotnet run --project src/LocalExile.Client.AssetPipeline -c Release -- \
   convert-glb --in /path/to/model.glb --out dist/my-assets
+
+# 1b. glTF 2.0 .glb -> native 3.29.3d static mesh .fmt (v9 DOLm lver=4, 24B verts) + .fmt.header + .mat + optional .ao/.aoc
+dotnet run --project src/LocalExile.Client.AssetPipeline -c Release -- \
+  convert-glb-fmt --in /path/to/prop.glb --out dist/my-assets --name MyProp \
+  --art-base Art/Models/Mods/MyMod --meta-base Metadata/MiscellaneousObjects/Mods/MyMod --span 84 --center
+
+# 1c. Rigged glTF 2.0 .glb -> native 3.29.3d 4-bone skinned .smd (v3 DOLm) + .smd.header + multi-bone .ast v7 + .amd v5 + .sm + .mat + .ao
+dotnet run --project src/LocalExile.Client.AssetPipeline -c Release -- \
+  convert-glb-smd --in /path/to/creature.glb --out dist/my-assets --name MyCreature \
+  --art-base Art/Models/Mods/MyMod --meta-base Metadata/Monsters/Mods/MyMod --fps 30 --span 96
+
+# 1d. Binary round-trip inspector for stock or generated .fmt, .smd, and .ast (v7..v12) files
+dotnet run --project src/LocalExile.Client.AssetPipeline -c Release -- \
+  inspect-mesh --in dist/my-assets/Art/Models/Mods/MyMod/MyProp.fmt --header dist/my-assets/Art/Models/Mods/MyMod/MyProp.fmt.header
 
 # 2. PNG/JPEG/TGA -> PoE DX10 .dds + exact 3.29.3d .dds.header (bc1 | bc3 | rgba8)
 dotnet run --project src/LocalExile.Client.AssetPipeline -c Release -- \
@@ -87,9 +101,37 @@ using LocalExile.Client.AssetPipeline.Audio;
 using LocalExile.Client.AssetPipeline.Dds;
 using LocalExile.Client.AssetPipeline.Mesh;
 
-// 1. 3D mesh bundle (rigid Y-up -> PoE Z-down rotation, 1-bone v7 uncompressed .ast, no-BOM .sm/.mat/.amd)
-GlbScene scene = GlbParser.ParseFile("model.glb");
-PoePetAssetBundle meshBundle = GlbToPoeMeshConverter.Convert(scene, new PoePetMeshOptions
+// 1a. Static mesh .fmt (v9 DOLm, 24B verts, flags 0x0238) + .fmt.header + .mat + optional .ao/.aoc:
+GlbScene propScene = GlbParser.ParseFile("altar.glb");
+PoeFmtBundleResult fmtBundle = GlbToFmtConverter.Convert(propScene, new PoeFmtConversionOptions
+{
+    ArtBasePath      = "Art/Models/Mods/MyMod",
+    MetadataBasePath = "Metadata/MiscellaneousObjects/Mods/MyMod",
+    BaseName         = "LeagueAltar",
+    TargetSpan       = 84f,
+    CenterHorizontally = true,
+});
+
+// 1b. Multi-bone skeleton .ast (v7 uncompressed inline tracks — verified in Game.exe 0x142bf8090) + .amd v5:
+GlbScene rigScene = GlbParser.ParseFile("boss.glb");
+PoeAstBundleResult astBundle = GlbToAstConverter.Convert(rigScene, new PoeAstConversionOptions
+{
+    ArtBasePath = "Art/Models/Mods/MyMod",
+    BaseName    = "LeagueBoss",
+    SampleFps   = 30f,
+});
+
+// 1c. Full 4-bone skinned .smd (v3 DOLm, 32B skinned verts) + .smd.header + multi-bone .ast + .amd + .sm + .mat + .ao:
+PoeSmdBundleResult smdBundle = GlbToSmdConverter.Convert(rigScene, new PoeSmdConversionOptions
+{
+    ArtBasePath      = "Art/Models/Mods/MyMod",
+    MetadataBasePath = "Metadata/Monsters/Mods/MyMod",
+    BaseName         = "LeagueBoss",
+    SampleFps        = 30f,
+});
+
+// 1d. Legacy 1-bone rigid Pet/Misc helper (GlbToPoeMeshConverter):
+PoePetAssetBundle meshBundle = GlbToPoeMeshConverter.Convert(propScene, new PoePetMeshOptions
 {
     ArtBasePath      = "Art/Models/Mods/MyMod",
     MetadataBasePath = "Metadata/Pet/Mods/MyMod",
@@ -113,17 +155,26 @@ DdsTextureConverter.WritePair(Path.Combine(outDir, "Art/2DItems/Currency/Mods/Si
 OggVorbisInfo oggInfo = AudioTranscoder.TranscodeToOggVorbis("theme.opus", Path.Combine(outDir, "Audio/Mods/MyMod/theme.ogg"));
 ```
 
-### Looping Custom `.ogg` Audio & FMOD 2.03 Events (`IAudioService`)
+### Looping & 3D Spatial Custom `.ogg` Audio + FMOD 2.03 Events (`IAudioService`)
 
-`IAudioService` dynamically loads PoE's `fmod.dll` **2.03** (automatically falling back to `FMOD_OUTPUTTYPE_NOSOUND` on headless machines; active channel limit `0x200` = `512`):
+`IAudioService` dynamically loads PoE's `fmod.dll` **2.03** (automatically falling back to `FMOD_OUTPUTTYPE_NOSOUND` on headless machines; active channel limit `0x200` = `512`). As of **`1.2.0`**, it supports both 2D audio and **3D spatialized audio** (distance attenuation + stereo panning relative to the listener):
 
 ```csharp
 IAudioService audio = context.Game.Audio;
 
+// 2D looping audio:
 int handle = audio.PlaySoundFile("Audio/Mods/Maxwell/stock_market.ogg", volume: 0.75f, loop: true);
 audio.SetChannelVolume(handle, 0.40f);
 bool playing = audio.IsChannelPlaying(handle);
 audio.StopChannel(handle); // Always stop in IClientMod.Unload()!
+
+// 3D spatialized audio (1.2.0):
+audio.SetListener3D(new WorldPosition3D(playerX, playerY, playerZ));
+int spatial = audio.PlaySoundFile3D(
+    "Audio/Mods/MyLeague/altar_hum.ogg",
+    new WorldPosition3D(altarX, altarY, altarZ),
+    new AudioSpatialOptions(Volume: 0.85f, Loop: true, MinDistance: 50f, MaxDistance: 900f));
+audio.SetChannel3DPosition(spatial, new WorldPosition3D(newX, newY, newZ));
 
 int sfx = audio.PlayEvent("event:/UI/ButtonClick", volume: 1.0f);
 ```
@@ -138,7 +189,7 @@ Instead of shipping conflicting whole-file `.datc64` binaries in `nativeClient.r
 
 | Operation | Semantics & Automatic Safety Invariants |
 |---|---|
-| **`append`** | Appends rows to any of the **18 verified appendable tables** via `cloneFromRow` / `cloneFromId` (deep-copying every `foreignrow[]`, `row[]`, `string[]`, `i32[]`, `enumrow[]`, `f32[]`, and `string` via `CloneRowDeep` + schema-wide `VerifyNoPointerArrayAliasing`), resolves cross-table **`$ref:TableName:EntryKey`** references across two passes, auto-computes `HASH32` (`PoeHashing.Hash32`), auto-allocates collision-free `HASH16` & unique `MtxTypes.__col18`, and enforces the `65,535` row ceiling. Hard-rejects closed `Stats`/`ItemClasses` appends. |
+| **`append`** | Appends rows to any of the **22 verified appendable tables** (`BaseItemTypes`, `ItemVisualIdentity`, `CurrencyItems`, `MtxTypes`, `MtxTypeGameSpecific`, `Pet`, `MonsterVarieties`, `NPCs`, `Chests`, `Projectiles`, `MiscObjects`, `MiscAnimated`, `HideoutDoodads`, `ExecuteGEAL`, `ClientStrings`, `Mods`, `ModType`, `BuffDefinitions`, `MinimapIcons`, `BuffVisuals`, `NPCTalk`, `Words`) via `cloneFromRow` / `cloneFromId` (deep-copying every `foreignrow[]`, `row[]`, `string[]`, `i32[]`, `enumrow[]`, `f32[]`, and `string` via `CloneRowDeep` + schema-wide `VerifyNoPointerArrayAliasing`), resolves cross-table **`$ref:TableName:EntryKey`** references across two passes, auto-computes `HASH32` (`PoeHashing.Hash32`), auto-allocates collision-free `HASH16` & unique `MtxTypes.__col18`, and enforces the `65,535` row ceiling. Hard-rejects closed `Stats`/`ItemClasses` appends. |
 | **`modify`** | In-place column updates by `rowIndex` or `id` (e.g., raising currency `StackSize` / `CurrencyTab_StackSize` to `65535`, or safe non-ID edits on existing `Mods` / `Stats` rows). Protects `Stats.Id` and `Stats.HASH32` from mutation. |
 | **`allocateDeadStat`** | Allocates a deterministic slot from the **30 verified dead stock `Stats` rows** (`old_do_not_use_*` / `currently_unused_*`, strictly excluding row `464`), **preserves each row's stock `Stats[row].Id` & `HASH32`** so both `Game.exe` and LocalExile's `Stat.Checksum` pass with zero hooks, wires `$ref:Stats:<key>` into `Mods.datc64`, and emits UTF-16LE BOM+CRLF **`Metadata/StatDescriptions/<mod>_custom_stats.txt`** overlays automatically. |
 
@@ -179,9 +230,9 @@ uint petHash32   = PoeContentHash.MurmurHash2("Metadata/Pet/Mods/Maxwell/Maxwell
 ushort petHash16 = PoeContentHash.FoldHash16(petHash32);                                 // 0xAE20
 ```
 
-### Generic `Dat64TablePatcher` (18 Verified Appendable Tables)
+### Generic `Dat64TablePatcher` (22 Verified Appendable Tables)
 
-See [Capabilities & Limits](capabilities-and-limits.md#what-you-can-do-vs-what-you-cannot-do) for the 18 appendable tables vs. closed `ItemClasses` & `Stats`.
+See [Capabilities & Limits](capabilities-and-limits.md#what-you-can-do-vs-what-you-cannot-do) for the 22 appendable tables vs. closed `ItemClasses` & `Stats`.
 
 > **Critical `foreignrow[]` Deep-Copy Rule:** PoE resolves `foreignrow[]` entries in-place inside the variable-data section. **Never** leave a cloned row pointing at the template row's `foreignrow[]` variable-section offset (causes a `+0x129838` crash on town entry). Always use `DatPatchMerger` (`CloneRowDeep`) or deep-copy/clear every `foreignrow[]` array column via `SetForeignRowArray(...)`.
 

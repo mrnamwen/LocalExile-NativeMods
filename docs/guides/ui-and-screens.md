@@ -269,6 +269,14 @@ context.TrackDisposable(context.Game.StashAffinity.RegisterRoute(
     priority: 10));
 ```
 
+### Compact 6-Socket Rendering Polish (`1.2.0`)
+
+Phase 5 (`SdkVersion 1.2.0`, C ABI `0.6.0`) hooks `SocketOverlay::SetCellSide` and `SocketOverlay::Rebuild` so 6-socket 1×2 / 2×2 items render cleanly with compact socket sizing instead of overflowing their item frame (auto-reset on mod unload):
+
+```csharp
+context.Game.Ui.SetCompactSocketsEnabled(true);
+```
+
 ---
 
 ## 4. Stock Screens & Conflict-Free `ScreenSlot`s (`IScreensService`)

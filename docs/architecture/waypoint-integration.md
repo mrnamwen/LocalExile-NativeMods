@@ -83,7 +83,7 @@ Actual example from `examples/DualMod.HarvestGarden/mod.json`:
 | `customOpcodes` | `IReadOnlyList<CustomOpcodeDeclaration>` | `{ id: ushort, name: string, direction: OpcodeDirection }` (`ClientToServer`, `ServerToClient`, `Bidirectional`). ID `0` is rejected (`NC012`); cross-mod duplicates trigger `CNF003`. |
 | `gealBuiltins` | `IReadOnlyList<string>` | Custom GEAL built-in names (`CNF004` on cross-mod collision). |
 | `customControls` | `IReadOnlyList<string>` | Custom `.ui` control type names (`CNF005` on cross-mod collision; whitelisted during `.ui` linting). |
-| `contentRegistries` | `IReadOnlyList<ContentRegistryDeclaration>` | `{ table, entryId, mode = "append" }`. Accepts **18 verified appendable tables**; closed tables (`ItemClasses` and `Stats` — fixed `23,362` / `0x5b42` rows) fail with `NC016`; non-`"append"` fails with `NC019`. |
+| `contentRegistries` | `IReadOnlyList<ContentRegistryDeclaration>` | `{ table, entryId, mode = "append" }`. Accepts **22 verified appendable tables** (`BaseItemTypes`, `ItemVisualIdentity`, `CurrencyItems`, `MtxTypes`, `MtxTypeGameSpecific`, `Pet`, `MonsterVarieties`, `NPCs`, `Chests`, `Projectiles`, `MiscObjects`, `MiscAnimated`, `HideoutDoodads`, `ExecuteGEAL`, `ClientStrings`, `Mods`, `ModType`, `BuffDefinitions`, `MinimapIcons`, `BuffVisuals`, `NPCTalk`, `Words`); closed tables (`ItemClasses` and `Stats` — fixed `23,362` / `0x5b42` rows) fail with `NC016`; non-`"append"` fails with `NC019`. |
 | `serverHalf` | `ServerHalfMetadata?` | `{ id, minVersion, supportsGracefulFallback, channelName }`. |
 | `integrity` | `PackageIntegrity?` | `{ packageSha256, files: Dictionary<string, string> }` verified on package validation (`INT001`–`INT005`). |
 
@@ -139,6 +139,19 @@ Prevents known 3.29.3d crashes and infinite layout loops discovered in [`07-spik
   - Per-file payload split into `0x40000`-byte (256 KiB) chunks, each written as `[u32 chunkRawLen][0xCC 0x06][raw bytes...]` — compatible with Path of Exile's `OodleLZ_Decompress` (`0x142c9d520`) stored-block marker without requiring an Oodle compressor.
   - Client text extensions are encoded according to the verified **12 BOM+CRLF vs. 3 + 1 No-BOM** contract: `.ui`, `.ot`, `.otc`, `.it`, `.itc`, `.ao`, `.aoc`, `.act`, `.epk`, `.ddt`, `.pet`, `.trl` use **UTF-16LE with BOM (`FF FE`) + CRLF** (`ModBundlePacker.EncodeClientText`); `.sm`, `.mat`, `.amd`, and `art/uiimages1.txt` (case-insensitive) use **UTF-16LE without BOM + CRLF** (`ModBundlePacker.EncodeClientTextNoBom`; stray BOMs in loose `.sm`/`.mat`/`.amd` fail validation with `ENC001`).
 - **Companion `manifest.json` (`ModBundleManifest`):** Records `formatVersion`, `modId`, `modVersion`, `bundleFile`, `bundleSha256`, `blockSize`, and `files[]` (`virtualPath`, `offset`, `uncompressedSize`, `storedSize`, `blockCount`, `sha256`, `encoding`).
+
+---
+
+## 6. Native Waypoint Opt-In Integration (`LocalExile-Repos/Waypoint`)
+
+Waypoint (`feat/nativemods-integration`, commits `9f2668c` & `1a346cb`, WPF `src/Waypoint` + Avalonia `src/Waypoint.Linux` with EN/RU/ZH-CN translations) ships native, **opt-in (off by default)** NativeMods integration with zero external repository path dependencies:
+
+- **Default Install Mode Policy:**
+  - **`ExtenderInstallMode.ProxyVersionDll`** is the **default** on release installs and Linux/Proton (`NativeModsPreference(Enabled: false, Mode: "ProxyVersionDll")`), keeping `Game.patched.exe` untouched (preserving LocalExile release size checks) and non-destructively appending/stripping `WINEDLLOVERRIDES=version=n,b` on Linux/Proton.
+  - **`ExtenderInstallMode.ImportTable`** (reversible `.nmimp` + `NMUNPAT1`) is supported on source checkouts (`live.ps1`), with running-game and linked-client guards and byte-exact uninstall restoring `Game.patched.exe`.
+- **Self-Contained Extender Acquisition:** Downloads verified GitHub releases (SHA-256 checked) or imports a local `.zip` / `dist/win-x64/` folder into `Client/LocalExile.ClientHost.dll`, optional `Client/version.dll`, and `Client/nativemods-host/` (private self-contained `win-x64` `.NET 10` runtime + `addresses/`).
+- **Launcher Environment Injection:** Sets `NATIVEMODS_HOST_DIR`, `NATIVEMODS_ADDRESSES_DIR`, `NATIVEMODS_MODS_DIR`, and `NATIVEMODS_LOG_PATH` (automatically translated to `Z:\...` Wine paths on Linux/Proton) across both source `live.ps1` and release `LocalExile.exe` launches.
+- **Dual-Side Mod & `.merged-cache/` Lifecycle:** Installs server halves into `Mods/Binaries/<id>/` and client halves into `Mods/Client/<id>/`, ignores `/Mods/Client/` in source checkout checks, archives uninstalled mods to `Mods/.replaced/`, surfaces `RawAccess` / `replaces` / conflict confirmation gates before deployment, and deterministically rebuilds `Mods/Client/.merged-cache/` (`Data/*.datc64` + `content-row-map.json`) on every install, toggle, or uninstall.
 
 ### On-Disk Installation Layout
 

@@ -3,9 +3,9 @@
 
 # AssetPipeline API Reference
 
-> **Assembly:** `LocalExile.Client.AssetPipeline` · **Public types:** `55`
+> **Assembly:** `LocalExile.Client.AssetPipeline` · **Public types:** `82`
 >
-> Deterministic 3.29.3d content conversion and `.datc64` row-appending library & CLI (`Bundles2Reader`, `Dat64Table`, `Dat64TablePatcher`, `MaxwellDatPatcher`, `CurrencyDatPatcher`, `PoeHashing`, `DdsTextureConverter`, `GlbToPoeMeshConverter`, `PoeSmdWriter`, `PoeAstWriter`, `AudioTranscoder`).
+> Deterministic 3.29.3d content conversion and `.datc64` row-appending library & CLI (`Bundles2Reader`, `Dat64Table`, `Dat64TablePatcher`, `DatPatchMerger`, `MaxwellDatPatcher`, `CurrencyDatPatcher`, `PoeHashing`, `DdsTextureConverter`, `GlbToFmtConverter`, `GlbToAstConverter`, `GlbToSmdConverter`, `GlbToPoeMeshConverter`, `PoeFmtWriter`, `PoeSmdWriter`, multi-bone `PoeAstWriter`, `AudioTranscoder`).
 
 [← API Reference Index](README.md) · [Content & Assets Guide](../guides/content-and-assets.md)
 
@@ -54,20 +54,47 @@
 | [`RgbaImage`](#rgbaimage) | `class` | `LocalExile.Client.AssetPipeline.Dds` | Row-major RGBA8 image (straight alpha, top-left origin). |
 | [`GlbMaterial`](#glbmaterial) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`GlbImage`](#glbimage) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbSkinInfluence`](#glbskininfluence) | `record struct` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbNode`](#glbnode) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbSkin`](#glbskin) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbAnimationChannel`](#glbanimationchannel) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbAnimationClip`](#glbanimationclip) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`GlbPrimitive`](#glbprimitive) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`GlbScene`](#glbscene) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
-| [`GlbParser`](#glbparser) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Pure-C# glTF 2.0 binary (`.glb`) parser supporting JSON + BIN chunks, hierarchical node transforms (both `matrix` and `translation`/`rotation`/`scale`), meshes, materials, and embedded images. |
+| [`GlbParser`](#glbparser) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Pure-C# glTF 2.0 binary (`.glb`) parser supporting JSON + BIN chunks, hierarchical node transforms (both `matrix` and `translation`/`rotation`/`scale`), meshes, materials, embedded images, skeletal `skins` (`JOINTS_0`, `WEIGHTS_0`, `inverseBindMatrices`), and keyframe `animations`. |
+| [`GlbToAstOptions`](#glbtoastoptions) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbAstConversionResult`](#glbastconversionresult) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbToAstConverter`](#glbtoastconverter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Converts glTF 2.0 `skins`, node hierarchies, and `animations` into a Path of Exile 3.29.3d multi-bone hierarchical `.ast` v7 skeleton + BOM-less UTF-16LE CRLF `.amd` metadata file. |
+| [`PoeFmtMeshOptions`](#poefmtmeshoptions) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeFmtAssetBundle`](#poefmtassetbundle) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbToFmtConverter`](#glbtofmtconverter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Converts a parsed glTF 2.0 `.glb` static mesh scene into a native Path of Exile 3.29.3d static mesh asset set: `.fmt` (v9 `DOLm` lver=4) + `.fmt.header`, BOM-less UTF-16LE CRLF `.mat` (v4 JSON) per shape/material, and an optional BOM UTF-16LE CRLF `.ao` wrapper extending `Metadata/FmtParent`. |
 | [`PoePetMeshOptions`](#poepetmeshoptions) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`PoePetAssetBundle`](#poepetassetbundle) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`GlbToPoeMeshConverter`](#glbtopoemeshconverter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Converts a parsed glTF 2.0 `.glb` scene into a complete, native Path of Exile 3.29.3d Pet asset set: `.smd` + `.smd.header`, `.sm`, `.ast` (v7 spinning+floating skeleton), `.amd`, `.mat` per shape, and `.ot`/`.ao`/`.act` (extending `Metadata/Pet/Pet` with zero extra serialized components). |
+| [`PoeSmdMeshOptions`](#poesmdmeshoptions) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeSmdAssetBundle`](#poesmdassetbundle) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`GlbToSmdConverter`](#glbtosmdconverter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Converts a rigged glTF 2.0 `.glb` scene (`JOINTS_0`, `WEIGHTS_0`, `skins`, `animations`) into a complete native Path of Exile 3.29.3d skinned asset set: `.smd` + `.smd.header`, multi-bone `.ast` (v7), BOM-less UTF-16LE CRLF `.sm`/`.mat`/`.amd`, and an optional BOM UTF-16LE CRLF `.ao` wrapper. |
 | [`SpinFloatClipSpec`](#spinfloatclipspec) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`AstValidationInfo`](#astvalidationinfo) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
-| [`PoeAstWriter`](#poeastwriter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Writes and validates Path of Exile 3.29.3d `.ast` version 7 skeletons (uncompressed inline bone tracks — verified directly in `Game.exe` `0x142bf8090`, `0x142bf7a70`, `0x142bf7350` to bypass Oodle compression) and matching `.amd` version 5 animation metadata files. |
+| [`AstBone`](#astbone) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | A single bone in a Path of Exile `.ast` skeleton hierarchy. `BindPoseLocalMatrix` is the bone's local bind-pose transform in parent space (DirectX / `Matrix4x4` row-vector layout `S * R * T`, verified against stock 3.29.3d `.ast` rigs). |
+| [`AstVec3Keyframe`](#astvec3keyframe) | `record struct` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`AstQuatKeyframe`](#astquatkeyframe) | `record struct` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`AstBoneTrack`](#astbonetrack) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`AstAnimationClip`](#astanimationclip) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`AstSkeleton`](#astskeleton) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeAstWriter`](#poeastwriter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Reads, writes, inspects, and validates Path of Exile 3.29.3d `.ast` skeletons (multi-bone hierarchical v7 uncompressed inline bone tracks — verified directly in `Game.exe` `0x142bf8090`, `0x142bf7a70`, `0x142bf7350` to bypass Oodle compression — plus stock v8..v12 binary reader/inspector) and matching BOM-less UTF-16LE CRLF `.amd` version 5 animation metadata files. |
+| [`PoeFmtVertex`](#poefmtvertex) | `record struct` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeFmtShape`](#poefmtshape) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeFmtAttachment`](#poefmtattachment) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeFmtMesh`](#poefmtmesh) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`FmtValidationInfo`](#fmtvalidationinfo) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeFmtWriter`](#poefmtwriter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Reads, writes, inspects, and round-trip validates Path of Exile 3.29.3d static mesh `.fmt` (version 9 `DOLm` lver=4, 24-byte vertices with flags `0x0238`) and matching `.fmt.header` files, verified byte-for-byte against stock 3.29.3d `.fmt` and `.fmt.header` assets. |
 | [`PoeVertex`](#poevertex) | `record struct` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`PoeShapeRange`](#poeshaperange) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`PoeBounds`](#poebounds) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
 | [`SmdValidationInfo`](#smdvalidationinfo) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
-| [`PoeSmdWriter`](#poesmdwriter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Writes and round-trip verifies Path of Exile 3.29.3d `.smd` (version 3 `DOLm` lver=4, 32-byte skinned vertices) and matching `.smd.header` files (verified byte-for-byte against stock `Art/Models/Pet/Cat/Rig_8dd2fec6.smd[.header]`). |
+| [`PoeSmdMesh`](#poesmdmesh) | `record` | `LocalExile.Client.AssetPipeline.Mesh` | — |
+| [`PoeSmdWriter`](#poesmdwriter) | `class` | `LocalExile.Client.AssetPipeline.Mesh` | Reads, writes, inspects, and round-trip verifies Path of Exile 3.29.3d `.smd` (version 3 `DOLm` lver=4, 32-byte 4-bone skinned vertices) and matching `.smd.header` files, verified byte-for-byte against stock 3.29.3d `.smd[.header]` assets. |
 
 ## Namespace `LocalExile.Client.AssetPipeline`
 
@@ -481,7 +508,7 @@ public sealed class Dat64SchemaRegistry
 
 | Property | Summary |
 |---|---|
-| `public static IReadOnlySet<string> AppendableRegistryTables { get; }` | The 18 live-verified appendable registry tables in Path of Exile 3.29.3c/3.29.3d (mirrors `DualModPackageValidator.AppendableRegistryTables`). |
+| `public static IReadOnlySet<string> AppendableRegistryTables { get; }` | The 22 live-verified appendable registry tables in Path of Exile 3.29.3c/3.29.3d (mirrors `DualModPackageValidator.AppendableRegistryTables`). |
 | `public static IReadOnlySet<string> ClosedRegistryTables { get; }` | Closed tables that MUST NEVER accept appended rows in 3.29.3d (`ItemClasses` compiled 103-entry enum; `Stats` fixed 23,362 / 0x5b42 rows). |
 | `public static IReadOnlyList<int> DeadStatSlots { get; }` | The 30 live-verified dead `Stats.datc64` stock rows (`old_do_not_use_*` / `currently_unused_*`) with zero references in `Mods.sql`, `LocalExile`, and `Game.exe`'s virtual stat graph. Row `464` (`dummy_stat_display_nothing`, 375 stock refs) is strictly excluded. |
 | `public static IReadOnlySet<int> DeadStatSlotSet { get; }` | — |
@@ -1299,12 +1326,118 @@ public sealed record GlbImage(string MimeType, byte[] Data)
 
 ---
 
+### `GlbSkinInfluence`
+
+**Kind:** `record struct` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
+
+```csharp
+public readonly record struct GlbSkinInfluence(ushort Joint0, ushort Joint1, ushort Joint2, ushort Joint3, float Weight0, float Weight1, float Weight2, float Weight3)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `ushort Joint0` | — |
+| `ushort Joint1` | — |
+| `ushort Joint2` | — |
+| `ushort Joint3` | — |
+| `float Weight0` | — |
+| `float Weight1` | — |
+| `float Weight2` | — |
+| `float Weight3` | — |
+
+---
+
+### `GlbNode`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
+
+```csharp
+public sealed record GlbNode(int Index, string Name, int ParentIndex, Vector3 Translation, Quaternion Rotation, Vector3 Scale, Matrix4x4 LocalMatrix, Matrix4x4 WorldMatrix, int? MeshIndex, int? SkinIndex, IReadOnlyList<int> Children)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `int Index` | — |
+| `string Name` | — |
+| `int ParentIndex` | — |
+| `Vector3 Translation` | — |
+| `Quaternion Rotation` | — |
+| `Vector3 Scale` | — |
+| `Matrix4x4 LocalMatrix` | — |
+| `Matrix4x4 WorldMatrix` | — |
+| `int? MeshIndex` | — |
+| `int? SkinIndex` | — |
+| `IReadOnlyList<int> Children` | — |
+
+---
+
+### `GlbSkin`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
+
+```csharp
+public sealed record GlbSkin(string Name, IReadOnlyList<int> JointNodeIndices, IReadOnlyList<Matrix4x4> InverseBindMatrices, int? SkeletonRootNodeIndex)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Name` | — |
+| `IReadOnlyList<int> JointNodeIndices` | — |
+| `IReadOnlyList<Matrix4x4> InverseBindMatrices` | — |
+| `int? SkeletonRootNodeIndex` | — |
+
+---
+
+### `GlbAnimationChannel`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
+
+```csharp
+public sealed record GlbAnimationChannel(int TargetNodeIndex, string Path, string Interpolation, IReadOnlyList<float> InputTimes, IReadOnlyList<float> OutputValues)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `int TargetNodeIndex` | — |
+| `string Path` | — |
+| `string Interpolation` | — |
+| `IReadOnlyList<float> InputTimes` | — |
+| `IReadOnlyList<float> OutputValues` | — |
+
+---
+
+### `GlbAnimationClip`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
+
+```csharp
+public sealed record GlbAnimationClip(string Name, float DurationSeconds, IReadOnlyList<GlbAnimationChannel> Channels)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Name` | — |
+| `float DurationSeconds` | — |
+| `IReadOnlyList<GlbAnimationChannel> Channels` | — |
+
+---
+
 ### `GlbPrimitive`
 
 **Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
 
 ```csharp
-public sealed record GlbPrimitive(string Name, int MaterialIndex, Vector3[] Positions, Vector3[] Normals, Vector2[] Uvs, uint[] Indices)
+public sealed record GlbPrimitive(string Name, int MaterialIndex, Vector3[] Positions, Vector3[] Normals, Vector2[] Uvs, uint[] Indices, GlbSkinInfluence[]? SkinInfluences = null, int? SkinIndex = null)
 ```
 
 **Parameters / Properties:**
@@ -1317,6 +1450,8 @@ public sealed record GlbPrimitive(string Name, int MaterialIndex, Vector3[] Posi
 | `Vector3[] Normals` | — |
 | `Vector2[] Uvs` | — |
 | `uint[] Indices` | — |
+| `GlbSkinInfluence[]? SkinInfluences = null` | — |
+| `int? SkinIndex = null` | — |
 
 ---
 
@@ -1325,7 +1460,7 @@ public sealed record GlbPrimitive(string Name, int MaterialIndex, Vector3[] Posi
 **Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
 
 ```csharp
-public sealed record GlbScene(IReadOnlyList<GlbPrimitive> Primitives, IReadOnlyList<GlbMaterial> Materials, IReadOnlyList<GlbImage> Images)
+public sealed record GlbScene(IReadOnlyList<GlbPrimitive> Primitives, IReadOnlyList<GlbMaterial> Materials, IReadOnlyList<GlbImage> Images, IReadOnlyList<GlbNode>? Nodes = null, IReadOnlyList<GlbSkin>? Skins = null, IReadOnlyList<GlbAnimationClip>? Animations = null)
 ```
 
 **Parameters / Properties:**
@@ -1335,6 +1470,9 @@ public sealed record GlbScene(IReadOnlyList<GlbPrimitive> Primitives, IReadOnlyL
 | `IReadOnlyList<GlbPrimitive> Primitives` | — |
 | `IReadOnlyList<GlbMaterial> Materials` | — |
 | `IReadOnlyList<GlbImage> Images` | — |
+| `IReadOnlyList<GlbNode>? Nodes = null` | — |
+| `IReadOnlyList<GlbSkin>? Skins = null` | — |
+| `IReadOnlyList<GlbAnimationClip>? Animations = null` | — |
 
 ---
 
@@ -1342,7 +1480,7 @@ public sealed record GlbScene(IReadOnlyList<GlbPrimitive> Primitives, IReadOnlyL
 
 **Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbParser.cs`
 
-Pure-C# glTF 2.0 binary (`.glb`) parser supporting JSON + BIN chunks, hierarchical node transforms (both `matrix` and `translation`/`rotation`/`scale`), meshes, materials, and embedded images.
+Pure-C# glTF 2.0 binary (`.glb`) parser supporting JSON + BIN chunks, hierarchical node transforms (both `matrix` and `translation`/`rotation`/`scale`), meshes, materials, embedded images, skeletal `skins` (`JOINTS_0`, `WEIGHTS_0`, `inverseBindMatrices`), and keyframe `animations`.
 
 ```csharp
 public static class GlbParser
@@ -1354,6 +1492,144 @@ public static class GlbParser
 |---|---|
 | `public static GlbScene ParseFile(string glbPath)` | — |
 | `public static GlbScene Parse(ReadOnlySpan<byte> glbBytes)` | — |
+
+---
+
+### `GlbToAstOptions`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToAstConverter.cs`
+
+```csharp
+public sealed record GlbToAstOptions
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public int SkinIndex { get; init; }` | — |
+| `public byte DefaultFps { get; init; }` | — |
+| `public byte DefaultPlayback { get; init; }` | — |
+| `public float Scale { get; init; }` | — |
+| `public Vector3 GltfCenterOffset { get; init; }` | — |
+| `public string FallbackRootBoneName { get; init; }` | — |
+| `public string FallbackClipName { get; init; }` | — |
+
+---
+
+### `GlbAstConversionResult`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToAstConverter.cs`
+
+```csharp
+public sealed record GlbAstConversionResult(AstSkeleton Skeleton, byte[] AstBytes, byte[] AmdBytes, IReadOnlyList<int> GltfJointToPoeBoneMap)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `AstSkeleton Skeleton` | — |
+| `byte[] AstBytes` | — |
+| `byte[] AmdBytes` | — |
+| `IReadOnlyList<int> GltfJointToPoeBoneMap` | — |
+
+---
+
+### `GlbToAstConverter`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToAstConverter.cs`
+
+Converts glTF 2.0 `skins`, node hierarchies, and `animations` into a Path of Exile 3.29.3d multi-bone hierarchical `.ast` v7 skeleton + BOM-less UTF-16LE CRLF `.amd` metadata file.
+
+```csharp
+public static class GlbToAstConverter
+```
+
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `public static readonly Matrix4x4 GltfToPoeBasis` | Proper rigid rotation (`det = +1`) converting row-vectors from glTF Y-up `(x, y, z)` to PoE Z-down `(-z, x, -y)`: `v_poe = v_gltf * GltfToPoeBasis`. |
+| `public static readonly Matrix4x4 PoeToGltfBasis = Matrix4x4.Transpose(GltfToPoeBasis)` | Inverse (transpose) of `GltfToPoeBasis`: `v_gltf = v_poe * PoeToGltfBasis`. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static Matrix4x4 ConvertMatrixGltfToPoe(Matrix4x4 gltfMatrix)` | Converts a glTF local/world transform matrix (in `Matrix4x4` row-vector layout) into PoE's coordinate basis via similarity conjugation: `M_poe = C^-1 * M_gltf * C`. |
+| `public static Quaternion ConvertQuaternionGltfToPoe(Quaternion q)` | Converts a glTF unit quaternion to PoE's coordinate basis under proper rotation `GltfToPoeBasis` (`det = +1`). |
+| `public static Vector3 ConvertScaleGltfToPoe(Vector3 s)` | Converts a glTF non-uniform scale vector `(sx, sy, sz)` into PoE axes `(sz, sx, sy)` matching `C^-1 * diag(sx, sy, sz) * C`. |
+| `public static GlbAstConversionResult Convert(GlbScene scene, GlbToAstOptions? options = null)` | Converts a glTF scene's skin and animation clips into a PoE 3.29.3d multi-bone `.ast` v7 + `.amd`. Falls back cleanly to a 1-bone bind-pose rig if the scene has no skins. |
+
+---
+
+### `PoeFmtMeshOptions`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToFmtConverter.cs`
+
+```csharp
+public sealed record PoeFmtMeshOptions
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public string ArtBasePath { get; init; }` | — |
+| `public string MetadataBasePath { get; init; }` | — |
+| `public string ModelBaseName { get; init; }` | — |
+| `public string ObjectBaseName { get; init; }` | — |
+| `public float? TargetLongestHorizontalSpan { get; init; }` | Optional target longest horizontal span in PoE world units. When `null`, preserves glTF units. |
+| `public bool CenterBase { get; init; }` | Centers the mesh horizontally at X/Y=0 with its base at Z=0 when true (default true when scaling, false otherwise unless set). |
+| `public bool EmitAoWrapper { get; init; }` | — |
+| `public bool DoubleSidedAlphaBackFaces { get; init; }` | — |
+
+---
+
+### `PoeFmtAssetBundle`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToFmtConverter.cs`
+
+```csharp
+public sealed record PoeFmtAssetBundle(IReadOnlyDictionary<string, byte[]> Files, PoeBounds Bounds, int VertexCount, int TriangleCount, IReadOnlyList<PoeFmtShape> Shapes, IReadOnlyList<string> MaterialPaths, IReadOnlyList<string> TextureAlbedoPaths, string FlatNormalTexturePath, IReadOnlyList<int?> TextureBaseColorImageIndices, IReadOnlyList<bool> TextureIsAlphaBlend, string FmtVirtualPath, string? AoVirtualPath)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `IReadOnlyDictionary<string, byte[]> Files` | — |
+| `PoeBounds Bounds` | — |
+| `int VertexCount` | — |
+| `int TriangleCount` | — |
+| `IReadOnlyList<PoeFmtShape> Shapes` | — |
+| `IReadOnlyList<string> MaterialPaths` | — |
+| `IReadOnlyList<string> TextureAlbedoPaths` | — |
+| `string FlatNormalTexturePath` | — |
+| `IReadOnlyList<int?> TextureBaseColorImageIndices` | — |
+| `IReadOnlyList<bool> TextureIsAlphaBlend` | — |
+| `string FmtVirtualPath` | — |
+| `string? AoVirtualPath` | — |
+
+---
+
+### `GlbToFmtConverter`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToFmtConverter.cs`
+
+Converts a parsed glTF 2.0 `.glb` static mesh scene into a native Path of Exile 3.29.3d static mesh asset set: `.fmt` (v9 `DOLm` lver=4) + `.fmt.header`, BOM-less UTF-16LE CRLF `.mat` (v4 JSON) per shape/material, and an optional BOM UTF-16LE CRLF `.ao` wrapper extending `Metadata/FmtParent`.
+
+```csharp
+public static class GlbToFmtConverter
+```
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static PoeFmtAssetBundle Convert(GlbScene scene, PoeFmtMeshOptions? options = null)` | — |
+| `public static byte[] BuildFixedMeshAo(string fmtVirtualPath)` | Builds a BOM UTF-16LE CRLF `.ao` wrapper referencing a static `.fmt` mesh, matching stock 3.29.3d `Metadata/FmtParent` doodads. |
 
 ---
 
@@ -1423,6 +1699,84 @@ public static class GlbToPoeMeshConverter
 
 ---
 
+### `PoeSmdMeshOptions`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToSmdConverter.cs`
+
+```csharp
+public sealed record PoeSmdMeshOptions
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public string ArtBasePath { get; init; }` | — |
+| `public string MetadataBasePath { get; init; }` | — |
+| `public string ModelBaseName { get; init; }` | — |
+| `public string ObjectBaseName { get; init; }` | — |
+| `public int SkinIndex { get; init; }` | — |
+| `public byte AnimationFps { get; init; }` | — |
+| `public byte DefaultPlayback { get; init; }` | — |
+| `public float? TargetLongestHorizontalSpan { get; init; }` | Optional target longest horizontal span in PoE world units. When `null`, preserves glTF units. |
+| `public bool CenterBase { get; init; }` | — |
+| `public bool EmitAoWrapper { get; init; }` | — |
+| `public bool DoubleSidedAlphaBackFaces { get; init; }` | — |
+
+---
+
+### `PoeSmdAssetBundle`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToSmdConverter.cs`
+
+```csharp
+public sealed record PoeSmdAssetBundle(IReadOnlyDictionary<string, byte[]> Files, PoeBounds Bounds, int VertexCount, int TriangleCount, int BoneCount, IReadOnlyList<string> ShapeNames, IReadOnlyList<string> AnimationNames, IReadOnlyList<string> MaterialPaths, IReadOnlyList<string> TextureAlbedoPaths, string FlatNormalTexturePath, IReadOnlyList<int?> TextureBaseColorImageIndices, IReadOnlyList<bool> TextureIsAlphaBlend, string SmdVirtualPath, string SmVirtualPath, string AstVirtualPath, string AmdVirtualPath, string? AoVirtualPath)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `IReadOnlyDictionary<string, byte[]> Files` | — |
+| `PoeBounds Bounds` | — |
+| `int VertexCount` | — |
+| `int TriangleCount` | — |
+| `int BoneCount` | — |
+| `IReadOnlyList<string> ShapeNames` | — |
+| `IReadOnlyList<string> AnimationNames` | — |
+| `IReadOnlyList<string> MaterialPaths` | — |
+| `IReadOnlyList<string> TextureAlbedoPaths` | — |
+| `string FlatNormalTexturePath` | — |
+| `IReadOnlyList<int?> TextureBaseColorImageIndices` | — |
+| `IReadOnlyList<bool> TextureIsAlphaBlend` | — |
+| `string SmdVirtualPath` | — |
+| `string SmVirtualPath` | — |
+| `string AstVirtualPath` | — |
+| `string AmdVirtualPath` | — |
+| `string? AoVirtualPath` | — |
+
+---
+
+### `GlbToSmdConverter`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/GlbToSmdConverter.cs`
+
+Converts a rigged glTF 2.0 `.glb` scene (`JOINTS_0`, `WEIGHTS_0`, `skins`, `animations`) into a complete native Path of Exile 3.29.3d skinned asset set: `.smd` + `.smd.header`, multi-bone `.ast` (v7), BOM-less UTF-16LE CRLF `.sm`/`.mat`/`.amd`, and an optional BOM UTF-16LE CRLF `.ao` wrapper.
+
+```csharp
+public static class GlbToSmdConverter
+```
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static PoeSmdAssetBundle Convert(GlbScene scene, PoeSmdMeshOptions? options = null)` | — |
+| `public static byte[] BuildSm(string smdPath, IReadOnlyList<string> materialPaths, PoeBounds bounds)` | Builds a BOM-less UTF-16LE CRLF `.sm` version 6 skinned mesh manifest. |
+| `public static byte[] BuildSkinnedAo(string amdPath, string astPath, string smPath)` | Builds a BOM UTF-16LE CRLF `.ao` wrapper referencing `.amd`, `.ast`, and `.sm`. |
+
+---
+
 ### `SpinFloatClipSpec`
 
 **Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
@@ -1465,11 +1819,126 @@ public sealed record AstValidationInfo(byte Version, int BoneCount, int Animatio
 
 ---
 
+### `AstBone`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
+
+A single bone in a Path of Exile `.ast` skeleton hierarchy. `BindPoseLocalMatrix` is the bone's local bind-pose transform in parent space (DirectX / `Matrix4x4` row-vector layout `S * R * T`, verified against stock 3.29.3d `.ast` rigs).
+
+```csharp
+public sealed record AstBone(string Name, int ParentIndex, Matrix4x4 BindPoseLocalMatrix, byte Flags = 0)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Name` | — |
+| `int ParentIndex` | — |
+| `Matrix4x4 BindPoseLocalMatrix` | — |
+| `byte Flags = 0` | — |
+
+---
+
+### `AstVec3Keyframe`
+
+**Kind:** `record struct` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
+
+```csharp
+public readonly record struct AstVec3Keyframe(float Frame, Vector3 Value)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `float Frame` | — |
+| `Vector3 Value` | — |
+
+---
+
+### `AstQuatKeyframe`
+
+**Kind:** `record struct` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
+
+```csharp
+public readonly record struct AstQuatKeyframe(float Frame, Quaternion Value)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `float Frame` | — |
+| `Quaternion Value` | — |
+
+---
+
+### `AstBoneTrack`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
+
+```csharp
+public sealed record AstBoneTrack(int BoneIndex, IReadOnlyList<AstVec3Keyframe> ScaleKeys, IReadOnlyList<AstQuatKeyframe> RotationKeys, IReadOnlyList<AstVec3Keyframe> TranslationKeys, byte TrackKind = 0)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `int BoneIndex` | — |
+| `IReadOnlyList<AstVec3Keyframe> ScaleKeys` | — |
+| `IReadOnlyList<AstQuatKeyframe> RotationKeys` | — |
+| `IReadOnlyList<AstVec3Keyframe> TranslationKeys` | — |
+| `byte TrackKind = 0` | — |
+
+---
+
+### `AstAnimationClip`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
+
+```csharp
+public sealed record AstAnimationClip(string Name, byte Fps, byte Playback, IReadOnlyList<AstBoneTrack> Tracks, float? DurationSeconds = null)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Name` | — |
+| `byte Fps` | — |
+| `byte Playback` | — |
+| `IReadOnlyList<AstBoneTrack> Tracks` | — |
+| `float? DurationSeconds = null` | — |
+
+---
+
+### `AstSkeleton`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
+
+```csharp
+public sealed record AstSkeleton(byte Version, IReadOnlyList<AstBone> Bones, IReadOnlyList<AstAnimationClip> Animations, byte HeaderUnknown = 0, int LightCount = 0)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `byte Version` | — |
+| `IReadOnlyList<AstBone> Bones` | — |
+| `IReadOnlyList<AstAnimationClip> Animations` | — |
+| `byte HeaderUnknown = 0` | — |
+| `int LightCount = 0` | — |
+
+---
+
 ### `PoeAstWriter`
 
 **Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeAstWriter.cs`
 
-Writes and validates Path of Exile 3.29.3d `.ast` version 7 skeletons (uncompressed inline bone tracks — verified directly in `Game.exe` `0x142bf8090`, `0x142bf7a70`, `0x142bf7350` to bypass Oodle compression) and matching `.amd` version 5 animation metadata files.
+Reads, writes, inspects, and validates Path of Exile 3.29.3d `.ast` skeletons (multi-bone hierarchical v7 uncompressed inline bone tracks — verified directly in `Game.exe` `0x142bf8090`, `0x142bf7a70`, `0x142bf7350` to bypass Oodle compression — plus stock v8..v12 binary reader/inspector) and matching BOM-less UTF-16LE CRLF `.amd` version 5 animation metadata files.
 
 ```csharp
 public static class PoeAstWriter
@@ -1491,9 +1960,152 @@ public static class PoeAstWriter
 
 | Method | Summary |
 |---|---|
-| `public static byte[] BuildSpinFloatAst(IReadOnlyList<SpinFloatClipSpec>? clips = null, string rootBoneName = "root")` | Builds a 1-bone (`"root"`) `.ast` v7 binary skeleton with smooth 360° Z-spin + sinusoidal floating hover keyframes. |
-| `public static byte[] BuildAmd(IReadOnlyList<SpinFloatClipSpec>? clips = null)` | Builds a matching `.amd` version 5 animation metadata file (UTF-16LE without BOM, matching stock `rig.amd`). |
+| `public static byte[] BuildSpinFloatAst(IReadOnlyList<SpinFloatClipSpec>? clips = null, string rootBoneName = "root")` | Builds a 1-bone (`"root"`) `.ast` v7 binary skeleton with smooth 360° Z-spin + sinusoidal floating hover keyframes. Preserved 100% backward-compatible with the Maxwell Pet pipeline. |
+| `public static byte[] WriteV7(AstSkeleton skeleton)` | Writes a multi-bone hierarchical `.ast` version 7 skeleton with arbitrary bone tree and multi-clip keyframe tracks. |
+| `public static byte[] WriteV7(IReadOnlyList<AstBone> bones, IReadOnlyList<AstAnimationClip> animations)` | Writes a multi-bone hierarchical `.ast` version 7 skeleton with arbitrary bone tree and multi-clip keyframe tracks. |
+| `public static Matrix4x4[] ComputeWorldBindMatrices(IReadOnlyList<AstBone> bones)` | Computes world-space bind matrices (`World[i] = Local[i] * World[parent]`) from a bone hierarchy. |
+| `public static Matrix4x4[] ComputeInverseBindMatrices(IReadOnlyList<AstBone> bones)` | Computes inverse bind matrices (`Inverse(WorldBind[i])`) for skinning verification. |
+| `public static AstBone[] BuildBonesFromInverseBindMatrices(IReadOnlyList<string> names, IReadOnlyList<int> parentIndices, IReadOnlyList<Matrix4x4> inverseBindMatrices)` | Constructs `AstBone` local bind-pose matrices from inverse bind matrices and parent indices: `World[i] = Inverse(InvBind[i])`, `Local[i] = World[i] * InvBind[parent]`. |
+| `public static byte[] BuildAmd(IReadOnlyList<SpinFloatClipSpec>? clips = null)` | Builds a matching `.amd` version 5 animation metadata file (BOM-less UTF-16LE CRLF, matching stock `rig.amd`). |
+| `public static byte[] BuildAmd(IReadOnlyList<AstAnimationClip> clips)` | Builds a matching `.amd` version 5 animation metadata file (BOM-less UTF-16LE CRLF) from multi-bone `AstAnimationClip` definitions. |
 | `public static AstValidationInfo ValidateV7(ReadOnlySpan<byte> astBytes)` | Round-trip parses and validates a version 7 `.ast` file against `Game.exe`'s exact byte consumption rules. |
+| `public static AstSkeleton Read(ReadOnlySpan<byte> astBytes, Func<ReadOnlyMemory<byte>, int, byte[]>? oodleDecompressor = null)` | Full binary reader for PoE 3.29.3d `.ast` skeletons. Supports v7 (inline uncompressed tracks, exact round-trip) as well as stock v8..v12 (extended bone flags, Oodle-bundled animation track blobs decompressed via Kraken or an optional custom decompressor). |
+| `public static AstValidationInfo Inspect(ReadOnlySpan<byte> astBytes)` | Inspects any PoE 3.29.3d `.ast` file (v7..v12) and returns summary metadata. |
+
+---
+
+### `PoeFmtVertex`
+
+**Kind:** `record struct` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeFmtWriter.cs`
+
+```csharp
+public readonly record struct PoeFmtVertex(Vector3 Position, Vector3 Normal, Vector3 Tangent, float Handedness, Vector2 Uv)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `Vector3 Position` | — |
+| `Vector3 Normal` | — |
+| `Vector3 Tangent` | — |
+| `float Handedness` | — |
+| `Vector2 Uv` | — |
+
+---
+
+### `PoeFmtShape`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeFmtWriter.cs`
+
+```csharp
+public sealed record PoeFmtShape(string Name, string MaterialPath, uint FirstIndex, uint IndexCount)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Name` | — |
+| `string MaterialPath` | — |
+| `uint FirstIndex` | — |
+| `uint IndexCount` | — |
+
+---
+
+### `PoeFmtAttachment`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeFmtWriter.cs`
+
+```csharp
+public sealed record PoeFmtAttachment(byte Flags, string Name, IReadOnlyList<Vector3> Points)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `byte Flags` | — |
+| `string Name` | — |
+| `IReadOnlyList<Vector3> Points` | — |
+
+---
+
+### `PoeFmtMesh`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeFmtWriter.cs`
+
+```csharp
+public sealed record PoeFmtMesh(byte Version, ushort LodVersion, uint Flags, PoeBounds Bounds, IReadOnlyList<PoeFmtVertex> Vertices, IReadOnlyList<uint> Indices, IReadOnlyList<PoeFmtShape> Shapes, IReadOnlyList<PoeFmtAttachment> Attachments)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `byte Version` | — |
+| `ushort LodVersion` | — |
+| `uint Flags` | — |
+| `PoeBounds Bounds` | — |
+| `IReadOnlyList<PoeFmtVertex> Vertices` | — |
+| `IReadOnlyList<uint> Indices` | — |
+| `IReadOnlyList<PoeFmtShape> Shapes` | — |
+| `IReadOnlyList<PoeFmtAttachment> Attachments` | — |
+
+---
+
+### `FmtValidationInfo`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeFmtWriter.cs`
+
+```csharp
+public sealed record FmtValidationInfo(byte Version, ushort LodVersion, uint Flags, int VertexCount, int TriangleCount, IReadOnlyList<PoeFmtShape> Shapes, PoeBounds Bounds, int AttachmentCount)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `byte Version` | — |
+| `ushort LodVersion` | — |
+| `uint Flags` | — |
+| `int VertexCount` | — |
+| `int TriangleCount` | — |
+| `IReadOnlyList<PoeFmtShape> Shapes` | — |
+| `PoeBounds Bounds` | — |
+| `int AttachmentCount` | — |
+
+---
+
+### `PoeFmtWriter`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeFmtWriter.cs`
+
+Reads, writes, inspects, and round-trip validates Path of Exile 3.29.3d static mesh `.fmt` (version 9 `DOLm` lver=4, 24-byte vertices with flags `0x0238`) and matching `.fmt.header` files, verified byte-for-byte against stock 3.29.3d `.fmt` and `.fmt.header` assets.
+
+```csharp
+public static class PoeFmtWriter
+```
+
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `public const byte FmtVersion = 9` | — |
+| `public const uint DolmMagic = 0x6D4C4F44u` | — |
+| `public const ushort DefaultLodVersion = 4` | — |
+| `public const uint DefaultVertexFlags = 0x00000238u` | — |
+| `public const int DefaultVertexStride = 24` | — |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public static (byte[] FmtBytes, byte[] HeaderBytes) Write(IReadOnlyList<PoeFmtVertex> vertices, IReadOnlyList<uint> indices, IReadOnlyList<PoeFmtShape> shapes, PoeBounds? bounds = null, IReadOnlyList<PoeFmtAttachment>? attachments = null)` | — |
+| `public static PoeBounds ComputeBounds(ReadOnlySpan<PoeFmtVertex> vertices)` | — |
+| `public static PoeFmtMesh Read(ReadOnlySpan<byte> fmtBytes)` | Full binary reader for PoE 3.29.3d version 9 `DOLm` `.fmt` static meshes. Reads LOD 0 vertices/indices, shape/material submeshes, optional attachment entries, and bounding box. |
+| `public static FmtValidationInfo Inspect(ReadOnlySpan<byte> fmtBytes)` | Inspects any PoE 3.29.3d `.fmt` file (both v9 `DOLm` and legacy v6-v8 static meshes). |
+| `public static FmtValidationInfo Validate(ReadOnlySpan<byte> fmtBytes, ReadOnlySpan<byte> headerBytes)` | Round-trip parses and cross-checks a `.fmt` + `.fmt.header` pair against PoE 3.29.3d invariants. |
 
 ---
 
@@ -1502,7 +2114,7 @@ public static class PoeAstWriter
 **Kind:** `record struct` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeSmdWriter.cs`
 
 ```csharp
-public readonly record struct PoeVertex(Vector3 Position, Vector3 Normal, Vector3 Tangent, float Handedness, Vector2 Uv, byte Bone0 = 0, byte Weight0 = 255)
+public readonly record struct PoeVertex(Vector3 Position, Vector3 Normal, Vector3 Tangent, float Handedness, Vector2 Uv, byte Bone0 = 0, byte Weight0 = 255, byte Bone1 = 0, byte Weight1 = 0, byte Bone2 = 0, byte Weight2 = 0, byte Bone3 = 0, byte Weight3 = 0)
 ```
 
 **Parameters / Properties:**
@@ -1516,6 +2128,12 @@ public readonly record struct PoeVertex(Vector3 Position, Vector3 Normal, Vector
 | `Vector2 Uv` | — |
 | `byte Bone0 = 0` | — |
 | `byte Weight0 = 255` | — |
+| `byte Bone1 = 0` | — |
+| `byte Weight1 = 0` | — |
+| `byte Bone2 = 0` | — |
+| `byte Weight2 = 0` | — |
+| `byte Bone3 = 0` | — |
+| `byte Weight3 = 0` | — |
 
 ---
 
@@ -1584,11 +2202,33 @@ public sealed record SmdValidationInfo(byte Version, int VertexCount, int Triang
 
 ---
 
+### `PoeSmdMesh`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeSmdWriter.cs`
+
+```csharp
+public sealed record PoeSmdMesh(byte Version, ushort LodVersion, uint Flags, PoeBounds Bounds, IReadOnlyList<PoeVertex> Vertices, IReadOnlyList<uint> Indices, IReadOnlyList<PoeShapeRange> Shapes)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `byte Version` | — |
+| `ushort LodVersion` | — |
+| `uint Flags` | — |
+| `PoeBounds Bounds` | — |
+| `IReadOnlyList<PoeVertex> Vertices` | — |
+| `IReadOnlyList<uint> Indices` | — |
+| `IReadOnlyList<PoeShapeRange> Shapes` | — |
+
+---
+
 ### `PoeSmdWriter`
 
 **Kind:** `class` · **Namespace:** `LocalExile.Client.AssetPipeline.Mesh` · **Source:** `LocalExile.Client.AssetPipeline/Mesh/PoeSmdWriter.cs`
 
-Writes and round-trip verifies Path of Exile 3.29.3d `.smd` (version 3 `DOLm` lver=4, 32-byte skinned vertices) and matching `.smd.header` files (verified byte-for-byte against stock `Art/Models/Pet/Cat/Rig_8dd2fec6.smd[.header]`).
+Reads, writes, inspects, and round-trip verifies Path of Exile 3.29.3d `.smd` (version 3 `DOLm` lver=4, 32-byte 4-bone skinned vertices) and matching `.smd.header` files, verified byte-for-byte against stock 3.29.3d `.smd[.header]` assets.
 
 ```csharp
 public static class PoeSmdWriter
@@ -1598,7 +2238,10 @@ public static class PoeSmdWriter
 
 | Method | Summary |
 |---|---|
+| `public static (byte W0, byte W1, byte W2, byte W3) NormalizeWeights(float w0, float w1, float w2, float w3)` | Quantizes 4 floating-point bone weights to normalized `byte` weights summing to exactly 255 using largest-remainder rounding. Falls back to `(255, 0, 0, 0)` if all weights are zero or negative. |
 | `public static (byte[] SmdBytes, byte[] HeaderBytes) Write(IReadOnlyList<PoeVertex> vertices, IReadOnlyList<uint> indices, IReadOnlyList<PoeShapeRange> shapes, PoeBounds? bounds = null)` | — |
+| `public static PoeSmdMesh Read(ReadOnlySpan<byte> smdBytes)` | Full binary reader for PoE 3.29.3d version 3 `DOLm` `.smd` skinned meshes (supports lver 2/3/4, multi-LOD, flags `0x3C`/`0x23C` and extended vertex attributes, and 4-bone weights). |
+| `public static SmdValidationInfo Inspect(ReadOnlySpan<byte> smdBytes)` | Inspects any PoE 3.29.3d `.smd` file (v3 `DOLm` as well as legacy v1/v2 headers). |
 | `public static SmdValidationInfo Validate(ReadOnlySpan<byte> smdBytes, ReadOnlySpan<byte> headerBytes)` | Round-trip parses and verifies a `.smd` + `.smd.header` pair. |
 
 ---

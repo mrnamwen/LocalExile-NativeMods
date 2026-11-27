@@ -35,8 +35,13 @@ WorldPosition3D? pos = context.Game.World.GetEntityPosition(entityId);
 // 5. Client-only visual object (raw mimalloc ClientEntity 0x248, EntityId >= 0x40000000, invisible to server)
 uint markerId = context.Game.World.SpawnClientObject(
     "Metadata/MiscellaneousObjects/Mods/MyMod/Marker.ot", 120f, 240f, 0f);
+// 1.2.0 extended spawn with explicit rotation (radians) and uniform scale:
+uint scaledMarkerId = context.Game.World.CreateClientObjectEx(
+    "Metadata/MiscellaneousObjects/Mods/MyMod/Altar.ot", 140f, 240f, 0f, rotationRad: 1.57f, scale: 1.25f);
+// 1.2.0 live native entity VFX playback:
 context.Game.World.PlayEffect(markerId, "Metadata/Effects/Mods/MyMod/Pulse.ao");
 context.Game.World.RemoveClientObject(markerId);
+context.Game.World.RemoveClientObject(scaledMarkerId);
 ```
 
 ---
@@ -137,6 +142,12 @@ if (player is not null && context.Game.Camera.TryWorldToScreen(player.Position, 
     context.Logger.Debug($"Player screen pos: ({sx:0.0}, {sy:0.0}), zoom={cam.Zoom:0.00}");
 }
 
+// 1.2.0: project directly into PoE's 1600-high virtual UI coordinate space (for IUiControl.SetPosition):
+if (player is not null && context.Game.Camera.TryWorldToUiPosition(player.Position, out float uiX, out float uiY))
+{
+    markerLabel.SetPosition(uiX, uiY);
+}
+
 // Per-mod owner-scoped zoom override stack:
 // Automatically restored to stock zoom (-1.0f) on SetZoomOverride(null) OR collectible ALC unload!
 context.Game.Camera.SetZoomOverride(1.35f);
@@ -162,9 +173,9 @@ context.Game.Camera.SetZoomOverride(1.35f);
 
 ---
 
-## Tier 1 Server-Only Parity (`0.4.0`)
+## Tier 1 Server-Only Parity (`0.4.0` & `1.2.0`)
 
-Single-`.cs` Roslyn server mods can query all of these Phase 2 services without shipping a client DLL via `session.Phase2` (`IClientPhase2Session`) — see [ServerBridge Guide](server-bridge.md#4-tier-1-server-only-parity-030-and-040).
+Single-`.cs` Roslyn server mods can query all of these Phase 2/4/5 services without shipping a client DLL via `session.Phase2` (`IClientPhase2Session`) and `session.Phase4` (`IClientPhase4Session`) — see [ServerBridge Guide](server-bridge.md#4-tier-1-server-only-parity-030-040-and-120).
 
 ---
 

@@ -3,9 +3,9 @@
 
 # Client SDK — World, Audio, Stats, Lifecycle, Item Filter & Camera
 
-> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `17`
+> **Assembly:** `LocalExile.Client.Sdk` · **Public types:** `18`
 >
-> Live `EntityManager` queries (`IWorldService`), FMOD 2.03 audio (`IAudioService`), live entity/player stats (`IStatsService`), area transitions (`IGameLifecycle`), client item filter integration (`IItemFilterService`), and camera projection/zoom (`ICameraService`).
+> Live `EntityManager` queries & client VFX (`IWorldService`), FMOD 2.03 2D/3D spatial audio (`IAudioService`), live entity/player stats (`IStatsService`), area transitions (`IGameLifecycle`), client item filter integration (`IItemFilterService`), and camera projection/UI coords/zoom (`ICameraService`, `TryWorldToUiPosition`).
 
 [← API Reference Index](README.md) · [World, Filter, Stats & Camera Guide](../guides/world-filter-stats-camera.md)
 
@@ -14,12 +14,13 @@
 | Type | Kind | Namespace | Summary |
 |---|---|---|---|
 | [`CameraState`](#camerastate) | `record` | `LocalExile.Client.Sdk.Engine` | Immutable snapshot of the active 3.29 `FollowCamera` and `CameraController` state. |
-| [`ICameraService`](#icameraservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Exposes read-only camera state, world-to-screen projection, and per-mod zoom override control. |
+| [`ICameraService`](#icameraservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Exposes read-only camera state, world-to-screen projection, world-to-UI coordinate conversion, and per-mod zoom override control. |
 | [`ItemFilterState`](#itemfilterstate) | `record` | `LocalExile.Client.Sdk.Engine` | Snapshot of the client's active item-filter configuration and runtime highlight state. |
 | [`ItemFilterResult`](#itemfilterresult) | `record` | `LocalExile.Client.Sdk.Engine` | Result of evaluating an item or world item against the active client item filter (`ItemFilterStyle`). |
 | [`ItemFilterReloadedEventArgs`](#itemfilterreloadedeventargs) | `record` | `LocalExile.Client.Sdk.Engine` | Event payload delivered on the game thread when the client finishes loading, reloading, or clearing an item filter. |
 | [`IItemFilterService`](#iitemfilterservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Exposes the client's active item-filter state, ground-loot visibility and styling, on-demand item evaluation, and reload notifications. |
-| [`IAudioService`](#iaudioservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Plays FMOD Studio events and loose/overlaid `.ogg` audio files through the client's audio manager. |
+| [`AudioChannelHandle`](#audiochannelhandle) | `record struct` | `LocalExile.Client.Sdk.Engine` | Strongly typed handle identifying an active audio channel returned by `IAudioService`. Implicitly converts to and from `int` for seamless interoperability with existing `int` channel APIs. |
+| [`IAudioService`](#iaudioservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Plays FMOD Studio events and loose/overlaid `.ogg` audio files through the client's audio manager, including 3D world-positioned audio with live camera-distance attenuation. |
 | [`IStatsService`](#istatsservice) | `interface` | `LocalExile.Client.Sdk.Engine` | Reads client stats and sets display-only local stats (synchronously notifying client listeners). Local stat writes are invisible to the server and overwritten on the next server sync. |
 | [`WorldPosition3D`](#worldposition3d) | `record struct` | `LocalExile.Client.Sdk.Engine` | 3D world-space coordinate in Path of Exile client world units. |
 | [`WorldEntityKind`](#worldentitykind) | `enum` | `LocalExile.Client.Sdk.Engine` | Component and classification flags describing a live world entity in the active client area. |
@@ -58,6 +59,12 @@ public sealed record CameraState(bool IsValid, WorldPosition3D Position, WorldPo
 | `float ViewportHeight` | Render viewport height in pixels. |
 | `IReadOnlyList<float> ViewProjectionMatrix` | 16-element row-major DirectX view-projection matrix (`Camera + 0x100`, `v_row * M`). |
 
+**Constants & Fields:**
+
+| Member | Summary |
+|---|---|
+| `public const float VirtualUiHeight = 1600.0f` | Path of Exile's canonical virtual UI coordinate space height (1600 virtual units high). |
+
 **Properties:**
 
 | Property | Summary |
@@ -69,6 +76,8 @@ public sealed record CameraState(bool IsValid, WorldPosition3D Position, WorldPo
 | Method | Summary |
 |---|---|
 | `public bool TryProjectWorldToScreen(float worldX, float worldY, float worldZ, out float screenX, out float screenY)` | Projects a 3D world point into 2D screen pixel coordinates using the row-major `ViewProjectionMatrix` matching PoE's native `Camera::WorldToScreen` (`v_row * M`). Returns: `true` if the camera is valid and the point lies in front of the camera (`w > 1e-6f`); otherwise `false`. |
+| `public bool TryScreenToUiPosition(float screenX, float screenY, out float uiX, out float uiY)` | Converts a viewport pixel coordinate into Path of Exile's 1600-high virtual UI coordinate space used by `SetPosition`. |
+| `public bool TryProjectWorldToUi(float worldX, float worldY, float worldZ, out float uiX, out float uiY)` | Projects a 3D world point directly into Path of Exile's 1600-high virtual UI coordinate space so 3D encounter markers align accurately with `SetPosition`. |
 
 ---
 
@@ -76,7 +85,7 @@ public sealed record CameraState(bool IsValid, WorldPosition3D Position, WorldPo
 
 **Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/CameraTypes.cs`
 
-Exposes read-only camera state, world-to-screen projection, and per-mod zoom override control.
+Exposes read-only camera state, world-to-screen projection, world-to-UI coordinate conversion, and per-mod zoom override control.
 
 ```csharp
 public interface ICameraService
@@ -89,6 +98,8 @@ public interface ICameraService
 | `CameraState GetState()` | Reads the current live in-game camera state snapshot. |
 | `bool TryWorldToScreen(float worldX, float worldY, float worldZ, out float screenX, out float screenY)` | Projects a 3D world-space coordinate into 2D screen pixel coordinates. Returns: `true` if the point lies in front of an active camera; otherwise `false`. |
 | `bool TryWorldToScreen(WorldPosition3D worldPosition, out float screenX, out float screenY)` | Projects a `WorldPosition3D` into 2D screen pixel coordinates. |
+| `bool TryWorldToUiPosition(float worldX, float worldY, float worldZ, out float uiX, out float uiY)` | Projects a 3D world-space coordinate into Path of Exile's 1600-high virtual UI coordinate space so 3D encounter markers align pixel-accurately with `SetPosition`. Returns: `true` if the point lies in front of an active camera with a valid viewport; otherwise `false`. |
+| `bool TryWorldToUiPosition(WorldPosition3D worldPosition, out float uiX, out float uiY)` | Projects a `WorldPosition3D` into Path of Exile's 1600-high virtual UI coordinate space. |
 | `void SetZoomOverride(float? zoomOverride)` | Sets or clears a camera zoom override (`CameraController + 0x4ac`). Passing `null` (or a negative value) clears this mod's override and restores stock zoom (`-1.0f`). Per-mod overrides are automatically cleared when the owning mod unloads. |
 
 ---
@@ -207,11 +218,45 @@ public interface IItemFilterService
 
 ---
 
+### `AudioChannelHandle`
+
+**Kind:** `record struct` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/WorldAudioStatsLifecycle.cs`
+
+Strongly typed handle identifying an active audio channel returned by `IAudioService`. Implicitly converts to and from `int` for seamless interoperability with existing `int` channel APIs.
+
+```csharp
+public readonly record struct AudioChannelHandle(int Value)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `int Value` | Underlying native/host channel handle (> 0 when valid). |
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public static AudioChannelHandle Invalid { get; }` | Invalid / empty audio channel handle. |
+| `public bool IsValid { get; }` | Gets whether this handle refers to a valid allocated audio channel (`Value > 0`). |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public int ToInt32()` | Returns the raw integer channel handle value. |
+| `public static AudioChannelHandle FromInt32(int value)` | Creates an `AudioChannelHandle` from a raw integer channel handle value. |
+| `public static implicit operator int(AudioChannelHandle handle)` | Implicitly converts an `AudioChannelHandle` to its underlying `int` handle. |
+| `public static implicit operator AudioChannelHandle(int value)` | Implicitly converts an `int` channel handle to an `AudioChannelHandle`. |
+
+---
+
 ### `IAudioService`
 
 **Kind:** `interface` · **Namespace:** `LocalExile.Client.Sdk.Engine` · **Source:** `LocalExile.Client.Sdk/Engine/WorldAudioStatsLifecycle.cs`
 
-Plays FMOD Studio events and loose/overlaid `.ogg` audio files through the client's audio manager.
+Plays FMOD Studio events and loose/overlaid `.ogg` audio files through the client's audio manager, including 3D world-positioned audio with live camera-distance attenuation.
 
 ```csharp
 public interface IAudioService
@@ -230,6 +275,8 @@ public interface IAudioService
 | `int PlayEvent(string fmodEventPath, float volume = 1.0f)` | Plays a named FMOD Studio event (for example `event:/Harvest/PlotReady`). Returns: An opaque channel handle. |
 | `int PlaySoundFile(string virtualOggPath, float volume = 1.0f)` | Plays an `.ogg` audio file resolved through the client's file layer. Returns: An opaque channel handle. |
 | `int PlaySoundFile(string virtualOggPath, float volume, bool loop)` | Plays an `.ogg` audio file resolved through the client's file overlay or disk with optional infinite looping. Returns: An opaque channel handle. |
+| `AudioChannelHandle PlaySoundAtPosition(string pathOrEvent, float x, float y, float z, float volume = 1.0f, float maxDistance = 1200f, bool loop = false)` | Plays an FMOD event or `.ogg` sound anchored at a 3D world coordinate using live camera-distance attenuation. Automatically updated each frame on the game thread and stopped when the owning mod unloads. Returns: A strongly typed `AudioChannelHandle` for the started channel. |
+| `void SetChannelPosition(AudioChannelHandle channel, float x, float y, float z, float maxDistance = 1200f)` | Updates (or attaches) the 3D world coordinate and attenuation radius of an active audio channel, immediately re-evaluating its distance-attenuated gain against the live camera/listener position. |
 | `void SetChannelVolume(int channelHandle, float volume)` | Updates the linear volume (0.0 to 1.0) of an active audio channel. |
 | `bool IsChannelPlaying(int channelHandle)` | Returns `true` while the specified audio channel is actively playing. |
 | `void StopChannel(int channelHandle)` | Stops an active audio channel by handle. |
@@ -432,6 +479,7 @@ public interface IWorldService
 |---|---|
 | `WorldObjectInfo? FindObject(uint objectId)` | Finds an object by id, or `null` if absent. |
 | `uint SpawnClientObject(string metadataPath, float x, float y, float z = 0f)` | Spawns a client-only object invisible to the server (requires no dat row). Returns: The allocated client-only object id. |
+| `uint SpawnClientObject(string metadataPath, float x, float y, float z, float rotationRadians, float scale = 1.0f)` | Spawns a client-only object invisible to the server with explicit rotation and scale transform. Returns: The allocated client-only object id. |
 | `bool RemoveClientObject(uint objectId)` | Removes a previously spawned client-only object. |
 | `void PlayEffect(uint targetObjectId, string effectPath)` | Queues a visual effect on a target object. |
 | `WorldEntitySnapshot? GetLocalPlayer()` | Returns a snapshot of the local player entity in the current area, or `null` when not in-game. |

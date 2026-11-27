@@ -192,3 +192,25 @@ All `107` new Phase 4 symbols (`36` from `#128` + `71` from `#129`/`#131`, indep
   - Exact creator signature: `ClientRuleset** Create(ClientRuleset** out_unique_ptr, InstanceClient* client)`. All 9 vtable slots verified (`[0]=~ClientRuleset`, `[1]=OnCreated`, `[2]=OnAreaEntered`, `[3]=OnScriptEvent`, `[4]=OnFrame`, `[5]=OnTick`, `[6]=GetSentinel` → MUST return `0x50` via `0x14135d510`, `[7]=Reserved7` via `0x1400f1180`, `[8]=DeserialiseRulesetUpdate`).
 - **Live Native `IUiControlRegistry` (Custom `.ui` Control Kinds):**
   - `ui.control_factory_map_get()` (`0x1418b5970`) returns `g_uiControlFactoryMap` (`0x14475e990`, `std::map<std::wstring, std::function<Control*()>>`, `0x80`B slab-allocated `_Tree_node`s holding all 47 stock controls). Custom types register via `ui.control_factory_map_index` (`0x1401ac090`) using a 7-slot MSVC `_Func_base` factory returning a slab-pooled `Frame` (`ui.frame_create`, `[frame+0x08] = 0x298`). Custom `ident = value;` properties are intercepted via `ui.parser_parse_property` (`0x141872270`, 16B rel32) and teardown fires on `ui.control_release_or_destroy` (`0x1418b6810`, 16B).
+
+---
+
+## 13. Phase 5 (`1.2.0`) Verified Findings (`447` Symbols / `373` Offsets / `22` Appendable Tables)
+
+- **32-Bit (`u32`) Stacks & Formatting:**
+  - `items.stack_deserialise` (`0x1423fb5f0`), `items.stack_serialise` (`0x1423fb5b0`), `items.stack_copy` (`0x1423fb650`), `items.stack_get_size` (`0x14016c7c0`), `items.vtable_stack` (`0x14363f638`), `items.item_deserialise` (`0x1421f2d00`), `items.item_deserialise_framed` (`0x1421f2c30`), `ui.format_stack_count` (`0x1416e2200`), `ui.split_window_show` (`0x14026c0e0`), `network.write_split_stack_0x7c` (`0x141f97160`).
+  - `Stack` offsets: `+0x10` `static_ptr` (`StackStatic*`), `+0x18` `size` (`u32` in-memory!). `StackStatic` offsets: `+0x20` `tab_max`, `+0x24` `inv13_max`, `+0x28` `inv_max`. Opt-in `0xFFFF` wire sentinel followed by LE `u32` decodes stacks > `65,535` while keeping vanilla wire behavior 100% untouched when disabled.
+- **Compact 6-Socket Overlay Rendering:**
+  - `items.sockets_get_count` (`0x1421ea140`), `ui.socket_overlay_ctor` (`0x1416de6d0`), `ui.socket_overlay_set_cell_side` (`0x1416dee60`), `ui.socket_overlay_rebuild` (`0x1416df7a0`), `ui.socket_overlay_layout` (`0x1416e0130`), `ui.socket_overlay_hit_test` (`0x1416deba0`), `ui.socket_element_set_size` (`0x1416ddee0`), `ui.socket_element_draw` (`0x1416de1e0`), vtables `ui.vtable_socket_overlay` (`0x143483208`), `ui.vtable_socket_element` (`0x143482068`), `ui.vtable_item_view` (`0x143485388`).
+  - Offsets: `InventoryItemView` (`+0x578` `socket_overlay`, `+0x588` `cell_side`), `ItemView` (`+0x35c` `cell_side`, `+0x360` `width`, `+0x364` `height`, `+0x370` `socket_overlay`), `SocketOverlay` (`+0x420` `cols`, `+0x424` `cell_side`, `+0x430` `entity`, `+0x438` `sockets_comp`), `SocketElement` (`+0x280` `cell_side`).
+- **3D Mesh Formats (Verified Byte-for-Byte Against Stock 3.29.3d `Bundles2`):**
+  - Static `.fmt`: version 9 `DOLm` `lver=4`, 24-byte vertices (flags `0x0238`) + `.fmt.header`.
+  - Skeleton `.ast`: multi-bone v7 uncompressed inline bone tracks (`Game.exe` `0x142bf8090` / `0x142bf7a70` / `0x142bf7350` bypasses Oodle decompression) + BOM-less UTF-16LE CRLF `.amd` v5.
+  - Rigged `.smd`: version 3 `DOLm` `lver=4`, 32-byte 4-bone skinned vertices + `.smd.header`.
+- **22 Live-Verified Appendable `.datc64` Tables (4 Added in `1.2.0`):**
+  - `MinimapIcons`: `validFor=1`, `9` columns, **`34 B`** stride (verified live against `data/minimapicons.datc64`).
+  - `BuffVisuals`: `validFor=1`, `24` columns, **`244 B`** stride (verified live against `data/buffvisuals.datc64`).
+  - `NPCTalk`: `validFor=1`, `38` columns, **`389 B`** stride (verified live against `data/npctalk.datc64`).
+  - `Words`: `validFor=3`, `7` columns, **`64 B`** stride (verified live against `data/words.datc64`).
+- **Critical `ResourceManager::GetObjectType` (`0x1401b48b0`) `.ot`-Only Invariant (`#186`):**
+  - `GetObjectType` expects an **extensionless `.ot` metadata path** (e.g., `'Metadata/MapDevices/TreeMapDevice/blood/TreeMapDevice'`). For `.ao`/non-`.ot` or missing paths, `GetObjectType` does **NOT** return `nullptr`; it allocates a lazy 0-component `ObjectTypeSlot*` (`0x1401bc110`) with `Positioned == NULL`. Calling `world.create_client_object` (`0x141ec47e0`) on such a slot registers a poisoned `ClientEntity` (`+0x98 == NULL`) into `EntityManager` (`em+0xe8`), which subsequently faults inside `0x141ec5992` (`cmp dword ptr [rax+0x294], 0x80000000`) on the next world tick! Always strip `.ot`, reject non-`.ot` extensions, and verify existence before calling `world.create_client_object`.

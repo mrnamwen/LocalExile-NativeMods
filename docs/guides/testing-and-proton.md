@@ -75,10 +75,11 @@ cmake --build build/native-shim-asan
 ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build/native-shim-asan --output-on-failure
 ```
 
-**Verified Phase 4 (`1.1.0`) Baselines:**
-- **.NET 10 xUnit:** **`404/404`** passing across all `13` test suites (`44` projects, `0` warnings, `0` errors).
-- **C++20 Native Shim:** **`32/32`** passing across Linux Release, Linux Debug ASan/UBSan, and Win64/Wine.
-- **LocalExile Part 2b (`a4c7cafa5`):** `43/43` `GameServer.Data.Tests`, `550/550` `GameServer.Core.Tests`, `953/953` `GameServer.Gateway.Tests` (`0` warnings/errors).
+**Verified Phase 5 (`1.2.0`) Baselines:**
+- **.NET 10 xUnit:** **`434/434`** passing across all `13` test suites (`44` projects, `0` warnings, `0` errors).
+- **C++20 Native Shim:** **`35/35`** passing under `-Wall -Wextra -Wpedantic -Werror` (C ABI `0.6.0`, `1168 B` / `145` slots / `162` exports).
+- **Address Library Port Self-Verify:** **`447/447` (100%)** exact RVA & byte parity via `scripts/port-address-library.py --verify-self`.
+- **LocalExile Part 2b + 2c (`c0392f414` atop `origin/main` `affb3b104`):** `43/43` `GameServer.Data.Tests`, `552/553` `GameServer.Core.Tests` (1 skip), `1,608/1,608` `GameServer.Gateway.Tests`, plus `76/76` NativeMods live Roslyn compile checks (`0` warnings/errors).
 
 ---
 
@@ -133,7 +134,7 @@ All headless Proton test runners enforce strict isolation and zero-mutation guar
 ./scripts/launch-desktop.sh --mod maxwell
 ```
 
-### Expected `nativemods-shim.log` Live Markers (`1.1.0`)
+### Expected `nativemods-shim.log` Live Markers (`1.2.0`)
 
 Verify these lines in `nativemods-shim.log` after a live Proton run:
 
@@ -145,11 +146,12 @@ Verify these lines in `nativemods-shim.log` after a live Proton run:
 [PHASE1] Armed live hooks (wndmsg=OK ui_init=OK ig_leave=OK league_fill=OK cc_enter=OK cc_leave=OK tab=OK map_grp=OK map_key=OK c2s_0x12=OK s2c_0x13=OK)
 [PHASE2] Armed live hooks (init_area=OK area_load_leave=OK ig_leave=OK filter_loaded=OK)
 [PHASE4] Armed live hooks (tab=OK combo=OK listbox=OK tooltip=OK aff_bit=OK aff_tgt=OK ui_prop=OK ui_destroy=OK)
-[MANAGED] [INFO] [host] NativeMods managed host started (SDK 1.1.0, build 3.29.3d, transport HostRuleset).
+[PHASE5] Armed live hooks (stack_deser=OK fmt_count=OK sock_cell=OK sock_rebuild=OK ig_leave=OK)
+[MANAGED] [INFO] [host] NativeMods managed host started (SDK 1.2.0, build 3.29.3d, transport HostRuleset).
 [AUDIO] FMOD 2.03 initialized (output=default|nosound, sys=0x...)
 [AUDIO] Playing OGG 'Audio/Mods/Maxwell/stock_market.ogg' (bytes=..., loop=1, volume=..., handle=..., output=default|nosound, fmod_rc=0)
 [UI] Captured native UI root 0x...
 [UI] Loaded native window 'Metadata/UI/Mods/Maxwell/MaxwellPanel.ui' (root=0x..., control=0x...)
 ```
 
-Verified `1.1.0` live Proton baseline (`e05029d`, run `20261126-225934-proxy-397097`): `abi=0x00000500`, `SDK 1.1.0`, `426` symbols / `357` offsets, **`33/33`** live hooks `OK` (`0` `SKIP`), `4/4` client mods loaded with live native `GealRegisterBuiltin` (`GardenRipen`, `MaxwellDance`), **`16/16`** E2E PASS (`sdk=1.1.0`), **`0`** `[WARN]`/`[ERROR]`/SEH faults, FMOD PCM `-24.5 dB` mean / `-9.6 dB` max, `0` Hyprland window leaks, exact stock `Game.exe` / `Game.patched.exe` SHA-256 baseline restored.
+Verified `1.1.0` live Proton baseline (`e05029d`, run `20261126-225934-proxy-397097`): `abi=0x00000500`, `SDK 1.1.0`, `426` symbols / `357` offsets, **`33/33`** live hooks `OK` (`0` `SKIP`), `4/4` client mods loaded with live native `GealRegisterBuiltin` (`GardenRipen`, `MaxwellDance`), **`16/16`** E2E PASS (`sdk=1.1.0`), **`0`** `[WARN]`/`[ERROR]`/SEH faults, FMOD PCM `-24.5 dB` mean / `-9.6 dB` max, `0` Hyprland window leaks, exact stock `Game.exe` / `Game.patched.exe` SHA-256 baseline restored. On `1.2.0` (`abi=0x00000600`), all **`38/38`** live hooks arm `OK` (including `[PHASE5]` 5/5).

@@ -3,9 +3,9 @@
 
 # ServerBridge API Reference
 
-> **Assembly:** `LocalExile.Client.ServerBridge` · **Public types:** `72`
+> **Assembly:** `LocalExile.Client.ServerBridge` · **Public types:** `79`
 >
-> Gateway-side dual-mod host (`ClientBridgeHost`, `LocalExileGatewayHost`), Tier 1 `0.3.0`/`0.4.0` sessions (`IClientPhase1Session`, `IClientPhase2Session`), server-driven UI (`IClientUiSession`), atomic item transactions (`LocalExileGatewayTransactions`), custom Pet MTX & Currency registrars, and affix manipulation (`LocalExileItemAffixService`).
+> Gateway-side dual-mod host (`ClientBridgeHost`, `LocalExileGatewayHost`), Tier 1 `0.3.0`/`0.4.0`/`1.2.0` sessions (`IClientPhase1Session`, `IClientPhase2Session`, `IClientPhase4Session`), server-driven UI (`IClientUiSession`), atomic item transactions (`LocalExileGatewayTransactions`), custom Pet MTX & Currency registrars, and affix manipulation (`LocalExileItemAffixService`).
 
 [← API Reference Index](README.md) · [ServerBridge Guide](../guides/server-bridge.md)
 
@@ -74,6 +74,13 @@
 | [`ClientAreaChangeKind`](#clientareachangekind) | `enum` | `LocalExile.Client.ServerBridge` | Discriminator describing whether a `ClientAreaChangedEvent` represents entering or leaving an area. |
 | [`ClientAreaChangedEvent`](#clientareachangedevent) | `record` | `LocalExile.Client.ServerBridge` | Opt-in notification payload emitted when a connected client enters or leaves a game area. |
 | [`IClientPhase2Session`](#iclientphase2session) | `interface` | `LocalExile.Client.ServerBridge` | Tier 1 `ServerBridge 0.4.0` Phase 2 session surface allowing single-`.cs` Roslyn server mods (with zero custom client DLL) to query live world entities & visible ground loot, read entity/player stats (including high-ID `>= 0x10000`), inspect or subscribe to game area transitions, query/reload/evaluate the active client item filter, and read camera state or control a disconnect-safe camera zoom override. |
+| [`ServerItemTooltipRule`](#serveritemtooltiprule) | `record` | `LocalExile.Client.ServerBridge` | Declarative server-pushed stock item tooltip augmentation rule evaluated on the client when `ItemPopup::BuildSections` builds or rebuilds a hovered item tooltip (including Alt-held rebuilds). |
+| [`ServerStashAffinityRouteRule`](#serverstashaffinityrouterule) | `record` | `LocalExile.Client.ServerBridge` | Declarative server-pushed Ctrl+Click stash affinity route rule evaluated on the client inside `StashControl::GetAffinityTargets`. |
+| [`ServerGridItem`](#servergriditem) | `record` | `LocalExile.Client.ServerBridge` | JSON-serializable item descriptor placed inside a client-side `IUiItemGrid` by a server mod. |
+| [`ClientGridCellClickedEvent`](#clientgridcellclickedevent) | `record` | `LocalExile.Client.ServerBridge` | Event payload emitted when a player clicks a cell inside a subscribed client-side `IUiItemGrid`. |
+| [`ServerItemTooltipRuleHandle`](#serveritemtooltiprulehandle) | `class` | `LocalExile.Client.ServerBridge` | Ergonomic handle representing a server-registered declarative item tooltip rule on a connected client. |
+| [`ServerStashAffinityRouteHandle`](#serverstashaffinityroutehandle) | `class` | `LocalExile.Client.ServerBridge` | Ergonomic handle representing a server-registered Ctrl+Click stash affinity route rule on a connected client. |
+| [`IClientPhase4Session`](#iclientphase4session) | `interface` | `LocalExile.Client.ServerBridge` | Tier 1 `ServerBridge 1.2.0` Phase 4+5 session surface allowing single-`.cs` server mods (with zero custom client DLL) to control custom & stock item tooltips, Ctrl+Click stash affinity routes, rich UI controls (`Picture`, `ComboBox`, `TabContainer`, `ItemGrid`), extended/3D audio with channel handles, client-only world objects, and Phase 5 `u32` stacks / compact sockets toggles — all automatically cleaned up on disconnect or disposal. |
 | [`Tier1MessageTypes`](#tier1messagetypes) | `class` | `LocalExile.Client.ServerBridge` | Wire message type names exchanged on `SystemChannel` between Tier 1 `ServerBridge 0.3.0`/`0.4.0` sessions and the client host's `ServerBridgeTier1Handler`. |
 | [`ClientScreenStateSnapshot`](#clientscreenstatesnapshot) | `record` | `LocalExile.Client.ServerBridge` | Serializable snapshot of a connected client's active screen state, open stock UI panels, and active stash tab. |
 | [`ClientScreenChangedEvent`](#clientscreenchangedevent) | `record` | `LocalExile.Client.ServerBridge` | Opt-in notification payload emitted when a client's screen, open panels, or active stash tab changes. |
@@ -1604,7 +1611,7 @@ public sealed class ServerUiWindowHandle
 Per-connection NativeMods session tracked by `ClientBridgeHost` on the LocalExile Gateway.
 
 ```csharp
-public interface IClientSession: IClientPhase1Session, IClientPhase2Session
+public interface IClientSession: IClientPhase1Session, IClientPhase2Session, IClientPhase4Session
 ```
 
 **Properties:**
@@ -1626,6 +1633,7 @@ public interface IClientSession: IClientPhase1Session, IClientPhase2Session
 | `IClientUiSession Ui { get; }` | Server-driven UI helper for this connection. |
 | `IClientPhase1Session Phase1 { get; }` | Tier 1 `0.3.0` Phase 1 session facade (slots, HUD toasts, hotkeys, screen/hover queries). |
 | `IClientPhase2Session Phase2 { get; }` | Tier 1 `0.4.0` Phase 2 session facade (world entities, stats, area info, item filter, camera). |
+| `IClientPhase4Session Phase4 { get; }` | Tier 1 `1.2.0` Phase 4+5 session facade (tooltips, stash affinity, rich UI / ItemGrid, spatial/ex audio, client objects, u32 stacks, compact sockets). |
 
 **Methods:**
 
@@ -1817,6 +1825,204 @@ public interface IClientPhase2Session
 
 ---
 
+### `ServerItemTooltipRule`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgePhase4.cs`
+
+Declarative server-pushed stock item tooltip augmentation rule evaluated on the client when `ItemPopup::BuildSections` builds or rebuilds a hovered item tooltip (including Alt-held rebuilds).
+
+```csharp
+public sealed record ServerItemTooltipRule(string Id, IReadOnlyList<TooltipSection> Sections, string? MetadataPrefix = null, string? BaseNameContains = null, uint? ItemClassId = null, ItemRarity? MinRarity = null, bool? RequireAltHeld = null, int Priority = 0)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Id` | Unique rule identifier (re-registering the same id replaces the existing rule). |
+| `IReadOnlyList<TooltipSection> Sections` | Ordered tooltip sections appended when the rule matches. |
+| `string? MetadataPrefix = null` | Optional case-insensitive prefix filter on `MetadataPath`. |
+| `string? BaseNameContains = null` | Optional case-insensitive substring filter on `BaseName`. |
+| `uint? ItemClassId = null` | Optional exact `ItemClasses` identifier match. |
+| `ItemRarity? MinRarity = null` | Optional minimum item rarity tier. |
+| `bool? RequireAltHeld = null` | Optional Alt-key filter (`true` = only when Alt held; `false` = only when Alt not held; `null` = always). |
+| `int Priority = 0` | Evaluation priority (lower values run first). |
+
+---
+
+### `ServerStashAffinityRouteRule`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgePhase4.cs`
+
+Declarative server-pushed Ctrl+Click stash affinity route rule evaluated on the client inside `StashControl::GetAffinityTargets`.
+
+```csharp
+public sealed record ServerStashAffinityRouteRule(string Id, ushort TargetTabIndex, string? MetadataPrefix = null, string? BaseNameContains = null, uint? ItemClassId = null, StashKind? StashKind = null, byte AffinityId = 0, bool ReplaceStockTargets = false, int Priority = 0)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string Id` | Unique route identifier (re-registering the same id replaces the existing route). |
+| `ushort TargetTabIndex` | Zero-based destination stash tab index sent in `C→S 0x00E1`. |
+| `string? MetadataPrefix = null` | Optional case-insensitive prefix filter on `MetadataPath`. |
+| `string? BaseNameContains = null` | Optional case-insensitive substring filter on `BaseName`. |
+| `uint? ItemClassId = null` | Optional exact `ItemClasses` identifier match. |
+| `StashKind? StashKind = null` | Optional target stash container filter (Personal or Guild). |
+| `byte AffinityId = 0` | Optional stock affinity id byte carried alongside the route. |
+| `bool ReplaceStockTargets = false` | When `true`, replaces stock affinity targets rather than appending. |
+| `int Priority = 0` | Evaluation priority (lower values run first). |
+
+---
+
+### `ServerGridItem`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgePhase4.cs`
+
+JSON-serializable item descriptor placed inside a client-side `IUiItemGrid` by a server mod.
+
+```csharp
+public sealed record ServerGridItem(string ItemId, int Col, int Row, int Width = 1, int Height = 1, string? IconPath = null, int StackSize = 1, ItemRarity Rarity = ItemRarity.Normal, string? Title = null, IReadOnlyList<TooltipLine>? TooltipLines = null)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string ItemId` | Unique identifier for this item within the grid. |
+| `int Col` | Zero-based top-left column coordinate. |
+| `int Row` | Zero-based top-left row coordinate. |
+| `int Width = 1` | Horizontal footprint in grid cells (>= 1). |
+| `int Height = 1` | Vertical footprint in grid cells (>= 1). |
+| `string? IconPath = null` | Optional virtual texture path for the item's icon. |
+| `int StackSize = 1` | Displayed stack count (shown when > 1). |
+| `ItemRarity Rarity = ItemRarity.Normal` | Item rarity tier controlling border/tooltip styling. |
+| `string? Title = null` | Optional display title shown in hover tooltips. |
+| `IReadOnlyList<TooltipLine>? TooltipLines = null` | Optional custom tooltip lines displayed on hover. |
+
+---
+
+### `ClientGridCellClickedEvent`
+
+**Kind:** `record` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgePhase4.cs`
+
+Event payload emitted when a player clicks a cell inside a subscribed client-side `IUiItemGrid`.
+
+```csharp
+public sealed record ClientGridCellClickedEvent(string WindowId, string GridPath, int Col, int Row, string? ItemId = null, MouseButton Button = MouseButton.Left, KeyModifiers Modifiers = KeyModifiers.None)
+```
+
+**Parameters / Properties:**
+
+| Parameter | Description |
+|---|---|
+| `string WindowId` | Identifier of the window hosting the grid. |
+| `string GridPath` | Control path or id of the `IUiItemGrid`. |
+| `int Col` | Zero-based clicked cell column. |
+| `int Row` | Zero-based clicked cell row. |
+| `string? ItemId = null` | Identifier of the item occupying `(Col, Row)`, or `null` if empty. |
+| `MouseButton Button = MouseButton.Left` | Mouse button used for the click. |
+| `KeyModifiers Modifiers = KeyModifiers.None` | Keyboard modifiers held during the click. |
+
+---
+
+### `ServerItemTooltipRuleHandle`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgePhase4.cs`
+
+Ergonomic handle representing a server-registered declarative item tooltip rule on a connected client.
+
+```csharp
+public sealed class ServerItemTooltipRuleHandle: IAsyncDisposable
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public string Id { get; }` | Unique rule identifier. |
+| `public bool IsRegistered { get; }` | Whether this rule is still active. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public async Task RemoveAsync(CancellationToken cancellationToken = default)` | Removes this item tooltip rule from the client host. |
+| `public async ValueTask DisposeAsync()` | — |
+
+---
+
+### `ServerStashAffinityRouteHandle`
+
+**Kind:** `class` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgePhase4.cs`
+
+Ergonomic handle representing a server-registered Ctrl+Click stash affinity route rule on a connected client.
+
+```csharp
+public sealed class ServerStashAffinityRouteHandle: IAsyncDisposable
+```
+
+**Properties:**
+
+| Property | Summary |
+|---|---|
+| `public string Id { get; }` | Unique route identifier. |
+| `public ushort TargetTabIndex { get; }` | Zero-based destination stash tab index. |
+| `public bool IsRegistered { get; }` | Whether this route is still active. |
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `public async Task RemoveAsync(CancellationToken cancellationToken = default)` | Removes this stash affinity route from the client host. |
+| `public async ValueTask DisposeAsync()` | — |
+
+---
+
+### `IClientPhase4Session`
+
+**Kind:** `interface` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgePhase4.cs`
+
+Tier 1 `ServerBridge 1.2.0` Phase 4+5 session surface allowing single-`.cs` server mods (with zero custom client DLL) to control custom & stock item tooltips, Ctrl+Click stash affinity routes, rich UI controls (`Picture`, `ComboBox`, `TabContainer`, `ItemGrid`), extended/3D audio with channel handles, client-only world objects, and Phase 5 `u32` stacks / compact sockets toggles — all automatically cleaned up on disconnect or disposal.
+
+```csharp
+public interface IClientPhase4Session
+```
+
+**Methods:**
+
+| Method | Summary |
+|---|---|
+| `Task ShowTooltipAsync(TooltipContent content, float screenX, float screenY, CancellationToken cancellationToken = default)` | Displays a custom anchored tooltip overlay at `(screenX, screenY)` on the client. |
+| `Task HideTooltipAsync(CancellationToken cancellationToken = default)` | Hides the server-owned custom anchored tooltip overlay on the client. |
+| `Task<ServerItemTooltipRuleHandle> RegisterItemTooltipRuleAsync(ServerItemTooltipRule rule, CancellationToken cancellationToken = default)` | Registers (or replaces) a declarative stock item tooltip augmentation rule on the client. |
+| `Task RemoveItemTooltipRuleAsync(string ruleId, CancellationToken cancellationToken = default)` | Removes a previously registered declarative item tooltip rule from the client. |
+| `Task<ServerStashAffinityRouteHandle> RegisterStashAffinityRouteAsync(ServerStashAffinityRouteRule rule, CancellationToken cancellationToken = default)` | Registers (or replaces) a declarative Ctrl+Click stash affinity route rule on the client. |
+| `Task<ServerStashAffinityRouteHandle> RegisterStashAffinityRouteAsync(string id, ushort targetTabIndex, string? metadataPrefix = null, uint? itemClassId = null, StashKind? stashKind = null, bool replaceStockTargets = false, byte affinityId = 0, int priority = 0, CancellationToken cancellationToken = default)` | Convenience overload registering a declarative Ctrl+Click stash affinity route rule on the client. |
+| `Task RemoveStashAffinityRouteAsync(string routeId, CancellationToken cancellationToken = default)` | Removes a previously registered stash affinity route rule from the client. |
+| `Task SetPictureTextureAsync(string windowId, string controlPath, string texturePath, bool resizeToImage = false, CancellationToken cancellationToken = default)` | Sets the virtual texture path on an `IPicture` control inside `windowId`. |
+| `Task SetComboBoxSelectedAsync(string windowId, string controlPath, int selectedIndex, CancellationToken cancellationToken = default)` | Sets the selected item index on an `IComboBox` control inside `windowId`. |
+| `Task SelectTabAsync(string windowId, string controlPath, int tabIndex, CancellationToken cancellationToken = default)` | Selects a tab by zero-based index on an `ITabContainer` control inside `windowId`. |
+| `Task CreateItemGridAsync(string windowId, string parentControlPath, string gridId, UiItemGridOptions options, CancellationToken cancellationToken = default)` | Dynamically creates a slab-safe composite `IUiItemGrid` inside a container control in `windowId`. |
+| `Task SetGridItemAsync(string windowId, string gridPath, ServerGridItem item, CancellationToken cancellationToken = default)` | Places (or replaces by `ItemId`) an item inside an `IUiItemGrid`. |
+| `Task RemoveGridItemAsync(string windowId, string gridPath, string itemId, CancellationToken cancellationToken = default)` | Removes an item by `itemId` from an `IUiItemGrid`. |
+| `Task ClearGridAsync(string windowId, string gridPath, CancellationToken cancellationToken = default)` | Clears all items from an `IUiItemGrid`. |
+| `Task<IDisposable> OnGridCellClickAsync(string windowId, string gridPath, Action<IClientSession, ClientGridCellClickedEvent> handler, CancellationToken cancellationToken = default)` | Subscribes synchronously to cell-click callbacks from an `IUiItemGrid`. |
+| `Task<IDisposable> OnGridCellClickAsync(string windowId, string gridPath, Func<IClientSession, ClientGridCellClickedEvent, Task> handler, CancellationToken cancellationToken = default)` | Subscribes asynchronously to cell-click callbacks from an `IUiItemGrid`. |
+| `Task<IDisposable> OnGridCellClickAsync(string windowId, string gridPath, Func<IClientSession, ClientGridCellClickedEvent, CancellationToken, Task> handler, CancellationToken cancellationToken = default)` | Subscribes asynchronously with cancellation support to cell-click callbacks from an `IUiItemGrid`. |
+| `Task<AudioChannelHandle> PlayAudioExAsync(string pathOrEvent, float volume = 1.0f, bool loop = false, TimeSpan? timeout = null, CancellationToken cancellationToken = default)` | Plays an FMOD event or `.ogg` sound with explicit volume and loop flag, returning its `AudioChannelHandle`. |
+| `Task StopAudioAsync(AudioChannelHandle channel, CancellationToken cancellationToken = default)` | Stops an active server-started audio channel. |
+| `Task<AudioChannelHandle> PlaySoundAtPositionAsync(string pathOrEvent, float x, float y, float z, float volume = 1.0f, float maxDistance = 1200f, bool loop = false, TimeSpan? timeout = null, CancellationToken cancellationToken = default)` | Plays a 3D world-positioned sound with live camera-distance attenuation, returning its `AudioChannelHandle`. |
+| `Task SetAudioPositionAsync(AudioChannelHandle channel, float x, float y, float z, float maxDistance = 1200f, CancellationToken cancellationToken = default)` | Updates the 3D world coordinate and attenuation radius of an active audio channel. |
+| `Task<uint> SpawnClientObjectAsync(string metadataPath, float x, float y, float z = 0f, float rotationRadians = 0f, float scale = 1.0f, TimeSpan? timeout = null, CancellationToken cancellationToken = default)` | Spawns a client-only world object with optional yaw rotation and uniform scale, returning its client object id. |
+| `Task RemoveClientObjectAsync(uint objectId, CancellationToken cancellationToken = default)` | Removes a previously spawned client-only world object. |
+| `Task SetExtendedU32StacksAsync(bool enabled, bool? formatMillions = null, CancellationToken cancellationToken = default)` | Enables or disables opt-in 32-bit stack deserialization (and optionally millions stack formatting) on the client. |
+| `Task SetEntityStackOverrideAsync(uint entityId, uint stackSize, CancellationToken cancellationToken = default)` | Applies a sideband 32-bit stack size override onto a live item entity on the client. |
+| `Task SetCompactSocketsAsync(bool enabled, CancellationToken cancellationToken = default)` | Enables or disables 6-socket compact icon layout scaling on small items on the client. |
+
+---
+
 ### `Tier1MessageTypes`
 
 **Kind:** `class` · **Namespace:** `LocalExile.Client.ServerBridge` · **Source:** `LocalExile.Client.ServerBridge/ServerBridgeTier1.cs`
@@ -1869,6 +2075,32 @@ public static class Tier1MessageTypes
 | `public const string QueryCameraState = "Tier1QueryCameraState"` | S→C request querying the active in-game `CameraState`. |
 | `public const string CameraStateResponse = "Tier1CameraStateResponse"` | C→S response carrying the live `CameraState`. |
 | `public const string SetCameraZoomOverride = "Tier1SetCameraZoomOverride"` | S→C command setting or clearing the server-owned camera zoom override (auto-restored on disconnect/dispose). |
+| `public const string ShowTooltip = "Tier1ShowTooltip"` | S→C command displaying a custom anchored tooltip at screen coordinates. |
+| `public const string HideTooltip = "Tier1HideTooltip"` | S→C command hiding the server-owned custom anchored tooltip. |
+| `public const string RegisterItemTooltipRule = "Tier1RegisterItemTooltipRule"` | S→C command registering or replacing a declarative item tooltip augmentation rule. |
+| `public const string RemoveItemTooltipRule = "Tier1RemoveItemTooltipRule"` | S→C command removing a previously registered item tooltip augmentation rule. |
+| `public const string RegisterStashAffinityRoute = "Tier1RegisterStashAffinityRoute"` | S→C command registering or replacing a declarative Ctrl+Click stash affinity route rule. |
+| `public const string RemoveStashAffinityRoute = "Tier1RemoveStashAffinityRoute"` | S→C command removing a previously registered stash affinity route rule. |
+| `public const string SetPictureTexture = "Tier1SetPictureTexture"` | S→C command updating the virtual texture path on an `IPicture` control. |
+| `public const string SetComboBoxSelected = "Tier1SetComboBoxSelected"` | S→C command updating the selected index on an `IComboBox` control. |
+| `public const string SelectTab = "Tier1SelectTab"` | S→C command selecting a tab index on an `ITabContainer` control. |
+| `public const string CreateItemGrid = "Tier1CreateItemGrid"` | S→C command creating a slab-safe composite `IUiItemGrid` inside a window control. |
+| `public const string SetGridItem = "Tier1SetGridItem"` | S→C command placing or updating an item inside an `IUiItemGrid`. |
+| `public const string RemoveGridItem = "Tier1RemoveGridItem"` | S→C command removing an item by id from an `IUiItemGrid`. |
+| `public const string ClearGrid = "Tier1ClearGrid"` | S→C command clearing all items from an `IUiItemGrid`. |
+| `public const string SetGridClickSubscription = "Tier1SetGridClickSubscription"` | S→C command enabling or disabling cell-click callback forwarding for an `IUiItemGrid`. |
+| `public const string GridCellClick = "Tier1GridCellClick"` | C→S event emitted when a player clicks a cell in a subscribed `IUiItemGrid`. |
+| `public const string PlayAudioEx = "Tier1PlayAudioEx"` | S→C request playing an FMOD event or `.ogg` sound with explicit volume/loop and returning its handle. |
+| `public const string PlayAudioExResponse = "Tier1PlayAudioExResponse"` | C→S response carrying the allocated `AudioChannelHandle` value. |
+| `public const string StopAudio = "Tier1StopAudio"` | S→C command stopping a server-started audio channel. |
+| `public const string PlaySoundAtPosition = "Tier1PlaySoundAtPosition"` | S→C request playing a 3D world-positioned sound with camera-distance attenuation and returning its handle. |
+| `public const string SetAudioPosition = "Tier1SetAudioPosition"` | S→C command updating the 3D world position and attenuation radius of an active audio channel. |
+| `public const string SpawnClientObject = "Tier1SpawnClientObject"` | S→C request spawning a client-only world object with transform and returning its object id. |
+| `public const string SpawnClientObjectResponse = "Tier1SpawnClientObjectResponse"` | C→S response carrying the allocated client-only object id. |
+| `public const string RemoveClientObject = "Tier1RemoveClientObject"` | S→C command removing a previously spawned client-only world object. |
+| `public const string SetExtendedU32Stacks = "Tier1SetExtendedU32Stacks"` | S→C command enabling or disabling opt-in 32-bit stack deserialization and optional millions formatting. |
+| `public const string SetEntityStackOverride = "Tier1SetEntityStackOverride"` | S→C command applying a sideband 32-bit stack size override to a live item entity. |
+| `public const string SetCompactSockets = "Tier1SetCompactSockets"` | S→C command enabling or disabling 6-socket compact icon scaling on small items. |
 
 ---
 

@@ -13,8 +13,8 @@ public sealed class DatPatchMergerTests
     {
         Dat64SchemaRegistry schema = Dat64SchemaRegistry.LoadDefault329();
 
-        // All 18 live-verified appendable registry tables must be present in the bundled schema
-        Assert.Equal(18, Dat64SchemaRegistry.AppendableRegistryTables.Count);
+        // All 22 live-verified appendable registry tables must be present in the bundled schema
+        Assert.Equal(22, Dat64SchemaRegistry.AppendableRegistryTables.Count);
         foreach (string tableName in Dat64SchemaRegistry.AppendableRegistryTables)
         {
             Assert.True(schema.TryGetTable(tableName, out Dat64TableSchema? tbl), $"Missing schema for appendable table '{tableName}'.");
@@ -32,6 +32,9 @@ public sealed class DatPatchMergerTests
         Assert.Equal(654, schema.GetRequiredTable("Mods").RowStride);
         Assert.Equal(41, schema.GetRequiredTable("ModType").RowStride);
         Assert.Equal(314, schema.GetRequiredTable("BuffDefinitions").RowStride);
+        Assert.Equal(34, schema.GetRequiredTable("MinimapIcons").RowStride);
+        Assert.Equal(244, schema.GetRequiredTable("BuffVisuals").RowStride);
+        Assert.Equal(389, schema.GetRequiredTable("NPCTalk").RowStride);
         Assert.Equal(105, schema.GetRequiredTable("Stats").RowStride);
         Assert.Equal(153, schema.GetRequiredTable("ItemClasses").RowStride);
         Assert.Equal(662, schema.GetRequiredTable("WorldAreas").RowStride);
@@ -1019,6 +1022,215 @@ public sealed class DatPatchMergerTests
         }
 
         return new Dat64Table(rowCount, stride, fixedRows, varMs.ToArray()).Serialize();
+    }
+
+    [Fact]
+    public void Phase5FourNewAppendableTables_SchemaLookupLiveBundles2StrideAndMergeRoundTrip()
+    {
+        Dat64SchemaRegistry schema = Dat64SchemaRegistry.LoadDefault329();
+        (string TableName, string BundlePath, int ExpectedStride, int ExpectedColumns)[] tables =
+        [
+            ("MinimapIcons", "data/minimapicons.datc64", 34, 9),
+            ("BuffVisuals", "data/buffvisuals.datc64", 244, 24),
+            ("NPCTalk", "data/npctalk.datc64", 389, 38),
+            ("Words", "data/words.datc64", 64, 7),
+        ];
+
+        foreach ((string tableName, _, int expectedStride, int expectedColumns) in tables)
+        {
+            Assert.Contains(tableName, Dat64SchemaRegistry.AppendableRegistryTables);
+            Dat64TableSchema tableSchema = schema.GetRequiredTable(tableName);
+            Assert.Equal(expectedStride, tableSchema.RowStride);
+            Assert.Equal(expectedColumns, tableSchema.Columns.Count);
+        }
+
+        // Verify exact row-stride match against live 3.29.3d Bundles2 when available on disk.
+        string liveClientDir = Environment.GetEnvironmentVariable("LOCALEXILE_STOCK_CLIENT_DIR")
+            ?? "/home/nam/Git/LocalExile/Client";
+        if (File.Exists(Path.Combine(liveClientDir, "Bundles2", "_.index.bin")))
+        {
+            using Bundles2Reader bundles = Bundles2Reader.Open(liveClientDir);
+            foreach ((string tableName, string bundlePath, int expectedStride, _) in tables)
+            {
+                byte[] raw = bundles.ReadFile(bundlePath);
+                Dat64Table parsed = Dat64Table.Parse(raw);
+                Assert.True(parsed.RowCount > 0, $"Live {bundlePath} should have rows.");
+                Assert.Equal(expectedStride, parsed.RowStride);
+            }
+        }
+
+        // Synthetic stock source for deterministic DatPatchMerger append round-trip across all 4 tables.
+        var stock = new InMemoryDat64Source(new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["MinimapIcons"] = BuildStockMinimapIcons(),
+            ["BuffVisuals"] = BuildStockBuffVisuals(),
+            ["NPCTalk"] = BuildStockNpcTalk(),
+            ["Words"] = BuildStockWords(),
+        });
+
+        DatPatchDocument patch = DatPatchDocument.Parse("""
+        {
+          "schemaVersion": 1,
+          "modId": "mod-league-tables",
+          "tables": {
+            "MinimapIcons": {
+              "append": [
+                {
+                  "key": "custom_altar_icon",
+                  "cloneFromId": "Shrine",
+                  "fields": {
+                    "Id": "CustomLeagueAltar",
+                    "MinimapIconRadius": 18,
+                    "LargemapIconRadius": 24,
+                    "MinimapIconPointerMaxDistance": 600
+                  }
+                }
+              ]
+            },
+            "BuffVisuals": {
+              "append": [
+                {
+                  "key": "custom_league_buff_vis",
+                  "cloneFromId": "StockBuffVisual",
+                  "fields": {
+                    "Id": "CustomLeagueBuffVisual",
+                    "BuffDDSFile": "Art/2DArt/BuffIcons/CustomLeagueBuff.dds",
+                    "BuffName": "League Surge",
+                    "BuffDescription": "Empowered by the custom league altar."
+                  }
+                }
+              ]
+            },
+            "NPCTalk": {
+              "append": [
+                {
+                  "key": "custom_npc_greeting",
+                  "cloneFromRow": 0,
+                  "fields": {
+                    "DialogueOption": "Tell me about the Custom League",
+                    "Script": "custom_league_intro"
+                  }
+                }
+              ]
+            },
+            "Words": {
+              "append": [
+                {
+                  "key": "custom_unique_word",
+                  "cloneFromId": "StockWord",
+                  "fields": {
+                    "Text": "Aetherbound",
+                    "Text2": "Aetherbound",
+                    "Inflection": "N"
+                  }
+                }
+              ]
+            }
+          }
+        }
+        """);
+
+        DatPatchMergeResult result = DatPatchMerger.Merge(stock, [patch], schema);
+        Assert.Equal(4, result.MergedTables.Count);
+        Assert.Equal(1, result.RowMap.Tables["MinimapIcons"].Entries["custom_altar_icon"].RowIndex);
+        Assert.Equal(1, result.RowMap.Tables["BuffVisuals"].Entries["custom_league_buff_vis"].RowIndex);
+        Assert.Equal(1, result.RowMap.Tables["NPCTalk"].Entries["custom_npc_greeting"].RowIndex);
+        Assert.Equal(1, result.RowMap.Tables["Words"].Entries["custom_unique_word"].RowIndex);
+
+        Dat64Table mergedIcons = Dat64Table.Parse(result.MergedTables["MinimapIcons"]);
+        Assert.Equal(2, mergedIcons.RowCount);
+        Assert.Equal(34, mergedIcons.RowStride);
+        Assert.Equal("CustomLeagueAltar", mergedIcons.ReadString(1, 0));
+        Assert.Equal(18, mergedIcons.ReadInt32(1, 8));
+        Assert.Equal(24, mergedIcons.ReadInt32(1, 12));
+        Assert.Equal(600, mergedIcons.ReadInt32(1, 18));
+
+        Dat64Table mergedBuffs = Dat64Table.Parse(result.MergedTables["BuffVisuals"]);
+        Assert.Equal(2, mergedBuffs.RowCount);
+        Assert.Equal(244, mergedBuffs.RowStride);
+        Assert.Equal("CustomLeagueBuffVisual", mergedBuffs.ReadString(1, 0));
+        Assert.Equal("Art/2DArt/BuffIcons/CustomLeagueBuff.dds", mergedBuffs.ReadString(1, 8));
+        Assert.Equal("League Surge", mergedBuffs.ReadString(1, 65));
+        Assert.Equal("Empowered by the custom league altar.", mergedBuffs.ReadString(1, 105));
+
+        Dat64Table mergedNpcTalk = Dat64Table.Parse(result.MergedTables["NPCTalk"]);
+        Assert.Equal(2, mergedNpcTalk.RowCount);
+        Assert.Equal(389, mergedNpcTalk.RowStride);
+        Assert.Equal("Tell me about the Custom League", mergedNpcTalk.ReadString(1, 20));
+        Assert.Equal("custom_league_intro", mergedNpcTalk.ReadString(1, 76));
+
+        Dat64Table mergedWords = Dat64Table.Parse(result.MergedTables["Words"]);
+        Assert.Equal(2, mergedWords.RowCount);
+        Assert.Equal(64, mergedWords.RowStride);
+        Assert.Equal("Aetherbound", mergedWords.ReadString(1, 4));
+        Assert.Equal(PoeHashing.Hash32("Aetherbound"), mergedWords.ReadUInt32(1, 44));
+        Assert.Equal("Aetherbound", mergedWords.ReadString(1, 48));
+        Assert.Equal("N", mergedWords.ReadString(1, 56));
+    }
+
+    private static byte[] BuildStockMinimapIcons()
+    {
+        using var varMs = new MemoryStream();
+        WriteSentinel(varMs);
+        ulong idOff = AppendStr(varMs, "Shrine");
+        byte[] row = new byte[34];
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(0, 8), idOff);
+        Dat64TablePatcher.WriteInt32(row, 8, 12);
+        Dat64TablePatcher.WriteInt32(row, 12, 16);
+        Dat64TablePatcher.WriteInt32(row, 18, 400);
+        return new Dat64Table(1, 34, row, varMs.ToArray()).Serialize();
+    }
+
+    private static byte[] BuildStockBuffVisuals()
+    {
+        using var varMs = new MemoryStream();
+        WriteSentinel(varMs);
+        ulong idOff = AppendStr(varMs, "StockBuffVisual");
+        ulong ddsOff = AppendStr(varMs, "Art/2DArt/BuffIcons/Stock.dds");
+        ulong nameOff = AppendStr(varMs, "Stock Buff");
+        ulong descOff = AppendStr(varMs, "Stock description");
+        ulong emptyOff = AppendStr(varMs, string.Empty);
+        byte[] row = new byte[244];
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(0, 8), idOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(8, 8), ddsOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(65, 8), nameOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(105, 8), descOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(113, 8), emptyOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(122, 8), emptyOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(210, 8), emptyOff);
+        return new Dat64Table(1, 244, row, varMs.ToArray()).Serialize();
+    }
+
+    private static byte[] BuildStockNpcTalk()
+    {
+        using var varMs = new MemoryStream();
+        WriteSentinel(varMs);
+        ulong optOff = AppendStr(varMs, "Introduction");
+        ulong scriptOff = AppendStr(varMs, "intro");
+        ulong emptyOff = AppendStr(varMs, string.Empty);
+        byte[] row = new byte[389];
+        Dat64TablePatcher.WriteForeignRow(row, 0, 1UL);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(20, 8), optOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(76, 8), scriptOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(164, 8), emptyOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(252, 8), emptyOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(381, 8), emptyOff);
+        return new Dat64Table(1, 389, row, varMs.ToArray()).Serialize();
+    }
+
+    private static byte[] BuildStockWords()
+    {
+        using var varMs = new MemoryStream();
+        WriteSentinel(varMs);
+        ulong textOff = AppendStr(varMs, "StockWord");
+        ulong emptyOff = AppendStr(varMs, string.Empty);
+        byte[] row = new byte[64];
+        Dat64TablePatcher.WriteInt32(row, 0, 1);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(4, 8), textOff);
+        Dat64TablePatcher.WriteUInt32(row, 44, PoeHashing.Hash32("StockWord"));
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(48, 8), textOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(row.AsSpan(56, 8), emptyOff);
+        return new Dat64Table(1, 64, row, varMs.ToArray()).Serialize();
     }
 
     private static byte[] BuildBlankSingleRow(int stride)

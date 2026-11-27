@@ -1,6 +1,6 @@
 # ServerBridge, Networking & Extender Registries
 
-Wire bidirectional typed networking between LocalExile Gateway server mods and 3.29 client mods using **`LocalExile.Client.ServerBridge` (`1.0.0`)**, drive native client features from single-`.cs` Roslyn server mods with Tier 1 `IClientPhase1Session` / `IClientPhase2Session`, verify multi-mod `content-row-map.json` digests at handshake, register custom items/uniques/drop-pool overlays via LocalExile Part 2b, perform atomic Gateway item/affix transactions, and register custom GEAL built-ins, rulesets, opcodes, and raw hooks.
+Wire bidirectional typed networking between LocalExile Gateway server mods and 3.29 client mods using **`LocalExile.Client.ServerBridge` (`1.2.0`)**, drive native client features from single-`.cs` Roslyn server mods with Tier 1 `IClientPhase1Session` / `IClientPhase2Session` / `IClientPhase4Session` (tooltips, stash affinity, rich UI / `IUiItemGrid`, 3D spatial audio, world VFX, and opt-in `u32` stacks), verify multi-mod `content-row-map.json` digests at handshake, register custom items/uniques/drop-pool/monster/NPC/buff overlays via LocalExile Part 2b & 2c, perform atomic Gateway item/affix transactions, and register custom GEAL built-ins, rulesets, opcodes, and raw hooks.
 
 [← Documentation Home](../README.md) · [ServerBridge API Reference](../api/server-bridge.md) · [SDK Net, Protocol, Extend & Raw API Reference](../api/sdk-net-files-raw-extend.md)
 
@@ -109,9 +109,9 @@ if (session.HasNativeHost)
 
 ---
 
-## 4. Tier 1 Server-Only Parity (0.3.0 and 0.4.0)
+## 4. Tier 1 Server-Only Parity (0.3.0, 0.4.0 and 1.2.0)
 
-Single-`.cs` Roslyn server mods (with **zero custom client DLL**) can drive Phase 1 and Phase 2 client capabilities automatically through `ServerBridgeTier1Handler` (with ref-counted multi-mod subscriptions and automatic disconnect/dispose cleanup):
+Single-`.cs` Roslyn server mods (with **zero custom client DLL**) can drive Phase 1, Phase 2, Phase 4, and Phase 5 client capabilities automatically through `ServerBridgeTier1Handler` (with ref-counted multi-mod subscriptions and automatic disconnect/dispose cleanup):
 
 ### Phase 1 (`session.Phase1` — `IClientPhase1Session`)
 
@@ -145,6 +145,29 @@ IDisposable filterSub = await session.Phase2.OnFilterReloadedAsync((s, ev) =>
 
 // Owner-scoped ("server-bridge") zoom override — restored automatically on disconnect/dispose:
 await session.Phase2.SetCameraZoomOverrideAsync(1.25f, cancellationToken: ct);
+```
+
+### Phase 4 & 5 (`session.Phase4` — `IClientPhase4Session`, `1.2.0`)
+
+Tier 1 server-only mods can push declarative stock tooltip rules (`tier1.tooltips`), stash affinity routes (`tier1.affinity`), rich dynamic controls & `IUiItemGrid` (`tier1.rich-ui`), 3D spatial audio & world VFX (`tier1.audio-ex`), compact 6-sockets, and opt-in `u32` stacks (`tier1.stacks-u32`) with zero client DLL:
+
+```csharp
+// 1. Declarative stock item tooltip augmentation rule & custom Ctrl+Click stash affinity route:
+await session.Phase4.RegisterTooltipRuleAsync(new ServerItemTooltipRule(
+    Id: "league.alt_tag",
+    Sections: [TooltipSection.SingleLine("[Custom League Relic]", rgbaColor: 0x88CCFFFFu)],
+    RequireAltHeld: true), ct);
+await session.Phase4.RegisterAffinityRouteAsync(new ServerStashAffinityRouteRule(
+    Id: "league.fragments", TargetTabIndex: 12, MetadataPrefix: "Metadata/Items/Mods/MyLeague/", ReplaceStockTargets: true), ct);
+
+// 2. Dynamic IUiItemGrid & rich controls driven from the server:
+await session.Phase4.CreateItemGridAsync("my_win", "body", "relic_grid", new UiItemGridOptions(6, 6, 48f, 2f), ct);
+await session.Phase4.PlaceGridItemAsync("my_win", "relic_grid", new ServerGridItem("relic-1", Col: 0, Row: 0, Width: 2, Height: 2, Title: "Aether Relic"), ct);
+
+// 3. 3D spatial audio, live entity VFX & opt-in u32 stack extension (> 65,535 stacks):
+await session.Phase4.PlaySound3DAsync("Audio/Mods/MyLeague/hum.ogg", new WorldPosition3D(100f, 200f, 0f), cancellationToken: ct);
+await session.Phase4.PlayWorldEffectAsync(entityId, "Metadata/Effects/Mods/MyLeague/Burst.ao", ct);
+await session.Phase4.SetExtendedU32StacksEnabledAsync(enabled: true, formatMillions: true, cancellationToken: ct);
 ```
 
 ---
@@ -213,11 +236,13 @@ if (rowMap is not null)
 }
 ```
 
-### LocalExile Part 2b Runtime Catalog & Drop-Pool Overlays
+### LocalExile Part 2b & 2c Runtime Catalog, Drop-Pool & Custom-League APIs
 
-LocalExile Core Hooks Part 2b (`a4c7cafa5`) exposes lock-free runtime overlays (`ItemCatalog.RegisterOverlay`, `UniqueCatalog.RegisterOverlay`, `ModCatalog`, `GemSources`, `DropDataProvider.Default.RegisterOverlay` / `DropPoolOverlays`, lazy `ItemDrops` rebuild across monster kills, containers, strongboxes, boss bonuses, map currency mods, and `HardModeDrops`, preserved across `/reload` and auto-cleaned via `GameEventOwners` — **zero SQLite mutation**).
+LocalExile Core Hooks Part 2b (`dac865f6d`) and Part 2c (`c0392f414` on `feat/nativemods-phase0-core-hooks`) expose lock-free, zero-SQLite-mutation runtime APIs for custom content and full custom league mechanics (all auto-cleaned via `GameEventOwners` and preserved across `/reload`):
 
-- **Direct Gateway APIs (Roslyn `IMod` entry point, e.g., `examples/DualMod.SiphonOrb/Server/SiphonLocalExileEntry.cs`):** Call `ItemCatalog.RegisterOverlay(...)` and `DropDataProvider.Default.RegisterOverlay(...)` directly under `mod.Manifest.Id`.
+- **Part 2b Content & Drops:** `ItemCatalog.RegisterOverlay`, `UniqueCatalog.RegisterOverlay`, `ModCatalog`, `GemSources`, and `DropDataProvider.Default.RegisterOverlay` / `DropPoolOverlays` (lock-free lazy `ItemDrops` rebuild across monster kills, containers, strongboxes, boss bonuses, map currency mods, and `HardModeDrops`).
+- **Part 2c Custom-League Mechanics (`c0392f414`):** Area lifecycle events (`GameEvents.AreaInit`, `AreaClosing`, `MonsterKilled`, `PlayerDied`, `ObjectUse`, `MapDeviceActivating`), custom interactable world objects & monster/NPC/buff catalog overlays (`ObjectTypes`, `MonsterCatalog`, `NpcCatalog`, `BuffRows`), custom portals & sub-area / boss-arena instances (`Portals.cs`), custom vendor recipes (`Rules.VendorRecipes.cs`), and league-scoped persistence (`LeagueData` alongside `AccountData`/`CharacterData`) + `IPlayerWorld` encounter facades.
+- **Direct Gateway APIs (Roslyn `IMod` entry point, e.g., `examples/DualMod.SiphonOrb/Server/SiphonLocalExileEntry.cs`):** Call `ItemCatalog.RegisterOverlay(...)`, `DropDataProvider.Default.RegisterOverlay(...)`, and Part 2c `GameEvents` / `IPlayerWorld` helpers directly under `mod.Manifest.Id`.
 - **Zero-hard-dependency `ServerBridge` reflection helpers (`LocalExileGatewayHost`):** For compiled server DLLs referencing only `LocalExile.Client.ServerBridge`:
 
 ```csharp

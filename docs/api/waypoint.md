@@ -418,7 +418,7 @@ public static class DualModPackageValidator
 
 | Property | Summary |
 |---|---|
-| `public static readonly IReadOnlySet<string> AppendableRegistryTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)` | Tables verified appendable in 10-verification.md §5 and live 3.29.3c/3.29.3d testing. |
+| `public static readonly IReadOnlySet<string> AppendableRegistryTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)` | Tables verified appendable in 10-verification.md §5 and live 3.29.3c/3.29.3d testing (22 tables as of SDK 1.2.0). |
 | `public static readonly IReadOnlySet<string> ClosedRegistryTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)` | Tables bound to compiled enums or fixed-size structures in 3.29 that cannot safely accept appended rows (`ItemClasses` compiled 103-entry enum; `Stats` fixed 23,362 / 0x5b42 rows where 0x5b43 is compiled `StatId::INVALID` across 35+ sites and 4 fixed-size tables OOB on `statId >= 0x5b43`). |
 
 **Methods:**
@@ -428,7 +428,7 @@ public static class DualModPackageValidator
 | `public static ValidationReport ValidateManifest(DualModManifest manifest, SemVer? currentSdkVersion = null)` | Validates a `DualModManifest` without inspecting disk files. |
 | `public static ValidationReport ValidatePackageDirectory(string packageDir, SemVer? currentSdkVersion = null)` | Validates a complete dual-side mod package directory on disk (manifest, payload namespace rules, declared replaces/overlays vs actual files, `.ui` linting, file limits, and SHA-256 digests). |
 | `public static IReadOnlyList<CrossModConflict> DetectConflicts(IEnumerable<DualModManifest> manifests)` | Detects collisions across a set of dual-side mods (duplicate IDs, overlapping replaced/overlay paths, custom opcodes, GEAL built-ins, custom UI controls, and content registry entries). |
-| `public static ValidationReport ValidateDatPatchJson(string json, string? expectedModId = null, string? filePath = null)` | Validates a standalone `.datpatch.json` payload (JSON syntax, schema table membership, 18 verified `AppendableRegistryTables` for `append`, hard rejection of closed `Stats`/`ItemClasses` tables for `append`, and valid `allocateDeadStat` slots). |
+| `public static ValidationReport ValidateDatPatchJson(string json, string? expectedModId = null, string? filePath = null)` | Validates a standalone `.datpatch.json` payload (JSON syntax, schema table membership, 22 verified `AppendableRegistryTables` for `append`, hard rejection of closed `Stats`/`ItemClasses` tables for `append`, and valid `allocateDeadStat` slots). |
 | `public static IReadOnlyList<CrossModConflict> DetectDatPatchConflicts(IEnumerable<DatPatchDocument> patches)` | Detects cross-mod collisions across declarative `.datpatch.json` documents. Two mods appending distinct entry keys to the SAME `.datc64` table produce ZERO conflicts; conflicts are reported only for duplicate `(table, entryKey)` keys, colliding explicit `allocateDeadStat.preferredSlot` assignments, or exceeding the 30-slot dead-stat pool. |
 | `public static bool IsModNamespacedPath(string virtualPath, string modId)` | Returns true if a virtual path is properly namespaced under a `Mods/<segment>/` path matching the mod id (or its final hyphen-separated component, e.g. `harvest-garden` -> `Mods/Garden/` or `Mods/harvest-garden/`). |
 | `public static string NormalizeVirtualPath(string path)` | — |

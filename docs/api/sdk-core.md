@@ -41,7 +41,7 @@ public static class SdkVersion
 
 | Member | Summary |
 |---|---|
-| `public const string Current = "1.1.0"` | The current semantic version string of the Client SDK. |
+| `public const string Current = "1.2.0"` | The current semantic version string of the Client SDK. |
 | `public const int ProtocolVersion = 1` | The current binary/envelope wire protocol version. |
 
 **Properties:**
@@ -189,6 +189,7 @@ public interface IGameServices
 | `ICameraService Camera { get; }` | Live camera projection, world-to-screen coordinate transform, and zoom override service. |
 | `ITooltipService Tooltips { get; }` | Stock item tooltip augmentation and custom anchored mod tooltip overlay service. |
 | `IStashAffinityService StashAffinity { get; }` | Ctrl+Click custom stash affinity routing and stock affinity bitset extension service. |
+| `IStackExtensionService StackExtension { get; }` | Extended 32-bit stack deserialization (> 65,535), millions stack formatting, and per-entity stack size override service. |
 | `IGealBuiltinRegistry GealBuiltins { get; }` | Registry for extending the GEAL VM with custom built-in functions. |
 | `IUiControlRegistry UiControls { get; }` | Registry for extending the UI parser with custom control types. |
 | `IRulesetRegistry Rulesets { get; }` | Registry for registering custom per-area client rulesets (0x2c9/0x2ca). |

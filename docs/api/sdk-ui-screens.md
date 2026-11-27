@@ -934,6 +934,7 @@ public interface IUiService
 | Property | Summary |
 |---|---|
 | `IReadOnlyCollection<IUiWindow> OpenWindows { get; }` | Currently open mod windows. |
+| `bool IsCompactSocketsEnabled { get; }` | Gets whether 6-socket compact icon scaling on small items (such as 2×2 helmets/gloves/boots or 1×3 weapons with 5–6 sockets) is currently enabled. Defaults to `false` and resets automatically when owning mods unload or disconnect. |
 
 **Methods:**
 
@@ -959,5 +960,6 @@ public interface IUiService
 | `IListBox CreateListBox(IUiControl parent, string? id = null)` | Dynamically creates a `ControlListBox` under `parent`. |
 | `IUiItemGrid CreateItemGrid(IUiControl parent, UiItemGridOptions options, string? id = null)` | Creates a slab-safe composite `IUiItemGrid` attached under `parent`. |
 | `IUiItemGrid CreateItemGrid(IUiControl parent, int columns, int rows, float cellSize = 48f, string? id = null)` | Creates a slab-safe composite `IUiItemGrid` with the specified dimensions and cell size. |
+| `void SetCompactSocketsEnabled(bool enabled)` | Enables or disables 6-socket compact icon scaling on `SocketOverlay` so 5–6 sockets fit cleanly inside 2×2 and 1×3 item rects without overflowing adjacent inventory cells. Automatically disabled when the owning mod unloads. |
 
 ---
