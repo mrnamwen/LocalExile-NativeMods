@@ -307,11 +307,9 @@ bool should_catch_in_guard(DWORD code) noexcept {
 // itself after its own vectored handler passes them on. Resuming such a fault at the guard's recovery point
 // abandons managed frames mid-way: the thread is left in cooperative mode with a broken frame chain, the
 // managed callback silently stops, and the next garbage collection crashes the game.
-bool fault_belongs_to_dotnet(const void* ip) noexcept {
-    HMODULE module = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            static_cast<LPCWSTR>(ip), &module) || module == nullptr) {
-        return true;
+bool module_belongs_to_dotnet(HMODULE module) noexcept {
+    if (module == nullptr) {
+        return false;
     }
     wchar_t path[MAX_PATH * 2];
     const DWORD n = GetModuleFileNameW(module, path, static_cast<DWORD>(sizeof(path) / sizeof(path[0])));
@@ -329,6 +327,25 @@ bool fault_belongs_to_dotnet(const void* ip) noexcept {
            std::wcscmp(base, L"coreclr.dll") == 0 ||
            std::wcscmp(base, L"clrjit.dll") == 0 ||
            std::wcsncmp(base, L"system.", 7) == 0;
+}
+
+bool fault_belongs_to_dotnet(const void* ip) noexcept {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCWSTR>(ip), &module) || module == nullptr) {
+        return true;
+    }
+    return module_belongs_to_dotnet(module);
+}
+
+// The runtime is built with MSVC and throws and catches C++ exceptions inside itself (the type loader, assembly
+// binding). Those are raised through KERNELBASE!RaiseException, so the fault address says nothing; on x64 the
+// fourth exception parameter is the image base of the module that threw.
+bool cxx_exception_belongs_to_dotnet(const EXCEPTION_RECORD* rec) noexcept {
+    if (rec->NumberParameters < 4) {
+        return false;
+    }
+    return module_belongs_to_dotnet(reinterpret_cast<HMODULE>(rec->ExceptionInformation[3]));
 }
 
 LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
@@ -368,7 +385,8 @@ LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    if (code != NM_MSVC_CXX_EXCEPTION_CODE && fault_belongs_to_dotnet(ep->ExceptionRecord->ExceptionAddress)) {
+    if (code == NM_MSVC_CXX_EXCEPTION_CODE ? cxx_exception_belongs_to_dotnet(ep->ExceptionRecord)
+                                           : fault_belongs_to_dotnet(ep->ExceptionRecord->ExceptionAddress)) {
         g_managed_fault_passthrough_count.fetch_add(1, std::memory_order_relaxed);
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -379,10 +397,13 @@ LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
             const uint64_t mod_base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
             const uint64_t rip = reinterpret_cast<uint64_t>(ep->ExceptionRecord->ExceptionAddress);
             logger_logf("WARN",
-                        "[GUARD] Caught native exception inside a guarded call: code=0x%08lX rip=0x%llX (exe_rva=0x%llX) tid=%lu",
+                        "[GUARD] Caught native exception inside a guarded call: code=0x%08lX rip=0x%llX (exe_rva=0x%llX) thrower_base=0x%llX tid=%lu",
                         static_cast<unsigned long>(code),
                         static_cast<unsigned long long>(rip),
                         static_cast<unsigned long long>(rip >= mod_base ? (rip - mod_base) : 0ull),
+                        static_cast<unsigned long long>(
+                            code == NM_MSVC_CXX_EXCEPTION_CODE && ep->ExceptionRecord->NumberParameters >= 4
+                                ? ep->ExceptionRecord->ExceptionInformation[3] : 0ull),
                         static_cast<unsigned long>(GetCurrentThreadId()));
         }
     }
