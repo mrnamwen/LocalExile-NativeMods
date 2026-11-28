@@ -394,28 +394,33 @@ public sealed class ToastService : IToastService, IDisposable
     private static string BuildToastOverlayUi()
     {
         var sb = new StringBuilder();
+        // The game's .ui parser needs the <DEFINITIONS> line (not at byte 0), a semicolon after every property and
+        // unquoted ids; without them it throws while loading the window.
+        sb.AppendLine("// NativeMods toasts");
+        sb.AppendLine("<DEFINITIONS>");
+        sb.AppendLine();
         sb.AppendLine("begin Frame");
-        sb.AppendLine("  id = \"nativemods_toasts_root\"");
-        sb.AppendLine("  size = 360, 544");
-        sb.AppendLine("  visible = false");
+        sb.AppendLine("  id = nativemods_toasts_root;");
+        sb.AppendLine("  size = 360, 544;");
+        sb.AppendLine("  visible = false;");
         for (int i = 0; i < MaxSupportedSlots; i++)
         {
             sb.AppendLine("  begin Frame");
-            sb.AppendLine(string.Create(CultureInfo.InvariantCulture, $"    id = \"toast_{i}\""));
-            sb.AppendLine(string.Create(CultureInfo.InvariantCulture, $"    location = 0, {i * 68}"));
-            sb.AppendLine("    size = 360, 62");
-            sb.AppendLine("    visible = false");
+            sb.AppendLine(string.Create(CultureInfo.InvariantCulture, $"    id = toast_{i};"));
+            sb.AppendLine(string.Create(CultureInfo.InvariantCulture, $"    location = 0, {i * 68};"));
+            sb.AppendLine("    size = 360, 62;");
+            sb.AppendLine("    visible = false;");
             sb.AppendLine("    begin Label");
-            sb.AppendLine("      id = \"title\"");
-            sb.AppendLine("      location = 10, 6");
-            sb.AppendLine("      size = 340, 22");
-            sb.AppendLine("      text = \"\"");
+            sb.AppendLine("      id = title;");
+            sb.AppendLine("      location = 10, 6;");
+            sb.AppendLine("      size = 340, 22;");
+            sb.AppendLine("      text = \"\";");
             sb.AppendLine("    end");
             sb.AppendLine("    begin Label");
-            sb.AppendLine("      id = \"body\"");
-            sb.AppendLine("      location = 10, 30");
-            sb.AppendLine("      size = 340, 26");
-            sb.AppendLine("      text = \"\"");
+            sb.AppendLine("      id = body;");
+            sb.AppendLine("      location = 10, 30;");
+            sb.AppendLine("      size = 340, 26;");
+            sb.AppendLine("      text = \"\";");
             sb.AppendLine("    end");
             sb.AppendLine("  end");
         }

@@ -1618,20 +1618,12 @@ nm_status_t LiveEngineHooks::ui_create_window_in_parent(void* parent_control, co
     {
         std::lock_guard<std::mutex> lock(g_ui_windows_mutex);
         if (root != nullptr && g_ui_windows_root != root) {
+            // A new UI root (an area change, the game rebuilding its screens): windows loaded under the old root are
+            // reloaded fresh. Click and change handlers stay: each control's own are dropped when the game destroys
+            // it (the ui_destroy hook). Dropping all of them here silenced every live button whenever any window was
+            // made after the root changed (a toast after an area change stopped all of a mod's buttons).
             g_ui_windows_root = root;
             g_ui_loaded_windows.clear();
-            std::lock_guard<std::mutex> hlock(g_ui_handlers_mutex);
-            for (UiClickHandlerRecord* rec : g_ui_handlers) {
-                if (rec) {
-                    rec->cb = nullptr;
-                    rec->user_data = nullptr;
-                }
-            }
-            g_ui_token_map.clear();
-            g_ui_button_slots.clear();
-            g_ui_checkbox_slots.clear();
-            g_ui_tb_changed_slots.clear();
-            g_ui_tb_submitted_slots.clear();
         } else {
             auto it = g_ui_loaded_windows.find(cache_key);
             if (it != g_ui_loaded_windows.end() && it->second != nullptr) {

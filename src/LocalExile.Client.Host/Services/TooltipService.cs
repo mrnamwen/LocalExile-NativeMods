@@ -421,25 +421,30 @@ public sealed class TooltipService : ITooltipService, IDisposable
     private static string BuildTooltipOverlayUi()
     {
         var sb = new StringBuilder();
+        // The game's .ui parser needs the <DEFINITIONS> line (not at byte 0), a semicolon after every property and
+        // unquoted ids; without them it throws while loading the window.
+        sb.AppendLine("// NativeMods custom tooltip");
+        sb.AppendLine("<DEFINITIONS>");
+        sb.AppendLine();
         sb.AppendLine("begin Frame");
-        sb.AppendLine("  id = \"nativemods_custom_tooltip\"");
-        sb.AppendLine("  size = 340, 120");
-        sb.AppendLine("  visible = false");
+        sb.AppendLine("  id = nativemods_custom_tooltip;");
+        sb.AppendLine("  size = 340, 120;");
+        sb.AppendLine("  visible = false;");
         sb.AppendLine("  begin Label");
-        sb.AppendLine("    id = \"tooltip_title\"");
-        sb.AppendLine("    location = 10, 8");
-        sb.AppendLine("    size = 320, 24");
-        sb.AppendLine("    text = \"\"");
+        sb.AppendLine("    id = tooltip_title;");
+        sb.AppendLine("    location = 10, 8;");
+        sb.AppendLine("    size = 320, 24;");
+        sb.AppendLine("    text = \"\";");
         sb.AppendLine("  end");
         for (int i = 0; i < MaxOverlayLines; i++)
         {
             int y = 36 + (i * 20);
             sb.AppendLine("  begin Label");
-            sb.AppendLine(CultureInfo.InvariantCulture, $"    id = \"line_{i}\"");
-            sb.AppendLine(CultureInfo.InvariantCulture, $"    location = 10, {y}");
-            sb.AppendLine("    size = 320, 18");
-            sb.AppendLine("    visible = false");
-            sb.AppendLine("    text = \"\"");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"    id = line_{i};");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"    location = 10, {y};");
+            sb.AppendLine("    size = 320, 18;");
+            sb.AppendLine("    visible = false;");
+            sb.AppendLine("    text = \"\";");
             sb.AppendLine("  end");
         }
 

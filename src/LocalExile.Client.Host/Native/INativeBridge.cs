@@ -300,6 +300,11 @@ public interface INativeBridge : IDisposable
     /// <summary>Returns a snapshot of the item currently held on the cursor or in currency use mode, or <c>null</c>.</summary>
     CursorItemInfo? GetCursorItem() => null;
 
+    /// <summary>The hovered control, hovered item and cursor item together. A bridge reading them from one native
+    /// state answers this with a single read (the default asks the three methods above).</summary>
+    (nint Control, HoveredItemInfo? Item, CursorItemInfo? Cursor) GetHoverSnapshot() =>
+        (GetHoveredControlHandle(), GetHoveredItem(), GetCursorItem());
+
     /// <summary>Registers a pre-hook on <c>C→S 0x12</c> (<c>WriteCreateCharacter_0x12</c>); returns modified start-state or <c>null</c> for unchanged.</summary>
     IDisposable RegisterCharacterCreatingCallback(Func<string, string, string, string?> onCreating) => NoopDisposable.Instance;
 
@@ -2513,9 +2518,18 @@ public sealed unsafe class NativeShimBridge : INativeBridge
         TryGetNativeHoverState(out NmHoverState state) ? (nint)state.HoveredControl : nint.Zero;
 
     /// <inheritdoc/>
-    public HoveredItemInfo? GetHoveredItem()
+    public (nint Control, HoveredItemInfo? Item, CursorItemInfo? Cursor) GetHoverSnapshot() =>
+        TryGetNativeHoverState(out NmHoverState state)
+            ? ((nint)state.HoveredControl, HoveredItemFrom(in state), CursorItemFrom(in state))
+            : (nint.Zero, null, null);
+
+    /// <inheritdoc/>
+    public HoveredItemInfo? GetHoveredItem() =>
+        TryGetNativeHoverState(out NmHoverState state) ? HoveredItemFrom(in state) : null;
+
+    private static HoveredItemInfo? HoveredItemFrom(in NmHoverState state)
     {
-        if (!TryGetNativeHoverState(out NmHoverState state) || state.HoveredItem.Present == 0)
+        if (state.HoveredItem.Present == 0)
         {
             return null;
         }
@@ -2542,13 +2556,11 @@ public sealed unsafe class NativeShimBridge : INativeBridge
     }
 
     /// <inheritdoc/>
-    public CursorItemInfo? GetCursorItem()
-    {
-        if (!TryGetNativeHoverState(out NmHoverState state))
-        {
-            return null;
-        }
+    public CursorItemInfo? GetCursorItem() =>
+        TryGetNativeHoverState(out NmHoverState state) ? CursorItemFrom(in state) : null;
 
+    private static CursorItemInfo? CursorItemFrom(in NmHoverState state)
+    {
         CursorMode mode = (NmCursorMode)state.CursorMode switch
         {
             NmCursorMode.Holding => CursorMode.HoldingItem,

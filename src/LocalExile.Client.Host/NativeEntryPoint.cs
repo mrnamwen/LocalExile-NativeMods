@@ -196,7 +196,10 @@ public static class NativeEntryPoint
                 runtime.Start();
                 ActiveRuntime = runtime;
 
-                bool enqueued = bridge.EnqueueGameThread(() =>
+                // The client mods load on the first managed frame (the game thread). A work item queued for the native
+                // main-thread queue was never seen to run on Windows: no mod loaded and nothing was logged.
+                WriteLog("INFO", "loader", $"Client mods load on the next frame from '{modsDir}'.");
+                runtime.FirstFrameWork = () =>
                 {
                     lock (Gate)
                     {
@@ -207,11 +210,7 @@ public static class NativeEntryPoint
 
                         AutoLoadClientMods(hostDir, runtime, WriteLog);
                     }
-                });
-                if (!enqueued)
-                {
-                    WriteLog("ERROR", "loader", "Failed to enqueue client mod auto-load onto game thread queue.");
-                }
+                };
 
                 return (int)NmStatus.Ok;
             }
