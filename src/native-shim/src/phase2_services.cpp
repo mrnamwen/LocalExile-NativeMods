@@ -1,3 +1,4 @@
+#include "readable_cache.hpp"
 #include "phase2_services.hpp"
 
 #include "address_table.hpp"
@@ -133,19 +134,7 @@ void fire_filter_reloaded_guarded(int32_t succeeded, const nm_item_filter_state_
 }
 
 bool ptr_readable_safe(const void* p, size_t len) noexcept {
-    if (!p || len == 0) return false;
-#if defined(_WIN32)
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
-    if (mbi.State != MEM_COMMIT) return false;
-    const DWORD prot = mbi.Protect & 0xFFu;
-    if (prot == PAGE_NOACCESS || (mbi.Protect & PAGE_GUARD) != 0) return false;
-    const uintptr_t start = reinterpret_cast<uintptr_t>(p);
-    const uintptr_t end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-    return (start + len) <= end;
-#else
-    return true;
-#endif
+    return nativemods::ptr_readable_cached(p, len);
 }
 
 template <typename T>

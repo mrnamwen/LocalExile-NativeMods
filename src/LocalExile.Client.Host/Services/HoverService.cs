@@ -22,14 +22,20 @@ public sealed class HoverService : IHoverService
         _ui = ui ?? throw new ArgumentNullException(nameof(ui));
     }
 
-    /// <inheritdoc/>
-    public IUiControl? HoveredControl => _hoveredControl;
+    // Frames seen by Tick, and the frame the hover state was last read on: the state is read at most once a frame, and
+    // only when something asks for it (a HoverChanged subscriber, or a read of the properties below). Reading it walks
+    // the hovered control's parents and copies the hovered item, which every frame cost Windows players frame rate.
+    private long _frame;
+    private long _polledFrame = -1;
 
     /// <inheritdoc/>
-    public HoveredItemInfo? HoveredItem => _hoveredItem;
+    public IUiControl? HoveredControl { get { EnsureFresh(); return _hoveredControl; } }
 
     /// <inheritdoc/>
-    public CursorItemInfo? CursorItem => _cursorItem;
+    public HoveredItemInfo? HoveredItem { get { EnsureFresh(); return _hoveredItem; } }
+
+    /// <inheritdoc/>
+    public CursorItemInfo? CursorItem { get { EnsureFresh(); return _cursorItem; } }
 
     /// <inheritdoc/>
     public event Action<HoverChangedEventArgs>? HoverChanged;
@@ -48,14 +54,29 @@ public sealed class HoverService : IHoverService
         return _cursorItem;
     }
 
-    /// <summary>Polls native hover &amp; cursor state on the game thread and raises <see cref="HoverChanged"/> if anything changed.</summary>
-    public void Tick() => PollAndNotify();
+    /// <summary>Called once a frame on the game thread: polls the hover &amp; cursor state when something listens for
+    /// <see cref="HoverChanged"/>, and raises it if anything changed.</summary>
+    public void Tick()
+    {
+        _frame++;
+        if (HoverChanged is not null)
+        {
+            PollAndNotify();
+        }
+    }
+
+    private void EnsureFresh()
+    {
+        if (_polledFrame != _frame)
+        {
+            PollAndNotify();
+        }
+    }
 
     private void PollAndNotify()
     {
-        nint nextControlHandle = _bridge.GetHoveredControlHandle();
-        HoveredItemInfo? nextItem = _bridge.GetHoveredItem();
-        CursorItemInfo? nextCursor = _bridge.GetCursorItem();
+        _polledFrame = _frame;
+        (nint nextControlHandle, HoveredItemInfo? nextItem, CursorItemInfo? nextCursor) = _bridge.GetHoverSnapshot();
 
         bool controlChanged = nextControlHandle != _lastControlHandle;
         bool itemChanged = !Equals(nextItem, _hoveredItem);
