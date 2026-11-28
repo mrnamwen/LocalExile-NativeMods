@@ -298,6 +298,8 @@ void trigger_auto_coreclr_bootstrap(const char* trigger_reason) {
 
 // Invoked on the game thread by our register-preserving frame.state_stack_pass_a stub.
 // Returns the trampoline address in RAX so the stub can tail-jump directly to the original function.
+std::atomic<uint64_t> g_frame_work_overlaps{0};
+
 extern "C" void* NM_CALL on_live_game_frame_tick() {
     const uint64_t frame_num = g_live_frame_count.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -319,16 +321,28 @@ extern "C" void* NM_CALL on_live_game_frame_tick() {
         trigger_auto_coreclr_bootstrap("first-frame");
     } else if (frame_num == 10 || frame_num == 60 || frame_num == 120 || (frame_num % 300) == 0) {
         auto& s = state();
-        logger_logf("INFO", "Frame heartbeat: frames=%llu tid=%lu coreclr_booted=%d coreclr_booting=%d msvc_cxx_passthrough=%llu",
+        logger_logf("INFO", "Frame heartbeat: frames=%llu tid=%lu coreclr_booted=%d coreclr_booting=%d msvc_cxx_passthrough=%llu managed_fault_passthrough=%llu frame_overlaps=%llu",
                     static_cast<unsigned long long>(frame_num),
                     static_cast<unsigned long>(GetCurrentThreadId()),
                     s.clr.is_booted() ? 1 : 0,
                     s.clr.is_booting() ? 1 : 0,
-                    static_cast<unsigned long long>(get_msvc_cxx_passthrough_count()));
+                    static_cast<unsigned long long>(get_msvc_cxx_passthrough_count()),
+                    static_cast<unsigned long long>(get_managed_fault_passthrough_count()),
+                    static_cast<unsigned long long>(g_frame_work_overlaps.load(std::memory_order_relaxed)));
     }
 
-    (void)nm_drain_main_thread_queue(dt, 64);
-    state().audio.tick_update();
+    // The game calls this pass from more than one thread. Managed frame work (mod frame callbacks, the
+    // main-thread queue) assumes one frame at a time, so a call that arrives while another thread is still
+    // running it skips the managed work and only runs the game's own pass.
+    static std::atomic<bool> s_frame_work_busy{false};
+    bool expected_idle = false;
+    if (s_frame_work_busy.compare_exchange_strong(expected_idle, true, std::memory_order_acq_rel)) {
+        (void)nm_drain_main_thread_queue(dt, 64);
+        state().audio.tick_update();
+        s_frame_work_busy.store(false, std::memory_order_release);
+    } else {
+        g_frame_work_overlaps.fetch_add(1, std::memory_order_relaxed);
+    }
 
     void* tramp = g_frame_trampoline.load(std::memory_order_acquire);
     while (!tramp) {

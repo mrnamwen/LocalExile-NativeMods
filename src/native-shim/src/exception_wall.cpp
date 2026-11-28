@@ -211,6 +211,7 @@ namespace nativemods {
 namespace {
 
 std::atomic<uint64_t> g_msvc_cxx_passthrough_count{0};
+std::atomic<uint64_t> g_managed_fault_passthrough_count{0};
 
 void fill_exception(nm_exception_info_t* out, uint32_t code, uint64_t addr, const char* msg) {
     if (!out) return;
@@ -300,6 +301,36 @@ bool should_catch_in_guard(DWORD code) noexcept {
     }
 }
 
+// True when the faulting instruction belongs to .NET: JIT-compiled code (no module image), the runtime, or a
+// managed image loaded from the host folder (ReadyToRun code in System.*.dll and the mods). CoreCLR raises
+// access violations on purpose there (implicit null checks become NullReferenceException) and handles them
+// itself after its own vectored handler passes them on. Resuming such a fault at the guard's recovery point
+// abandons managed frames mid-way: the thread is left in cooperative mode with a broken frame chain, the
+// managed callback silently stops, and the next garbage collection crashes the game.
+bool fault_belongs_to_dotnet(const void* ip) noexcept {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCWSTR>(ip), &module) || module == nullptr) {
+        return true;
+    }
+    wchar_t path[MAX_PATH * 2];
+    const DWORD n = GetModuleFileNameW(module, path, static_cast<DWORD>(sizeof(path) / sizeof(path[0])));
+    if (n == 0) {
+        return false;
+    }
+    for (DWORD i = 0; i < n; ++i) {
+        if (path[i] >= L'A' && path[i] <= L'Z') path[i] = static_cast<wchar_t>(path[i] - L'A' + L'a');
+    }
+    const wchar_t* base = path;
+    for (DWORD i = 0; i < n; ++i) {
+        if (path[i] == L'\\' || path[i] == L'/') base = path + i + 1;
+    }
+    return std::wcsstr(path, L"\\nativemods-host\\") != nullptr ||
+           std::wcscmp(base, L"coreclr.dll") == 0 ||
+           std::wcscmp(base, L"clrjit.dll") == 0 ||
+           std::wcsncmp(base, L"system.", 7) == 0;
+}
+
 LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
     if (!ep || !ep->ExceptionRecord || !ep->ContextRecord) {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -335,6 +366,25 @@ LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
 
     if (!should_catch_in_guard(code)) {
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (code != NM_MSVC_CXX_EXCEPTION_CODE && fault_belongs_to_dotnet(ep->ExceptionRecord->ExceptionAddress)) {
+        g_managed_fault_passthrough_count.fetch_add(1, std::memory_order_relaxed);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    {
+        static std::atomic<int> caught_logs{0};
+        if (caught_logs.fetch_add(1, std::memory_order_relaxed) < 20) {
+            const uint64_t mod_base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+            const uint64_t rip = reinterpret_cast<uint64_t>(ep->ExceptionRecord->ExceptionAddress);
+            logger_logf("WARN",
+                        "[GUARD] Caught native exception inside a guarded call: code=0x%08lX rip=0x%llX (exe_rva=0x%llX) tid=%lu",
+                        static_cast<unsigned long>(code),
+                        static_cast<unsigned long long>(rip),
+                        static_cast<unsigned long long>(rip >= mod_base ? (rip - mod_base) : 0ull),
+                        static_cast<unsigned long>(GetCurrentThreadId()));
+        }
     }
 
     frame->caught_code = static_cast<uint32_t>(code);
@@ -451,6 +501,10 @@ void ensure_exception_wall_installed() noexcept {
 
 uint64_t get_msvc_cxx_passthrough_count() noexcept {
     return g_msvc_cxx_passthrough_count.load(std::memory_order_relaxed);
+}
+
+uint64_t get_managed_fault_passthrough_count() noexcept {
+    return g_managed_fault_passthrough_count.load(std::memory_order_relaxed);
 }
 
 nm_status_t invoke_guarded(
