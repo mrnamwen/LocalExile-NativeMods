@@ -307,45 +307,50 @@ bool should_catch_in_guard(DWORD code) noexcept {
 // itself after its own vectored handler passes them on. Resuming such a fault at the guard's recovery point
 // abandons managed frames mid-way: the thread is left in cooperative mode with a broken frame chain, the
 // managed callback silently stops, and the next garbage collection crashes the game.
-bool module_belongs_to_dotnet(HMODULE module) noexcept {
-    if (module == nullptr) {
-        return false;
-    }
-    wchar_t path[MAX_PATH * 2];
-    const DWORD n = GetModuleFileNameW(module, path, static_cast<DWORD>(sizeof(path) / sizeof(path[0])));
-    if (n == 0) {
-        return false;
-    }
-    for (DWORD i = 0; i < n; ++i) {
-        if (path[i] >= L'A' && path[i] <= L'Z') path[i] = static_cast<wchar_t>(path[i] - L'A' + L'a');
-    }
-    const wchar_t* base = path;
-    for (DWORD i = 0; i < n; ++i) {
-        if (path[i] == L'\\' || path[i] == L'/') base = path + i + 1;
-    }
-    return std::wcsstr(path, L"\\nativemods-host\\") != nullptr ||
-           std::wcscmp(base, L"coreclr.dll") == 0 ||
-           std::wcscmp(base, L"clrjit.dll") == 0 ||
-           std::wcsncmp(base, L"system.", 7) == 0;
+// The guard exists for calls into the game's own code. A vectored handler sees every exception first-chance,
+// before the frames that would handle it, so it only takes exceptions raised by the game executable itself:
+// an access violation (or other fault) whose instruction is in the executable's image, or an MSVC C++
+// exception thrown by it (on x64 the fourth exception parameter is the thrower's image base). Everything
+// else is left to its own handlers: CoreCLR raises access violations and C++ exceptions inside itself and
+// handles them, and so do other DLLs. Resuming those at the guard's recovery point abandoned managed frames
+// mid-way (the callback stopped without a log line, the client mods never loaded) and the game crashed at
+// the next garbage collection.
+bool address_in_game_image(uint64_t address) noexcept {
+    static const uint64_t base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+    static const uint64_t size = [] {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + static_cast<uint64_t>(dos->e_lfanew));
+        return static_cast<uint64_t>(nt->OptionalHeader.SizeOfImage);
+    }();
+    return address >= base && address < base + size;
 }
 
-bool fault_belongs_to_dotnet(const void* ip) noexcept {
+bool raised_by_game(const EXCEPTION_RECORD* rec) noexcept {
+    if (rec->ExceptionCode == NM_MSVC_CXX_EXCEPTION_CODE) {
+        return rec->NumberParameters >= 4 &&
+               rec->ExceptionInformation[3] == reinterpret_cast<ULONG_PTR>(GetModuleHandleW(nullptr));
+    }
+    return address_in_game_image(reinterpret_cast<uint64_t>(rec->ExceptionAddress));
+}
+
+void log_passed_on(const EXCEPTION_RECORD* rec) noexcept {
+    static std::atomic<int> logs{0};
+    if (logs.fetch_add(1, std::memory_order_relaxed) >= 10) {
+        return;
+    }
+    const void* where = rec->ExceptionCode == NM_MSVC_CXX_EXCEPTION_CODE && rec->NumberParameters >= 4
+                            ? reinterpret_cast<const void*>(rec->ExceptionInformation[3])
+                            : rec->ExceptionAddress;
     HMODULE module = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            static_cast<LPCWSTR>(ip), &module) || module == nullptr) {
-        return true;
+    char name[MAX_PATH] = "<no module: JIT code>";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCWSTR>(where), &module) && module != nullptr) {
+        if (GetModuleFileNameA(module, name, sizeof(name)) == 0) {
+            std::snprintf(name, sizeof(name), "<module 0x%llX>", static_cast<unsigned long long>(reinterpret_cast<uint64_t>(module)));
+        }
     }
-    return module_belongs_to_dotnet(module);
-}
-
-// The runtime is built with MSVC and throws and catches C++ exceptions inside itself (the type loader, assembly
-// binding). Those are raised through KERNELBASE!RaiseException, so the fault address says nothing; on x64 the
-// fourth exception parameter is the image base of the module that threw.
-bool cxx_exception_belongs_to_dotnet(const EXCEPTION_RECORD* rec) noexcept {
-    if (rec->NumberParameters < 4) {
-        return false;
-    }
-    return module_belongs_to_dotnet(reinterpret_cast<HMODULE>(rec->ExceptionInformation[3]));
+    logger_logf("INFO", "[GUARD] Left an exception to its own handlers: code=0x%08lX from %s tid=%lu",
+                static_cast<unsigned long>(rec->ExceptionCode), name, static_cast<unsigned long>(GetCurrentThreadId()));
 }
 
 LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
@@ -385,9 +390,9 @@ LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    if (code == NM_MSVC_CXX_EXCEPTION_CODE ? cxx_exception_belongs_to_dotnet(ep->ExceptionRecord)
-                                           : fault_belongs_to_dotnet(ep->ExceptionRecord->ExceptionAddress)) {
+    if (!raised_by_game(ep->ExceptionRecord)) {
         g_managed_fault_passthrough_count.fetch_add(1, std::memory_order_relaxed);
+        log_passed_on(ep->ExceptionRecord);
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
