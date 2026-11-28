@@ -481,10 +481,11 @@ public sealed class ScreensService : IScreensService, IDisposable
         float h = opts.Height > 0f ? opts.Height : spec.DefaultItemHeight;
 
         string virtualPath = $"Metadata/UI/Mods/NativeMods/Slots/{slot}_{safeId}_{seq}.ui";
-        string escapedText = (text ?? string.Empty).Replace("\"", "\\\"", StringComparison.Ordinal);
+        // The .ui parser has no escape for a quote inside a quoted value.
+        string escapedText = (text ?? string.Empty).Replace('"', '\'').Replace('\n', ' ').Replace('\r', ' ');
         string uiSource = string.Create(
             CultureInfo.InvariantCulture,
-            $"begin Frame\n  id = \"slot_{safeId}\"\n  size = {w}, {h}\n  begin Button\n    id = \"btn\"\n    text = \"{escapedText}\"\n    size = {w}, {h}\n  end\nend\n");
+            $"// NativeMods slot button\n<DEFINITIONS>\n\nbegin Frame\n\tid = slot_{safeId};\n\tsize = {w}, {h};\n\tvisible = true;\n\tmouse_enabled = true;\n\n\tbegin Button\n\t\tid = btn;\n\t\tlocation = 0, 0;\n\t\tsize = {w}, {h};\n\t\ttext = \"{escapedText}\";\n\tend\nend\n");
 
         IDisposable overlaySub = _files.RegisterVirtualTextFileForMod("nativemods.slots", virtualPath, uiSource, priority: 100);
         ManagedSlotAttachment? attachment = null;
