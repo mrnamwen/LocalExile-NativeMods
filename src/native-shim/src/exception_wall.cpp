@@ -353,6 +353,63 @@ void log_passed_on(const EXCEPTION_RECORD* rec) noexcept {
                 static_cast<unsigned long>(rec->ExceptionCode), name, static_cast<unsigned long>(GetCurrentThreadId()));
 }
 
+// Text of a game C++ exception, for the log: the type's decorated name and, when it derives from std::exception,
+// its message (MSVC keeps the message pointer right after the vtable pointer). Only reads memory it has checked.
+bool readable_range(const void* p, size_t len) noexcept {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (p == nullptr || VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return false;
+    const auto* end = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+    return static_cast<const uint8_t*>(p) + len <= end;
+}
+
+void describe_cxx_exception(const EXCEPTION_RECORD* rec, char* out, size_t out_size) noexcept {
+    out[0] = '\0';
+    if (rec->NumberParameters < 4) return;
+    const auto* object = reinterpret_cast<const uint8_t*>(rec->ExceptionInformation[1]);
+    const auto* throw_info = reinterpret_cast<const uint8_t*>(rec->ExceptionInformation[2]);
+    const auto* base = reinterpret_cast<const uint8_t*>(rec->ExceptionInformation[3]);
+    if (!readable_range(throw_info, 16)) return;
+    const int32_t array_rva = *reinterpret_cast<const int32_t*>(throw_info + 12);
+    const uint8_t* array = base + array_rva;
+    if (!readable_range(array, 8)) return;
+    const int32_t count = *reinterpret_cast<const int32_t*>(array);
+    const char* first_name = nullptr;
+    bool is_std = false;
+    int32_t std_offset = 0;
+    for (int32_t i = 0; i < count && i < 8; ++i) {
+        if (!readable_range(array + 4 + i * 4, 4)) break;
+        const uint8_t* type = base + *reinterpret_cast<const int32_t*>(array + 4 + i * 4);
+        if (!readable_range(type, 28)) break;
+        const uint8_t* descriptor = base + *reinterpret_cast<const int32_t*>(type + 4);
+        if (!readable_range(descriptor, 16 + 64)) break;
+        const char* name = reinterpret_cast<const char*>(descriptor + 16);
+        if (first_name == nullptr) first_name = name;
+        if (std::strncmp(name, ".?AVexception@std@@", 19) == 0) {
+            is_std = true;
+            std_offset = *reinterpret_cast<const int32_t*>(type + 8);
+        }
+    }
+    char name_buf[96] = "?";
+    if (first_name != nullptr) {
+        std::snprintf(name_buf, sizeof(name_buf), "%.90s", first_name);
+    }
+    char what_buf[400] = "";
+    if (is_std && readable_range(object + std_offset, 16)) {
+        const char* what = *reinterpret_cast<const char* const*>(object + std_offset + 8);
+        if (readable_range(what, 1)) {
+            size_t n = 0;
+            while (n < sizeof(what_buf) - 1 && readable_range(what + n, 1) && what[n] != '\0') {
+                const char c = what[n];
+                what_buf[n] = (c >= 32 && c < 127) ? c : ' ';
+                ++n;
+            }
+            what_buf[n] = '\0';
+        }
+    }
+    std::snprintf(out, out_size, " type=%s what='%s'", name_buf, what_buf);
+}
+
 LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
     if (!ep || !ep->ExceptionRecord || !ep->ContextRecord) {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -401,15 +458,19 @@ LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
         if (caught_logs.fetch_add(1, std::memory_order_relaxed) < 20) {
             const uint64_t mod_base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
             const uint64_t rip = reinterpret_cast<uint64_t>(ep->ExceptionRecord->ExceptionAddress);
+            char detail[560] = "";
+            if (code == NM_MSVC_CXX_EXCEPTION_CODE) {
+                describe_cxx_exception(ep->ExceptionRecord, detail, sizeof(detail));
+            }
             logger_logf("WARN",
-                        "[GUARD] Caught native exception inside a guarded call: code=0x%08lX rip=0x%llX (exe_rva=0x%llX) thrower_base=0x%llX tid=%lu",
+                        "[GUARD] Caught native exception inside a guarded call: code=0x%08lX rip=0x%llX (exe_rva=0x%llX) thrower_base=0x%llX tid=%lu%s",
                         static_cast<unsigned long>(code),
                         static_cast<unsigned long long>(rip),
                         static_cast<unsigned long long>(rip >= mod_base ? (rip - mod_base) : 0ull),
                         static_cast<unsigned long long>(
                             code == NM_MSVC_CXX_EXCEPTION_CODE && ep->ExceptionRecord->NumberParameters >= 4
                                 ? ep->ExceptionRecord->ExceptionInformation[3] : 0ull),
-                        static_cast<unsigned long>(GetCurrentThreadId()));
+                        static_cast<unsigned long>(GetCurrentThreadId()), detail);
         }
     }
 
