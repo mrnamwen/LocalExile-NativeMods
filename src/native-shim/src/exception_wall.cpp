@@ -211,6 +211,7 @@ namespace nativemods {
 namespace {
 
 std::atomic<uint64_t> g_msvc_cxx_passthrough_count{0};
+std::atomic<uint64_t> g_managed_fault_passthrough_count{0};
 
 void fill_exception(nm_exception_info_t* out, uint32_t code, uint64_t addr, const char* msg) {
     if (!out) return;
@@ -300,6 +301,115 @@ bool should_catch_in_guard(DWORD code) noexcept {
     }
 }
 
+// True when the faulting instruction belongs to .NET: JIT-compiled code (no module image), the runtime, or a
+// managed image loaded from the host folder (ReadyToRun code in System.*.dll and the mods). CoreCLR raises
+// access violations on purpose there (implicit null checks become NullReferenceException) and handles them
+// itself after its own vectored handler passes them on. Resuming such a fault at the guard's recovery point
+// abandons managed frames mid-way: the thread is left in cooperative mode with a broken frame chain, the
+// managed callback silently stops, and the next garbage collection crashes the game.
+// The guard exists for calls into the game's own code. A vectored handler sees every exception first-chance,
+// before the frames that would handle it, so it only takes exceptions raised by the game executable itself:
+// an access violation (or other fault) whose instruction is in the executable's image, or an MSVC C++
+// exception thrown by it (on x64 the fourth exception parameter is the thrower's image base). Everything
+// else is left to its own handlers: CoreCLR raises access violations and C++ exceptions inside itself and
+// handles them, and so do other DLLs. Resuming those at the guard's recovery point abandoned managed frames
+// mid-way (the callback stopped without a log line, the client mods never loaded) and the game crashed at
+// the next garbage collection.
+bool address_in_game_image(uint64_t address) noexcept {
+    static const uint64_t base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+    static const uint64_t size = [] {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + static_cast<uint64_t>(dos->e_lfanew));
+        return static_cast<uint64_t>(nt->OptionalHeader.SizeOfImage);
+    }();
+    return address >= base && address < base + size;
+}
+
+bool raised_by_game(const EXCEPTION_RECORD* rec) noexcept {
+    if (rec->ExceptionCode == NM_MSVC_CXX_EXCEPTION_CODE) {
+        return rec->NumberParameters >= 4 &&
+               rec->ExceptionInformation[3] == reinterpret_cast<ULONG_PTR>(GetModuleHandleW(nullptr));
+    }
+    return address_in_game_image(reinterpret_cast<uint64_t>(rec->ExceptionAddress));
+}
+
+void log_passed_on(const EXCEPTION_RECORD* rec) noexcept {
+    static std::atomic<int> logs{0};
+    if (logs.fetch_add(1, std::memory_order_relaxed) >= 10) {
+        return;
+    }
+    const void* where = rec->ExceptionCode == NM_MSVC_CXX_EXCEPTION_CODE && rec->NumberParameters >= 4
+                            ? reinterpret_cast<const void*>(rec->ExceptionInformation[3])
+                            : rec->ExceptionAddress;
+    HMODULE module = nullptr;
+    char name[MAX_PATH] = "<no module: JIT code>";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCWSTR>(where), &module) && module != nullptr) {
+        if (GetModuleFileNameA(module, name, sizeof(name)) == 0) {
+            std::snprintf(name, sizeof(name), "<module 0x%llX>", static_cast<unsigned long long>(reinterpret_cast<uint64_t>(module)));
+        }
+    }
+    logger_logf("INFO", "[GUARD] Left an exception to its own handlers: code=0x%08lX from %s tid=%lu",
+                static_cast<unsigned long>(rec->ExceptionCode), name, static_cast<unsigned long>(GetCurrentThreadId()));
+}
+
+// Text of a game C++ exception, for the log: the type's decorated name and, when it derives from std::exception,
+// its message (MSVC keeps the message pointer right after the vtable pointer). Only reads memory it has checked.
+bool readable_range(const void* p, size_t len) noexcept {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (p == nullptr || VirtualQuery(p, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return false;
+    const auto* end = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+    return static_cast<const uint8_t*>(p) + len <= end;
+}
+
+void describe_cxx_exception(const EXCEPTION_RECORD* rec, char* out, size_t out_size) noexcept {
+    out[0] = '\0';
+    if (rec->NumberParameters < 4) return;
+    const auto* object = reinterpret_cast<const uint8_t*>(rec->ExceptionInformation[1]);
+    const auto* throw_info = reinterpret_cast<const uint8_t*>(rec->ExceptionInformation[2]);
+    const auto* base = reinterpret_cast<const uint8_t*>(rec->ExceptionInformation[3]);
+    if (!readable_range(throw_info, 16)) return;
+    const int32_t array_rva = *reinterpret_cast<const int32_t*>(throw_info + 12);
+    const uint8_t* array = base + array_rva;
+    if (!readable_range(array, 8)) return;
+    const int32_t count = *reinterpret_cast<const int32_t*>(array);
+    const char* first_name = nullptr;
+    bool is_std = false;
+    int32_t std_offset = 0;
+    for (int32_t i = 0; i < count && i < 8; ++i) {
+        if (!readable_range(array + 4 + i * 4, 4)) break;
+        const uint8_t* type = base + *reinterpret_cast<const int32_t*>(array + 4 + i * 4);
+        if (!readable_range(type, 28)) break;
+        const uint8_t* descriptor = base + *reinterpret_cast<const int32_t*>(type + 4);
+        if (!readable_range(descriptor, 16 + 64)) break;
+        const char* name = reinterpret_cast<const char*>(descriptor + 16);
+        if (first_name == nullptr) first_name = name;
+        if (std::strncmp(name, ".?AVexception@std@@", 19) == 0) {
+            is_std = true;
+            std_offset = *reinterpret_cast<const int32_t*>(type + 8);
+        }
+    }
+    char name_buf[96] = "?";
+    if (first_name != nullptr) {
+        std::snprintf(name_buf, sizeof(name_buf), "%.90s", first_name);
+    }
+    char what_buf[400] = "";
+    if (is_std && readable_range(object + std_offset, 16)) {
+        const char* what = *reinterpret_cast<const char* const*>(object + std_offset + 8);
+        if (readable_range(what, 1)) {
+            size_t n = 0;
+            while (n < sizeof(what_buf) - 1 && readable_range(what + n, 1) && what[n] != '\0') {
+                const char c = what[n];
+                what_buf[n] = (c >= 32 && c < 127) ? c : ' ';
+                ++n;
+            }
+            what_buf[n] = '\0';
+        }
+    }
+    std::snprintf(out, out_size, " type=%s what='%s'", name_buf, what_buf);
+}
+
 LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
     if (!ep || !ep->ExceptionRecord || !ep->ContextRecord) {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -335,6 +445,33 @@ LONG CALLBACK GuardVehHandler(PEXCEPTION_POINTERS ep) {
 
     if (!should_catch_in_guard(code)) {
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (!raised_by_game(ep->ExceptionRecord)) {
+        g_managed_fault_passthrough_count.fetch_add(1, std::memory_order_relaxed);
+        log_passed_on(ep->ExceptionRecord);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    {
+        static std::atomic<int> caught_logs{0};
+        if (caught_logs.fetch_add(1, std::memory_order_relaxed) < 20) {
+            const uint64_t mod_base = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+            const uint64_t rip = reinterpret_cast<uint64_t>(ep->ExceptionRecord->ExceptionAddress);
+            char detail[560] = "";
+            if (code == NM_MSVC_CXX_EXCEPTION_CODE) {
+                describe_cxx_exception(ep->ExceptionRecord, detail, sizeof(detail));
+            }
+            logger_logf("WARN",
+                        "[GUARD] Caught native exception inside a guarded call: code=0x%08lX rip=0x%llX (exe_rva=0x%llX) thrower_base=0x%llX tid=%lu%s",
+                        static_cast<unsigned long>(code),
+                        static_cast<unsigned long long>(rip),
+                        static_cast<unsigned long long>(rip >= mod_base ? (rip - mod_base) : 0ull),
+                        static_cast<unsigned long long>(
+                            code == NM_MSVC_CXX_EXCEPTION_CODE && ep->ExceptionRecord->NumberParameters >= 4
+                                ? ep->ExceptionRecord->ExceptionInformation[3] : 0ull),
+                        static_cast<unsigned long>(GetCurrentThreadId()), detail);
+        }
     }
 
     frame->caught_code = static_cast<uint32_t>(code);
@@ -451,6 +588,10 @@ void ensure_exception_wall_installed() noexcept {
 
 uint64_t get_msvc_cxx_passthrough_count() noexcept {
     return g_msvc_cxx_passthrough_count.load(std::memory_order_relaxed);
+}
+
+uint64_t get_managed_fault_passthrough_count() noexcept {
+    return g_managed_fault_passthrough_count.load(std::memory_order_relaxed);
 }
 
 nm_status_t invoke_guarded(
