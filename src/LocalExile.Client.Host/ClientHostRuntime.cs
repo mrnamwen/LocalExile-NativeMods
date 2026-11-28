@@ -497,9 +497,32 @@ public sealed class ClientHostRuntime : IDisposable
         _ => new HostRulesetTransport(_bridge, rulesetId),
     };
 
+    /// <summary>Work run once on the next managed frame, on the game thread (the native entry point loads the client
+    /// mods there).</summary>
+    public Action? FirstFrameWork { get; set; }
+
+    // Automatic handshakes not answered on the current connection: the interval doubles from 1.5 s up to a minute, and
+    // after MaxUnansweredHandshakes the host stops asking until the connection changes (a server without the
+    // ServerBridge never answers, and resending forever cost a send and a log line every 1.5 s).
+    private int _unansweredHandshakes;
+    private ulong _unansweredForToken;
+    private const int MaxUnansweredHandshakes = 8;
+
+    private TimeSpan NextHandshakeInterval(TimeSpan first)
+    {
+        double seconds = first.TotalSeconds * Math.Pow(2, Math.Min(_unansweredHandshakes, 6));
+        return TimeSpan.FromSeconds(Math.Min(seconds, 60));
+    }
+
     private void OnFrame(float deltaSeconds)
     {
         long frame = Interlocked.Increment(ref _frameCount);
+        if (FirstFrameWork is { } firstFrame)
+        {
+            FirstFrameWork = null;
+            try { firstFrame(); }
+            catch (Exception ex) { Log("ERROR", "host", $"First-frame work failed: {ex.GetType().Name}: {ex.Message}"); }
+        }
         if (frame is 1 or 5 or 60 or 120 || frame % 300 == 0)
         {
             Log("INFO", "host", $"Managed frame tick #{frame} (dt={deltaSeconds:F4}s, loadedMods={Loader.LoadedMods.Count}).");
@@ -572,10 +595,22 @@ public sealed class ClientHostRuntime : IDisposable
             if (_lastObservedConnectionToken != 0 &&
                 (LastServerHandshake is null || _handshakeConnectionToken != _lastObservedConnectionToken))
             {
+                if (_unansweredForToken != _lastObservedConnectionToken)
+                {
+                    _unansweredForToken = _lastObservedConnectionToken;
+                    _unansweredHandshakes = 0;
+                }
+
                 long lastTs = Interlocked.Read(ref _lastAutoHandshakeTimestamp);
-                if (lastTs == 0 || Stopwatch.GetElapsedTime(lastTs) >= TimeSpan.FromMilliseconds(1500))
+                if (_unansweredHandshakes < MaxUnansweredHandshakes &&
+                    (lastTs == 0 || Stopwatch.GetElapsedTime(lastTs) >= NextHandshakeInterval(TimeSpan.FromMilliseconds(1500))))
                 {
                     Interlocked.Exchange(ref _lastAutoHandshakeTimestamp, Stopwatch.GetTimestamp());
+                    if (lastTs != 0) _unansweredHandshakes++;
+                    if (_unansweredHandshakes == MaxUnansweredHandshakes)
+                    {
+                        Log("INFO", "host", $"No ServerBridge answered {MaxUnansweredHandshakes} handshakes on this connection; not asking again until it changes.");
+                    }
                     try
                     {
                         SendHandshake();
@@ -588,13 +623,14 @@ public sealed class ClientHostRuntime : IDisposable
                 }
             }
         }
-        else if (_bridge is NativeShimBridge && LastServerHandshake is null && frame >= 30)
+        else if (_bridge is NativeShimBridge && LastServerHandshake is null && frame >= 30 && _unansweredHandshakes < MaxUnansweredHandshakes)
         {
             // Fallback for minimal mock ABI tables that omit GetActiveConnectionToken.
             long lastTs = Interlocked.Read(ref _lastAutoHandshakeTimestamp);
-            if (lastTs == 0 || Stopwatch.GetElapsedTime(lastTs) >= TimeSpan.FromSeconds(2))
+            if (lastTs == 0 || Stopwatch.GetElapsedTime(lastTs) >= NextHandshakeInterval(TimeSpan.FromSeconds(2)))
             {
                 Interlocked.Exchange(ref _lastAutoHandshakeTimestamp, Stopwatch.GetTimestamp());
+                if (lastTs != 0) _unansweredHandshakes++;
                 try
                 {
                     SendHandshake();
