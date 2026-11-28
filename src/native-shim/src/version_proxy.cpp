@@ -1,5 +1,5 @@
 // Win64 proxy-DLL fallback (version.dll).
-// Forwards all 16 standard version.dll exports lazily to %SystemRoot%\System32\version.dll
+// Forwards all 17 standard version.dll exports lazily to %SystemRoot%\System32\version.dll
 // (zero LoadLibrary calls under the Windows loader lock) and spawns a worker thread on
 // DLL_PROCESS_ATTACH to load LocalExile.ClientHost.dll beside this proxy DLL.
 // Under Wine / Proton, launch with: WINEDLLOVERRIDES="version=n,b"
@@ -87,6 +87,15 @@ BOOL WINAPI GetFileVersionInfoExW(DWORD dwFlags, LPCWSTR lpwstrFilename, DWORD d
     using Fn = BOOL(WINAPI*)(DWORD, LPCWSTR, DWORD, DWORD, LPVOID);
     if (auto fn = resolve_real_export<Fn>("GetFileVersionInfoExW")) {
         return fn(dwFlags, lpwstrFilename, dwHandle, dwLen, lpData);
+    }
+    SetLastError(ERROR_PROC_NOT_FOUND);
+    return FALSE;
+}
+
+BOOL WINAPI GetFileVersionInfoW(LPCWSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData) {
+    using Fn = BOOL(WINAPI*)(LPCWSTR, DWORD, DWORD, LPVOID);
+    if (auto fn = resolve_real_export<Fn>("GetFileVersionInfoW")) {
+        return fn(lptstrFilename, dwHandle, dwLen, lpData);
     }
     SetLastError(ERROR_PROC_NOT_FOUND);
     return FALSE;
